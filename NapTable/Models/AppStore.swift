@@ -1,0 +1,635 @@
+import Combine
+import Foundation
+import SwiftUI
+
+enum ScheduleViewMode: String, CaseIterable, Identifiable {
+    case week
+    case day
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .week: return "周"
+        case .day: return "日"
+        }
+    }
+}
+
+/// Local replacement for the Flutter app's sqflite `CourseProvider` /
+/// `CourseTableProvider` plus `MainStateModel` and `ConfigState`.
+///
+/// Everything lives in one JSON document under Application Support. The store is
+/// the single writer for course rows, so importers hand it `Course` values and
+/// never touch the file themselves.
+@MainActor
+final class AppStore: ObservableObject {
+    @Published private(set) var settings: AppSettings
+    @Published private(set) var tables: [CourseTable]
+    @Published private(set) var courses: [Course]
+    @Published private(set) var selectedTableId: Int
+    /// The week the user is looking at. Swiping changes this.
+    @Published var displayWeek: Int
+    /// Populated when loading the state file failed; surfaced in settings.
+    @Published private(set) var loadErrorMessage: String?
+
+    private var nextCourseId: Int
+    private var nextTableId: Int
+    private var nextCourseKey: Int
+    private var didSeedSample: Bool
+    private let fileURL: URL?
+    private var saveTask: Task<Void, Never>?
+    private var didLoad = false
+
+    // MARK: Init
+
+    init(fileURL: URL? = AppStore.defaultFileURL()) {
+        self.fileURL = fileURL
+        let state = AppStore.readState(from: fileURL)
+        self.settings = state.state.settings
+        self.tables = state.state.tables
+        self.courses = state.state.courses
+        self.selectedTableId = state.state.selectedTableId
+        self.nextCourseId = state.state.nextCourseId
+        self.nextTableId = state.state.nextTableId
+        self.nextCourseKey = state.state.nextCourseKey
+        self.didSeedSample = state.state.didSeedSample
+        self.loadErrorMessage = state.error
+        self.displayWeek = 1
+        didLoad = true
+        normalize()
+        displayWeek = liveWeek > 0 ? liveWeek : 1
+    }
+
+    nonisolated static func defaultFileURL() -> URL? {
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        ) else { return nil }
+        let directory = base.appendingPathComponent("NapTable", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("naptable-state.json", isDirectory: false)
+    }
+
+    private static func readState(from url: URL?) -> (state: AppStateFile, error: String?) {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else {
+            return (AppStateFile(), nil)
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            return (try decoder.decode(AppStateFile.self, from: data), nil)
+        } catch {
+            // A broken file must not wipe the app; start clean but keep the
+            // original around so a user can still recover it by hand.
+            let backup = url.appendingPathExtension("corrupt")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.moveItem(at: url, to: backup)
+            return (AppStateFile(), "本地数据无法读取，已重置（原文件备份为 \(backup.lastPathComponent)）")
+        }
+    }
+
+    // MARK: Derived data
+
+    var selectedTable: CourseTable? {
+        tables.first { $0.id == selectedTableId } ?? tables.first
+    }
+
+    var currentCourses: [Course] {
+        courses.filter { $0.tableId == selectedTableId }
+    }
+
+    var classTimeList: [ClassTime] {
+        selectedTable?.effectiveClassTimeList ?? SchoolDefaults.classTimeList
+    }
+
+    var maxClasses: Int {
+        max(SchoolDefaults.maxClasses, classTimeList.count)
+    }
+
+    var maxWeeks: Int {
+        max(1, selectedTable?.termWeekCount ?? settings.weekCount)
+    }
+
+    /// Classifies this table's courses for one week and resolves the grid
+    /// coordinates, i.e. the Flutter app's
+    /// `CourseTablePresenter.refreshClasses` + `getClassesWidgetList`.
+    func layout(forWeek week: Int, days: [Int]) -> ScheduleLayout {
+        let logic = ScheduleLogic(courses: currentCourses, nowWeek: week)
+        return ScheduleLayout(logic: logic, days: days)
+    }
+
+    /// The week that contains today, or `0` before the semester starts.
+    var liveWeek: Int {
+        guard let snapshot = weekSnapshot else {
+            // Without a semester anchor the app cannot know the real week, so
+            // the user-chosen week is treated as "now".
+            return min(max(displayWeek, 1), maxWeeks)
+        }
+        return snapshot.currentWeek
+    }
+
+    var weekSnapshot: WeekCalculator.Snapshot? {
+        WeekCalculator.snapshot(
+            for: Date(),
+            semesterStartMonday: effectiveSemesterStartMonday,
+            maxWeeks: maxWeeks
+        )
+    }
+
+    /// Dates for the displayed week, empty when no semester anchor is set.
+    var displayDays: [Date] {
+        guard let snapshot = weekSnapshot else { return [] }
+        let delta = displayWeek - snapshot.currentWeek
+        guard delta != 0 else { return snapshot.days }
+        let calendar = WeekCalculator.calendar
+        let monday = calendar.date(byAdding: .day, value: delta * 7, to: snapshot.monday) ?? snapshot.monday
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: monday) }
+    }
+
+    var displayMonth: Int? {
+        displayDays.first.map { WeekCalculator.month($0) }
+    }
+
+    var isViewingLiveWeek: Bool {
+        displayWeek == liveWeek && liveWeek > 0
+    }
+
+    var semesterStartMonday: String {
+        selectedTable?.semesterStartMonday ?? ""
+    }
+
+    /// The anchor actually used for week arithmetic: the table's own value when
+    /// it has one, otherwise the global calendar the upstream project ships in
+    /// `complete.json`.
+    ///
+    /// The Flutter app applies its downloaded `complete.json` to the week index
+    /// rather than to the stored table, so this stays a read-only fallback: a
+    /// table the user never filled in is not silently rewritten, but the app can
+    /// still work out which week today is in.
+    var effectiveSemesterStartMonday: String {
+        let own = semesterStartMonday.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !own.isEmpty { return own }
+        return BundledConfig.fallbackSemesterStartMonday ?? ""
+    }
+
+    var semesterStartMondayDisplay: String {
+        let value = effectiveSemesterStartMonday
+        guard let date = WeekCalculator.parseDay(value) else { return "未设置" }
+        let formatter = DateFormatter()
+        formatter.calendar = WeekCalculator.calendar
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy 年 M 月 d 日"
+        return formatter.string(from: date)
+    }
+
+    var hasAnyData: Bool {
+        !courses.isEmpty
+    }
+
+    /// `CourseTable.effectiveClassTimeList` entries used by the axis.
+    func classTime(at index: Int) -> ClassTime? {
+        let list = classTimeList
+        guard list.indices.contains(index) else { return nil }
+        return list[index]
+    }
+
+    // MARK: Week navigation
+
+    func selectWeek(_ week: Int) {
+        displayWeek = min(max(week, 1), maxWeeks)
+    }
+
+    func stepWeek(_ offset: Int) {
+        selectWeek(displayWeek + offset)
+    }
+
+    func goToLiveWeek() {
+        guard liveWeek > 0 else {
+            selectWeek(1)
+            return
+        }
+        selectWeek(liveWeek)
+    }
+
+    func refreshForToday() {
+        if liveWeek > 0, displayWeek == 0 { displayWeek = liveWeek }
+        checkWeekRollover()
+    }
+
+    /// Lands on the week that contains today, falling back to week 1 when the
+    /// table carries no semester anchor.
+    ///
+    /// `refreshForToday` alone only moves a *zero* week, so installing a
+    /// schedule, switching tables or setting the semester start all left the app
+    /// sitting on week 1 even though the current week was known.
+    private func resetWeekToLive() {
+        displayWeek = 1
+        goToLiveWeek()
+        refreshForToday()
+    }
+
+    /// Mirrors `WeekUtil.checkWeek()`: when the stored day and today straddle a
+    /// Monday, the displayed week follows the calendar instead of drifting.
+    private var lastKnownWeek = 0
+    private func checkWeekRollover() {
+        let current = liveWeek
+        guard current > 0 else { return }
+        defer { lastKnownWeek = current }
+        guard lastKnownWeek != 0, lastKnownWeek != current else { return }
+        displayWeek = current
+    }
+
+    // MARK: Table management
+
+    @discardableResult
+    func addTable(name: String, semesterStartMonday: String = "", classTimeList: [ClassTime] = []) -> CourseTable {
+        let table = CourseTable(
+            id: nextTableId,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "课表 \(nextTableId)" : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            classTimeList: classTimeList,
+            semesterStartMonday: semesterStartMonday
+        )
+        nextTableId += 1
+        tables.append(table)
+        selectedTableId = table.id
+        resetWeekToLive()
+        scheduleSave()
+        return table
+    }
+
+    func renameTable(_ id: Int, to name: String) {
+        guard let index = tables.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        tables[index].name = trimmed
+        scheduleSave()
+    }
+
+    func updateSemesterStart(_ value: String) {
+        guard let index = tables.firstIndex(where: { $0.id == selectedTableId }) else { return }
+        tables[index].semesterStartMonday = value
+        scheduleSave()
+        resetWeekToLive()
+    }
+
+    func updateClassTimeList(_ list: [ClassTime]) {
+        guard let index = tables.firstIndex(where: { $0.id == selectedTableId }) else { return }
+        tables[index].classTimeList = list
+        scheduleSave()
+    }
+
+    func applyTerm(_ term: ServiceTermConfiguration, schoolID: String) {
+        guard let index = tables.firstIndex(where: { $0.id == selectedTableId }) else { return }
+        tables[index].schoolID = schoolID
+        tables[index].termID = term.id
+        tables[index].termVersion = term.version
+        tables[index].termWeekCount = term.weekCount
+        tables[index].termTimezone = term.timezone
+        tables[index].semesterStartMonday = term.semesterStartMonday
+        tables[index].classTimeList = term.classTimes
+        tables[index].calendarAdjustments = term.calendarAdjustments
+        scheduleSave(); resetWeekToLive()
+    }
+
+    func deleteTable(_ id: Int) {
+        guard tables.count > 1 else { return }
+        tables.removeAll { $0.id == id }
+        courses.removeAll { $0.tableId == id }
+        if selectedTableId == id {
+            selectedTableId = tables.first?.id ?? 0
+        }
+        displayWeek = 1
+        scheduleSave()
+        refreshForToday()
+    }
+
+    func selectTable(_ id: Int) {
+        guard tables.contains(where: { $0.id == id }) else { return }
+        selectedTableId = id
+        resetWeekToLive()
+        scheduleSave()
+    }
+
+    // MARK: Course editing
+
+    @discardableResult
+    func addCourse(_ course: Course) -> Course {
+        var value = course
+        value.id = nextCourseId
+        nextCourseId += 1
+        value.tableId = selectedTableId
+        if value.courseKey == nil {
+            value.courseKey = nextCourseKey
+            nextCourseKey += 1
+        }
+        courses.append(value)
+        scheduleSave()
+        return value
+    }
+
+    func updateCourse(_ course: Course) {
+        guard let index = courses.firstIndex(where: { $0.id == course.id }) else { return }
+        courses[index] = course
+        scheduleSave()
+    }
+
+    func deleteCourse(id: Int) {
+        courses.removeAll { $0.id == id }
+        scheduleSave()
+    }
+
+    /// Deletes every row that belongs to the same course as `course`.
+    func deleteCourseFamily(_ course: Course) {
+        if let key = course.courseKey {
+            courses.removeAll { $0.courseKey == key }
+        } else {
+            deleteCourse(id: course.id)
+        }
+        scheduleSave()
+    }
+
+    func deleteAllCourses(inTable id: Int? = nil) {
+        let target = id ?? selectedTableId
+        courses.removeAll { $0.tableId == target }
+        scheduleSave()
+    }
+
+    func eraseEverything() {
+        courses.removeAll()
+        let table = tables.first ?? selectedTable
+        tables = []
+        selectedTableId = 0
+        nextCourseId = 1
+        nextTableId = 1
+        nextCourseKey = 1
+        didSeedSample = true
+        _ = table
+        addTable(name: SchoolDefaults.defaultTableName)
+        scheduleSave()
+    }
+
+    // MARK: Import
+
+    /// Installs a freshly parsed schedule. `mode` decides whether the courses
+    /// join the current table or arrive as a new one, mirroring the Flutter
+    /// importers that always created a table per import.
+    @discardableResult
+    func install(
+        payload: ImportedSchedule,
+        mode: ImportMode
+    ) -> CourseTable {
+        let table: CourseTable
+        switch mode {
+        case .newTable:
+            table = addTable(
+                name: payload.name,
+                semesterStartMonday: payload.semesterStartMonday ?? "",
+                classTimeList: payload.classTimeList ?? []
+            )
+        case .replaceCurrent:
+            table = selectedTable ?? addTable(name: payload.name)
+            if let index = tables.firstIndex(where: { $0.id == table.id }) {
+                tables[index].name = payload.name
+                if let start = payload.semesterStartMonday, !start.isEmpty {
+                    tables[index].semesterStartMonday = start
+                }
+                if let list = payload.classTimeList, !list.isEmpty {
+                    tables[index].classTimeList = list
+                }
+            }
+            courses.removeAll { $0.tableId == table.id }
+        case .appendToCurrent:
+            table = selectedTable ?? addTable(name: payload.name)
+            if let start = payload.semesterStartMonday, !start.isEmpty, table.semesterStartMonday.isEmpty {
+                updateSemesterStart(start)
+            }
+        }
+
+        if let schoolID = payload.schoolID, let termID = payload.termID,
+           let index = tables.firstIndex(where: { $0.id == table.id }) {
+            tables[index].schoolID = schoolID
+            tables[index].termID = termID
+            tables[index].termVersion = payload.termVersion
+            tables[index].termWeekCount = payload.termWeekCount
+            tables[index].termTimezone = payload.termTimezone
+            if let start = payload.semesterStartMonday { tables[index].semesterStartMonday = start }
+            if let times = payload.classTimeList, !times.isEmpty { tables[index].classTimeList = times }
+            // 学期换了就整张替换，包括「这学期没有调休」这种空表。
+            tables[index].calendarAdjustments = payload.calendarAdjustments
+        }
+
+        for item in payload.courses {
+            var course = item
+            course.id = nextCourseId
+            nextCourseId += 1
+            course.tableId = table.id
+            course.courseKey = nextCourseKey
+            nextCourseKey += 1
+            courses.append(course)
+        }
+        scheduleSave()
+        resetWeekToLive()
+        return table
+    }
+
+    enum ImportMode: String, CaseIterable, Identifiable {
+        case replaceCurrent
+        case newTable
+        case appendToCurrent
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .replaceCurrent: return "覆盖当前课表"
+            case .newTable: return "新建课表"
+            case .appendToCurrent: return "追加到当前课表"
+            }
+        }
+    }
+
+    // MARK: Sample data
+
+    /// Mirrors the Flutter app's admin/admin demo table so a new install has
+    /// something to look at and to try the gestures on.
+    func seedSampleIfNeeded() {
+        guard !didSeedSample else { return }
+        didSeedSample = true
+        if tables.isEmpty {
+            addTable(name: "Demo课表")
+        }
+        let allWeeks = Array(1...22)
+        let tableId = selectedTableId
+        func make(_ name: String, weeks: [Int], day: Int, slot: Int, count: Int, teacher: String, room: String, kind: Int = ImportKind.imported) -> Course {
+            var course = Course(
+                id: nextCourseId,
+                tableId: tableId,
+                name: name,
+                weeks: weeks,
+                weekTime: day,
+                startTime: slot,
+                timeCount: count,
+                importType: kind,
+                classroom: room,
+                teacher: teacher
+            )
+            nextCourseId += 1
+            course.courseKey = nextCourseKey
+            nextCourseKey += 1
+            return course
+        }
+        courses.append(contentsOf: [
+            make("自动导入的课程", weeks: allWeeks, day: 3, slot: 5, count: 1, teacher: "测试教师", room: "测试地点"),
+            make("手动导入的课程", weeks: allWeeks, day: 3, slot: 7, count: 1, teacher: "测试教师", room: "仙林校区", kind: ImportKind.manual),
+            make("单周展示的课程", weeks: WeekSeries.single(from: 1, to: 21), day: 2, slot: 5, count: 1, teacher: "测试教师", room: "测试地点"),
+            make("双周展示的课程", weeks: WeekSeries.double(from: 2, to: 22), day: 2, slot: 8, count: 1, teacher: "测试教师", room: "测试地点"),
+            make("有时间冲突的课程1", weeks: allWeeks, day: 4, slot: 2, count: 1, teacher: "测试教师", room: "测试地点"),
+            make("有时间冲突的课程2", weeks: allWeeks, day: 4, slot: 2, count: 1, teacher: "测试教师", room: "测试地点"),
+            make("自由时间课程", weeks: allWeeks, day: 0, slot: 0, count: 0, teacher: "", room: "测试地点")
+        ])
+        scheduleSave()
+        refreshForToday()
+    }
+
+    // MARK: Settings
+
+    func updateSettings(_ update: (inout AppSettings) -> Void) {
+        var value = settings
+        update(&value)
+        settings = value
+        scheduleSave()
+    }
+
+    // MARK: Export / import
+
+    struct ExportDocument: Codable {
+        var version = 1
+        var exportedAt = Date()
+        var settings: AppSettings
+        var tables: [CourseTable]
+        var courses: [Course]
+        /// Absent in backups written before display preferences travelled along.
+        var display: NativeSchedulePreferences.DisplaySnapshot?
+    }
+
+    func exportDocument() -> ExportDocument {
+        ExportDocument(
+            settings: settings,
+            tables: tables,
+            courses: courses,
+            display: NativeSchedulePreferences.shared.makeSnapshot()
+        )
+    }
+
+    /// Restores an exported document, keeping the current ids unique.
+    func restore(_ document: ExportDocument) {
+        // Tables arrive with ids from another install, so every one of them is
+        // remapped and every course follows its table.
+        var tableRemap: [Int: Int] = [:]
+        var newTables: [CourseTable] = []
+        for var table in document.tables {
+            let newId = nextTableId
+            nextTableId += 1
+            tableRemap[table.id] = newId
+            table.id = newId
+            newTables.append(table)
+        }
+        if newTables.isEmpty {
+            let table = CourseTable(id: nextTableId, name: SchoolDefaults.defaultTableName)
+            nextTableId += 1
+            newTables = [table]
+        }
+        var newCourses: [Course] = []
+        for var course in document.courses {
+            course.id = nextCourseId
+            nextCourseId += 1
+            // An unknown table (a hand-edited backup) lands in the first one
+            // instead of disappearing from the grid.
+            course.tableId = tableRemap[course.tableId] ?? newTables[0].id
+            course.courseKey = nextCourseKey
+            nextCourseKey += 1
+            newCourses.append(course)
+        }
+        tables.append(contentsOf: newTables)
+        courses.append(contentsOf: newCourses)
+        // Tables and courses merge; display preferences are single values, so
+        // the backup's copy wins. Older backups carry none and change nothing.
+        if let display = document.display {
+            NativeSchedulePreferences.shared.apply(display)
+        }
+        scheduleSave()
+    }
+
+    /// JSON backup written by the settings screen.
+    func makeExportData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(exportDocument())
+    }
+
+    func importData(_ data: Data) throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let document = try decoder.decode(ExportDocument.self, from: data)
+        restore(document)
+    }
+
+    // MARK: Persistence
+
+    private func normalize() {
+        if tables.isEmpty {
+            let table = CourseTable(id: nextTableId, name: SchoolDefaults.defaultTableName,
+                                    semesterStartMonday: "")
+            nextTableId += 1
+            tables = [table]
+            selectedTableId = table.id
+        }
+        if !tables.contains(where: { $0.id == selectedTableId }) {
+            selectedTableId = tables.first?.id ?? 0
+        }
+        if nextCourseId <= (courses.map(\.id).max() ?? 0) {
+            nextCourseId = (courses.map(\.id).max() ?? 0) + 1
+        }
+        if nextTableId <= (tables.map(\.id).max() ?? 0) {
+            nextTableId = (tables.map(\.id).max() ?? 0) + 1
+        }
+        if nextCourseKey <= (courses.compactMap(\.courseKey).max() ?? 0) {
+            nextCourseKey = (courses.compactMap(\.courseKey).max() ?? 0) + 1
+        }
+        settings.weekCount = min(max(settings.weekCount, 1), 40)
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.saveNow()
+        }
+    }
+
+    func saveNow() {
+        guard didLoad, let fileURL else { return }
+        var state = AppStateFile()
+        state.settings = settings
+        state.tables = tables
+        state.courses = courses
+        state.selectedTableId = selectedTableId
+        state.nextCourseId = nextCourseId
+        state.nextTableId = nextTableId
+        state.nextCourseKey = nextCourseKey
+        state.didSeedSample = didSeedSample
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(state)
+            try data.write(to: fileURL, options: .atomic)
+            loadErrorMessage = nil
+        } catch {
+            loadErrorMessage = "本地数据保存失败：\(error.localizedDescription)"
+        }
+    }
+}

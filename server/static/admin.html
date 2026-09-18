@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NapTable 管理台</title><link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar"><div><p class="eyebrow">NapTable / Server</p><h1>学校与学期配置</h1><p class="muted">服务端权威配置管理。令牌只在本次页面会话内存中使用。</p></div><div class="status-dot" id="connectionStatus">未连接</div></header>
+    <section class="panel auth-panel"><div class="section-title"><div><h2>管理员会话</h2><p class="muted">请输入服务启动时设置的 <code>NAPTABLE_ADMIN_TOKEN</code>。</p></div></div><div class="form-grid auth-grid"><label>管理员令牌<input id="adminToken" type="password" autocomplete="off" placeholder="不会写入 URL 或浏览器存储"></label><button id="connectButton" class="primary">连接服务</button></div></section>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <section class="workspace" aria-label="配置编辑区">
+      <aside class="panel school-panel"><div class="section-title"><div><h2>学校</h2><p class="muted">稳定 ID 用于客户端绑定。</p></div><button id="newSchoolButton" class="icon-button" title="新增学校" aria-label="新增学校">＋</button></div><div id="schoolList" class="school-list"></div></aside>
+      <section class="panel editor-panel"><div class="section-title"><div><p class="eyebrow" id="editorEyebrow">未选择学校</p><h2 id="editorTitle">选择学校开始配置</h2></div><button id="newTermButton" class="secondary" disabled>新增学期</button></div><div id="editorEmpty" class="empty-state">连接服务后选择学校。</div><div id="editor" hidden>
+        <div class="form-grid school-fields"><label>学校 ID<input id="schoolId" readonly></label><label>学校名称<input id="schoolName" maxlength="80"></label><label class="wide">备注<textarea id="schoolNote" rows="2" maxlength="240"></textarea></label><button id="saveSchoolButton" class="secondary">保存学校元数据</button></div>
+        <div class="term-layout"><nav><h3>学期列表</h3><div id="termList" class="term-list"></div></nav><div class="term-editor"><div class="term-header"><div><h3 id="termTitle">新学期</h3><span id="termVersion" class="badge">未保存</span></div><button id="saveTermButton" class="primary">保存学期</button></div><div class="form-grid"><label>学期 ID<input id="termId" maxlength="80" placeholder="例如 2026-fall"></label><label>时区<select id="termTimezone"><option value="Asia/Shanghai">Asia/Shanghai</option></select></label><label>第一周周一<input id="termStart" type="date"></label><label>总周数<input id="termWeeks" type="number" min="1" max="40" step="1"></label><label class="wide">备注<textarea id="termNote" rows="2" maxlength="240"></textarea></label></div><div class="period-heading"><h3>节次时间</h3><button id="addPeriodButton" class="secondary small">添加节次</button></div><div id="periodList" class="period-list"></div><div class="period-heading"><h3>调休</h3><button id="addAdjustmentButton" class="secondary small">添加调休</button></div><p class="hint">补班那天改上哪一天的课、哪一天放假。按国务院当年的通知填，客户端会按日期覆盖课表。</p><div id="adjustmentList" class="adjustment-list"></div></div></div>
+      </div></section>
+    </section>
+  </main><script src="/static/admin.js"></script>
+</body></html>

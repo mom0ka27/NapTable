@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Xcode and Swift build output
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local databases and runtime state
+*.sqlite3
+*.sqlite3-*
+
+# Local environment and signing material
+.env
+.env.*
+!.env.example
+*.p8
+AuthKey_*.p8
