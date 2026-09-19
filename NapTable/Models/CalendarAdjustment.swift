@@ -81,6 +81,12 @@ nonisolated enum CalendarAdjustmentResolver {
         guard !adjustments.isEmpty else { return [:] }
         let anchor = WeekCalculator.parseDay(semesterStartMonday).map { WeekCalculator.monday(of: $0) }
         var result: [String: ResolvedCalendarAdjustment] = [:]
+        let directDates = Set(adjustments.compactMap { WeekCalculator.parseDay($0.date).map(WeekCalculator.format) })
+        let movedSources = Set(adjustments.compactMap { item -> String? in
+            guard item.kind == .swap, let source = item.source, let parsed = WeekCalculator.parseDay(source) else { return nil }
+            let date = WeekCalculator.format(parsed)
+            return directDates.contains(date) ? nil : date
+        })
         for item in adjustments {
             guard let date = WeekCalculator.parseDay(item.date) else { continue }
             var sourceDate: String?
@@ -101,6 +107,20 @@ nonisolated enum CalendarAdjustmentResolver {
                 note: item.note,
                 badge: item.kind == .off ? "休" : "班",
                 detail: detail(for: item, sourceDate: sourceDate)
+            )
+        }
+        // A swap consumes the source day's timetable. Hide that original day
+        // as well, unless it has an explicit adjustment of its own.
+        for date in movedSources where result[date] == nil {
+            result[date] = ResolvedCalendarAdjustment(
+                date: date,
+                kind: .off,
+                sourceDate: nil,
+                sourceWeek: nil,
+                sourceDay: nil,
+                note: "",
+                badge: "休",
+                detail: "调休，不上课"
             )
         }
         return result

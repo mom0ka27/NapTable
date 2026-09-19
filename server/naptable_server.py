@@ -62,15 +62,22 @@ def normalize_adjustments(value):
     if not isinstance(value, list): raise ValueError("adjustments must be a list")
     if len(value) > MAX_ADJUSTMENTS: raise ValueError(f"一个学期最多 {MAX_ADJUSTMENTS} 条调休")
     rows = []
+    seen_dates = set()
+    seen_sources = set()
     for item in value:
         if not isinstance(item, dict): raise ValueError("each adjustment must be an object")
         date = str(item.get("date", "")).strip()
         kind = str(item.get("kind", "")).strip()
         if not ISO_DATE.fullmatch(date) or not _is_date(date): raise ValueError(f"调休日期无效：{date or '(空)'}")
+        if date in seen_dates: raise ValueError(f"{date} 只能配置一次调休")
+        seen_dates.add(date)
         if kind not in ("off", "swap"): raise ValueError("调休类型只能是 off 或 swap")
         source = str(item.get("source") or "").strip()
         if kind == "swap":
             if not ISO_DATE.fullmatch(source) or not _is_date(source): raise ValueError(f"{date} 是调课，必须写明上哪一天的课")
+            if source == date: raise ValueError(f"{date} 不能调到自己当天")
+            if source in seen_sources: raise ValueError(f"{source} 只能被调到一个日期")
+            seen_sources.add(source)
         else:
             source = ""
         row = {"date": date, "kind": kind, "note": str(item.get("note") or "")[:80]}

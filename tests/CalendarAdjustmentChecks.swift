@@ -27,7 +27,7 @@ struct CalendarAdjustmentChecks {
             CalendarAdjustment(date: "2026-10-11", kind: .swap, source: "2026-10-09"),
         ], semesterStartMonday: anchor)
 
-        expect(index.count == 3, "三条调整都解析出来了")
+        expect(index.count == 4, "三条配置调整和一个被调走的来源日期都解析出来了")
 
         if let off = index["2026-10-01"] {
             expect(off.kind == .off && off.suppressesCourses, "放假那天不画课")
@@ -76,6 +76,11 @@ struct CalendarAdjustmentChecks {
             CalendarAdjustment(date: "2026-10-01", kind: .off, note: "后写的"),
         ], semesterStartMonday: anchor)
         expect(duplicated["2026-10-01"]?.note == "后写的", "同一天重复时后面的生效")
+
+        let movedSource = CalendarAdjustmentResolver.index([
+            CalendarAdjustment(date: "2026-10-11", kind: .swap, source: "2026-10-09"),
+        ], semesterStartMonday: anchor)
+        expect(movedSource["2026-10-09"]?.suppressesCourses == true, "被调走的来源日期不重复显示课程")
 
         // 老存档没有这个键，解码要能落到 nil 而不是抛错。
         struct Legacy: Codable { var name: String }
