@@ -74,14 +74,14 @@ private struct ScheduleLiveActivityWidget: Widget {
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
                     // 放不下就整块挪到下面那一行，而不是被摄像头和圆角切掉。
                     .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.trailing, priority: 1) {
                     if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale).state {
                         ScheduleLiveActivityCountdown(state: state, compact: true, centered: true)
-                            .frame(maxWidth: .infinity, minHeight: 40, alignment: .trailing)
+                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .trailing)
                             .dynamicIsland(verticalPlacement: .belowIfTooWide)
                     }
                 }
@@ -94,7 +94,7 @@ private struct ScheduleLiveActivityWidget: Widget {
                             ScheduleLiveActivityFinishedRow(title: display.closingTitle)
                         }
                     }
-                    .padding(.top, 5)
+                    .padding(.top, 1)
                 }
             } compactLeading: {
                 ScheduleLiveActivityLogo(size: 21)
@@ -120,7 +120,7 @@ private struct ScheduleLiveActivityWidget: Widget {
             // 叠加，之前把三边一起写死（18/8/10）比系统默认值窄，左上角的图标和右上角
             // 的「距上课」才会被胶囊圆角切掉。顶部沿用最早的 8pt：系统默认的上边距把
             // 内容压得太靠下，而上边并不是被圆角切到的那一侧。
-            .contentMargins(.top, 8, for: .expanded)
+            .contentMargins(.top, 0, for: .expanded)
             .widgetURL(context.attributes.deepLinkURL)
             .keylineTint(ScheduleLiveActivityPalette.brand)
         }
@@ -384,7 +384,7 @@ private struct ScheduleLiveActivityExpandedDetails: View {
         // The bottom region is clipped by Dynamic Island's own capsule. Keep
         // the progress track and the metadata away from its lower corners.
         .padding(.horizontal, 6)
-        .padding(.bottom, 8)
+        .padding(.bottom, 7)
     }
 }
 
