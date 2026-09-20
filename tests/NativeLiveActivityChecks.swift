@@ -373,7 +373,23 @@ struct NativeLiveActivityChecks {
         )
         precondition(decoded == firstStart.state, "Content state must round trip through its own wire format")
 
-        print("Live Activity checks passed: lead window, lead setting, create, cache update, start, end, retry, settings, permission, persistence, background reconcile, reset, preview and push plan")
+        // 调休：放假那天一条都不推，补课那天推的是被调走那天的课，并且带上说明。
+        let adjusted = adjustedFixture()
+        let adjustedPlan = controller.pushPlan(from: adjusted, now: planClock)
+        let holidayKey = "2026-09-16"
+        precondition(adjustedPlan.allSatisfy { $0.attributes.dateKey != holidayKey },
+                     "A holiday must not keep a single push on the plan")
+        let makeUp = adjustedPlan.filter { $0.attributes.dateKey == "2026-09-19" }
+        precondition(!makeUp.isEmpty, "The make-up day runs the classes that were moved off the holiday")
+        precondition(makeUp.contains { $0.state.courseName == "药理学实验" },
+                     "The make-up day shows the moved day's courses")
+        precondition(makeUp.allSatisfy { ($0.state.normalizedAdjustmentNote ?? "").isEmpty == false },
+                     "Every make-up frame says which day's classes it is showing")
+        precondition(adjustedPlan.first { $0.attributes.dateKey == "2026-09-17" }?
+                        .state.normalizedAdjustmentNote == nil,
+                     "An ordinary day carries no adjustment note")
+
+        print("Live Activity checks passed: lead window, lead setting, create, cache update, start, end, retry, settings, permission, persistence, background reconcile, reset, preview, push plan and 调休")
     }
 
     @MainActor
@@ -414,6 +430,30 @@ struct NativeLiveActivityChecks {
             calendar: NativeScheduleCalendar(
                 currentSemester: "2026-2027-1", currentWeek: 3,
                 weeks: [NativeCalendarWeek(week: 3, days: ["2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18", "2026-09-19", "2026-09-20"])]
+            ),
+            auth: NativeScheduleAuth(authenticated: true)
+        )
+    }
+
+    /// 周三放假，周六补这天的课：计划必须跟着挪，而且说清楚挪的是哪天。
+    private static func adjustedFixture() -> NativeScheduleSnapshot {
+        let base = multiCourseFixture()
+        let adjustments = CalendarAdjustmentResolver.index(
+            [
+                CalendarAdjustment(date: "2026-09-16", kind: .off, source: nil, note: "国庆节"),
+                CalendarAdjustment(date: "2026-09-19", kind: .swap, source: "2026-09-16", note: ""),
+            ],
+            semesterStartMonday: "2026-08-31"
+        )
+        return NativeScheduleSnapshot(
+            completeSemester: true,
+            source: .cache,
+            periods: base.periods,
+            data: base.data,
+            calendar: NativeScheduleCalendar(
+                currentSemester: "2026-2027-1", currentWeek: 3,
+                weeks: base.calendar?.weeks ?? [],
+                adjustments: adjustments
             ),
             auth: NativeScheduleAuth(authenticated: true)
         )

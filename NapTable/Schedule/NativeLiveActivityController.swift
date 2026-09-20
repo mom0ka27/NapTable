@@ -428,6 +428,7 @@ final class NativeLiveActivityController: ObservableObject {
             nextCourseStart: state.nextCourseStart,
             nextCourseEnd: state.nextCourseEnd,
             sourceLabel: state.sourceLabel,
+            adjustmentNote: state.adjustmentNote,
             updatedAt: updatedAt
         )
     }
@@ -647,6 +648,7 @@ final class NativeLiveActivityController: ObservableObject {
             nextCourseStart: occurrence.next?.start,
             nextCourseEnd: occurrence.next?.end,
             sourceLabel: sourceLabel,
+            adjustmentNote: occurrence.adjustmentNote.trimmedNonEmpty,
             updatedAt: updatedAt
         )
     }
@@ -825,7 +827,8 @@ final class NativeLiveActivityController: ObservableObject {
             week: occurrence.week,
             isInProgress: false,
             next: follower(next, after: occurrence),
-            weekRangeLabel: occurrence.weekRangeLabel
+            weekRangeLabel: occurrence.weekRangeLabel,
+            adjustmentNote: occurrence.adjustmentNote
         )
     }
 
@@ -859,6 +862,9 @@ final class NativeLiveActivityController: ObservableObject {
         let isInProgress: Bool
         let next: NextCourse?
         let weekRangeLabel: String
+        /// 这一天的调休说明。补课那天要说清楚上的是哪天的课，否则锁屏上是
+        /// 一节看起来不该存在的课。
+        let adjustmentNote: String
     }
 
     /// 今天第一节课的开始时间；今天没有课就是 `nil`。
@@ -930,7 +936,8 @@ final class NativeLiveActivityController: ObservableObject {
                                 week: week.week,
                                 isInProgress: false,
                                 next: nil,
-                                weekRangeLabel: course.weeks.trimmedNonEmpty ?? ""
+                                weekRangeLabel: course.weeks.trimmedNonEmpty ?? "",
+                                adjustmentNote: adjustment?.detail ?? ""
                             )
                         }
                     }
@@ -954,7 +961,8 @@ final class NativeLiveActivityController: ObservableObject {
                 week: current.week,
                 isInProgress: true,
                 next: Self.follower(events.dropFirst(index + 1).first, after: current),
-                weekRangeLabel: current.weekRangeLabel
+                weekRangeLabel: current.weekRangeLabel,
+                adjustmentNote: current.adjustmentNote
             )
         }
         let upcoming = events[0]
@@ -971,7 +979,8 @@ final class NativeLiveActivityController: ObservableObject {
             week: upcoming.week,
             isInProgress: false,
             next: next,
-            weekRangeLabel: upcoming.weekRangeLabel
+            weekRangeLabel: upcoming.weekRangeLabel,
+            adjustmentNote: upcoming.adjustmentNote
         )
     }
 

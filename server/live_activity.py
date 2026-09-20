@@ -506,7 +506,7 @@ class LiveActivityService:
         self._ensure_broadcast_plan(now)
         with self.lock:
             rows = self.db.execute(
-                "SELECT p.*, d.start_token, d.environment, d.enabled, d.broadcast_enabled, d.bundle_id FROM la_plan p JOIN la_devices d"
+                "SELECT p.*, d.start_token, d.environment, d.enabled, d.broadcast_enabled, d.bundle_id, d.time_zone FROM la_plan p JOIN la_devices d"
                 " ON d.device_id=p.device_id WHERE p.state='pending' AND p.fire_at <= ? AND p.next_attempt_at <= ?"
                 " AND p.claimed_until <= ? ORDER BY p.fire_at LIMIT 200", (now, now, now)).fetchall()
             broadcast_rows = self.db.execute(
@@ -535,8 +535,9 @@ class LiveActivityService:
         results = []
         for row in broadcast_rows:
             results.append(self._dispatch_broadcast(dict(row), now))
+        off_dates = self.off_dates() if rows else frozenset()
         for row in rows:
-            results.append(self._dispatch(dict(row), now))
+            results.append(self._dispatch(dict(row), now, off_dates))
         return results
 
     def _dispatch_broadcast(self, row, now):
@@ -558,7 +559,47 @@ class LiveActivityService:
             return self._retry_broadcast(row, now, detail)
         return self._finish_broadcast(row["channel_id"], row["event_id"], "failed", detail)
 
-    def _dispatch(self, row, now):
+    def off_dates(self):
+        """Dates the global 调休 table turned into a holiday.
+
+        A plan is rendered by the app and can be days old, so an arrangement
+        published after the upload would otherwise be pushed as a normal class.
+        """
+        with self.lock:
+            # The service also runs against a database that only holds the Live
+            # Activity tables, so the calendar may simply not be there.
+            if not self.db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='global_calendar'").fetchone():
+                return frozenset()
+            row = self.db.execute("SELECT adjustments_json FROM global_calendar WHERE id=1").fetchone()
+        if row is None:
+            return frozenset()
+        try:
+            items = json.loads(row[0] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return frozenset()
+        return frozenset(str(item.get("date")) for item in items
+                         if isinstance(item, dict) and item.get("kind") == "off")
+
+    @staticmethod
+    def _school_day(row, payload):
+        """The day this push belongs to, as the device's calendar sees it."""
+        attributes = payload.get("attributes")
+        if isinstance(attributes, dict) and attributes.get("dateKey"):
+            return str(attributes["dateKey"])
+        state = payload.get("contentState") or {}
+        stamp = state.get("startDate")
+        if not isinstance(stamp, (int, float)):
+            stamp = row["fire_at"]
+        zone = timezone.utc
+        if ZoneInfo:
+            try:
+                zone = ZoneInfo(row.get("time_zone") or "Asia/Shanghai")
+            except Exception:
+                zone = timezone.utc
+        return datetime.fromtimestamp(float(stamp), timezone.utc).astimezone(zone).date().isoformat()
+
+    def _dispatch(self, row, now, off_dates=None):
         device_id, item_id, event = row["device_id"], row["item_id"], row["event"]
         with self.lock:
             current = self.db.execute(
@@ -578,6 +619,12 @@ class LiveActivityService:
         if self.client is None:
             return self._retry(row, now, "APNs is not configured")
         payload = json.loads(row["payload_json"])
+        # An `end` still goes out on a holiday: it only dismisses whatever is
+        # on the Lock Screen, which is never the wrong thing to do.
+        if event != "end":
+            dates = self.off_dates() if off_dates is None else off_dates
+            if dates and self._school_day(row, payload) in dates:
+                return self._finish(device_id, item_id, "skipped", "调休放假，这一天不推送", row["revision"])
         if event == "start":
             token = row["start_token"]
             if not token:

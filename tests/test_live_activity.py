@@ -164,6 +164,51 @@ class ServiceTests(unittest.TestCase):
         self.service.dispatch_due()
         self.assertEqual(len(self.client.sent), 1)
 
+    # -- 调休 --------------------------------------------------------------
+
+    def calendar(self, adjustments):
+        """Give this service the global 调休 table the real server keeps."""
+        self.db.execute("CREATE TABLE IF NOT EXISTS global_calendar (id INTEGER PRIMARY KEY CHECK(id=1),"
+                        " version INTEGER NOT NULL DEFAULT 1, adjustments_json TEXT NOT NULL DEFAULT '[]',"
+                        " updated_at TEXT NOT NULL DEFAULT '')")
+        self.db.execute("INSERT INTO global_calendar (id,adjustments_json) VALUES (1,?)"
+                        " ON CONFLICT(id) DO UPDATE SET adjustments_json=excluded.adjustments_json",
+                        (json.dumps(adjustments),))
+        self.db.commit()
+
+    def test_a_holiday_added_after_the_upload_suppresses_the_start(self):
+        self.plan([item("a", 1_700_000_000)])
+        self.calendar([{"date": ATTRIBUTES["dateKey"], "kind": "off", "note": "国庆节"}])
+        results = self.service.dispatch_due()
+        self.assertEqual(results[0]["state"], "skipped")
+        self.assertIn("调休", results[0]["detail"])
+        self.assertEqual(self.client.sent, [])
+
+    def test_a_holiday_suppresses_an_update_by_its_course_date(self):
+        # An update carries no attributes, so the day comes from the course's
+        # start instant read in the device's time zone.
+        self.plan([item("a", 1_700_000_000, event="update")])
+        self.service.remember_activity(self.device["deviceID"], {"activityID": "x", "updateToken": "ff01"})
+        self.calendar([{"date": "2023-11-15", "kind": "off", "note": "校庆"}])
+        results = self.service.dispatch_due()
+        self.assertEqual(results[0]["state"], "skipped")
+        self.assertEqual(self.client.sent, [])
+
+    def test_a_holiday_still_dismisses_a_running_activity(self):
+        self.plan([item("a", 1_700_000_000, event="end")])
+        self.service.remember_activity(self.device["deviceID"], {"activityID": "x", "updateToken": "ff01"})
+        self.calendar([{"date": "2023-11-15", "kind": "off", "note": "校庆"}])
+        results = self.service.dispatch_due()
+        self.assertEqual(results[0]["state"], "sent")
+        self.assertEqual(len(self.client.sent), 1)
+
+    def test_a_make_up_day_is_pushed_as_usual(self):
+        self.plan([item("a", 1_700_000_000)])
+        self.calendar([{"date": ATTRIBUTES["dateKey"], "kind": "swap", "source": "2026-09-14", "note": "上周一的课"}])
+        results = self.service.dispatch_due()
+        self.assertEqual(results[0]["state"], "sent")
+        self.assertEqual(len(self.client.sent), 1)
+
     def test_an_expired_item_is_skipped_instead_of_pushed_late(self):
         self.plan([item("a", 1_700_000_000 - 600, expiresAt=1_700_000_000 - 60)])
         results = self.service.dispatch_due()

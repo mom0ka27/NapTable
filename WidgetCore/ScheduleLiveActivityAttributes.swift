@@ -35,6 +35,10 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         public let nextCourseStart: Date?
         public let nextCourseEnd: Date?
         public let sourceLabel: String?
+        /// 调休说明，例如「国庆节放假」或「上周一的课」。空表示这天照常上课。
+        /// Optional so an activity started before this field existed still
+        /// decodes.
+        public let adjustmentNote: String?
         public let updatedAt: Date
         /// Compact school broadcast marker. When present, the widget resolves
         /// the visible course from the timetable stored in the App Group.
@@ -71,8 +75,16 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
                 startDate: start,
                 endDate: end,
                 sourceLabel: sourceLabel,
+                adjustmentNote: adjustmentNote,
                 updatedAt: endDate
             )
+        }
+
+        /// 调休说明，去掉空白后为空就当没有。
+        public var normalizedAdjustmentNote: String? {
+            guard let value = adjustmentNote?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
         }
 
         /// A break can be hours long, where a minutes-only timer would read
@@ -107,6 +119,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             nextCourseStart: Date? = nil,
             nextCourseEnd: Date? = nil,
             sourceLabel: String? = nil,
+            adjustmentNote: String? = nil,
             updatedAt: Date = .now,
             broadcastDateKey: String? = nil,
             broadcastPeriod: Int? = nil,
@@ -131,6 +144,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             self.nextCourseStart = nextCourseStart
             self.nextCourseEnd = nextCourseEnd
             self.sourceLabel = sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.adjustmentNote = adjustmentNote?.trimmingCharacters(in: .whitespacesAndNewlines)
             self.updatedAt = updatedAt
             self.broadcastDateKey = broadcastDateKey
             self.broadcastPeriod = broadcastPeriod
@@ -152,7 +166,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             case phase, courseName, teacher, location, periodLabel, dateLabel, weekRangeLabel
             case startDate, endDate, nextCourseName, nextCoursePeriod, nextCourseDateLabel
             case nextCourseWeekRangeLabel, nextCourseTeacher, nextCourseLocation
-            case nextCourseStart, nextCourseEnd, sourceLabel, updatedAt
+            case nextCourseStart, nextCourseEnd, sourceLabel, adjustmentNote, updatedAt
             case broadcastDateKey, broadcastPeriod, broadcastPhase, broadcastTimestamp
         }
 
@@ -188,6 +202,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             nextCourseStart = try values.decodeIfPresent(Double.self, forKey: .nextCourseStart).map(Self.instant)
             nextCourseEnd = try values.decodeIfPresent(Double.self, forKey: .nextCourseEnd).map(Self.instant)
             sourceLabel = try values.decodeIfPresent(String.self, forKey: .sourceLabel)
+            adjustmentNote = try values.decodeIfPresent(String.self, forKey: .adjustmentNote)
             updatedAt = try values.decodeIfPresent(Double.self, forKey: .updatedAt).map(Self.instant) ?? fallback
             broadcastDateKey = try values.decodeIfPresent(String.self, forKey: .broadcastDateKey)
             broadcastPeriod = try values.decodeIfPresent(Int.self, forKey: .broadcastPeriod)
@@ -215,6 +230,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             try values.encodeIfPresent(nextCourseStart?.timeIntervalSince1970, forKey: .nextCourseStart)
             try values.encodeIfPresent(nextCourseEnd?.timeIntervalSince1970, forKey: .nextCourseEnd)
             try values.encodeIfPresent(sourceLabel, forKey: .sourceLabel)
+            try values.encodeIfPresent(adjustmentNote, forKey: .adjustmentNote)
             try values.encode(updatedAt.timeIntervalSince1970, forKey: .updatedAt)
             try values.encodeIfPresent(broadcastDateKey, forKey: .broadcastDateKey)
             try values.encodeIfPresent(broadcastPeriod, forKey: .broadcastPeriod)
