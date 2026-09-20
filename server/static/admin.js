@@ -193,6 +193,13 @@
     if (kind === "swap") value.source = row.querySelector('[data-field="source"]').value;
     return value;
   });
+  const candidateChips = (item, swap) => {
+    if (!swap || item.source || !item.candidates?.length) return "";
+    const chips = item.candidates
+      .map(date => `<button type="button" class="candidate-chip" data-date="${escapeAttr(date)}">${escapeAttr(date.slice(5))}</button>`)
+      .join("");
+    return `<span class="candidate-hint">上哪天的课由学校通知决定，常见选择：${chips}</span>`;
+  };
   const renderCalendar = () => {
     $("calendarVersion").textContent = `v${state.calendar.version || 1}`;
     const list = $("globalAdjustmentList");
@@ -201,7 +208,15 @@
       const row = document.createElement("div");
       row.className = "adjustment-row";
       const swap = item.kind === "swap";
-      row.innerHTML = `<label>日期<input data-field="date" type="date" value="${escapeAttr(item.date || "")}"></label><label>类型<select data-field="kind"><option value="off"${swap ? "" : " selected"}>放假</option><option value="swap"${swap ? " selected" : ""}>调课</option></select></label><label>上哪天的课<input data-field="source" type="date" value="${escapeAttr(item.source || "")}"${swap ? "" : " disabled"}></label><label>说明<input data-field="note" maxlength="80" placeholder="例如 国庆节" value="${escapeAttr(item.note || "")}"></label><button class="remove-button" type="button" aria-label="删除这条调休" title="删除调休"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg></button>`;
+      row.innerHTML = `<label>日期<input data-field="date" type="date" value="${escapeAttr(item.date || "")}"></label><label>类型<select data-field="kind"><option value="off"${swap ? "" : " selected"}>放假</option><option value="swap"${swap ? " selected" : ""}>调课</option></select></label><label>上哪天的课<input data-field="source" type="date" value="${escapeAttr(item.source || "")}"${swap ? "" : " disabled"}>${candidateChips(item, swap)}</label><label>说明<input data-field="note" maxlength="80" placeholder="例如 国庆节" value="${escapeAttr(item.note || "")}"></label><button class="remove-button" type="button" aria-label="删除这条调休" title="删除调休"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg></button>`;
+      if (swap && !item.source) row.classList.add("needs-source");
+      row.querySelectorAll(".candidate-chip").forEach(chip => {
+        chip.onclick = () => {
+          row.querySelector('[data-field="source"]').value = chip.dataset.date;
+          state.calendar.adjustments = adjustmentRows();
+          renderCalendar();
+        };
+      });
       row.querySelector('[data-field="kind"]').onchange = () => { state.calendar.adjustments = adjustmentRows(); renderCalendar(); };
       row.querySelector(".remove-button").onclick = () => {
         state.calendar.adjustments = adjustmentRows();
@@ -327,6 +342,30 @@
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
+  const importCalendar = async () => {
+    const button = $("importCalendarButton");
+    setLoading(button, true);
+    try {
+      const result = await request("/v1/admin/calendar/import", { method: "POST", body: JSON.stringify({}) });
+      const current = adjustmentRows();
+      const seen = new Set(current.map(item => item.date));
+      const added = (result.proposed || []).filter(item => !seen.has(item.date));
+      state.calendar.adjustments = [...current, ...added].sort((a, b) => a.date.localeCompare(b.date));
+      renderCalendar();
+      const pending = added.filter(item => item.needsSource).length;
+      const kept = (result.years || []).reduce((sum, year) => sum + (year.kept?.length || 0), 0);
+      const note = $("calendarImportNote");
+      note.hidden = false;
+      note.textContent = added.length
+        ? `已读取 ${(result.years || []).map(year => year.year).join("、")} 年安排：新增 ${added.length} 条`
+          + (kept ? `，保留已有 ${kept} 条` : "")
+          + (pending ? `。其中 ${pending} 个补课日需要先选定上哪天的课，再点“保存调休”。` : "。确认后点“保存调休”写入。")
+        : `已读取 ${(result.years || []).map(year => year.year).join("、")} 年安排，没有新的调休需要添加。`;
+      (result.errors || []).forEach(error => notice(error, "error"));
+      if (!result.errors?.length) notice(added.length ? `导入 ${added.length} 条待确认调休` : "调休已是最新", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
   const saveApns = async () => {
     const button = $("saveApnsButton");
     setLoading(button, true);
@@ -411,6 +450,7 @@
   $("saveTermButton").onclick = saveTerm;
   $("saveSchoolButton").onclick = saveSchool;
   $("saveCalendarButton").onclick = saveCalendar;
+  $("importCalendarButton").onclick = importCalendar;
   $("saveApnsButton").onclick = saveApns;
   $("reconcileChannelsButton").onclick = reconcileChannels;
   $("refreshStatsButton").onclick = refreshStats;

@@ -57,7 +57,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 1. 在页面输入启动服务时设置的 `NAPTABLE_ADMIN_TOKEN`。
 2. 在「学校配置」中填写学校名称并维护该校共用的节次时间。
 3. 新增学期，只填写第一周周一、总周数，并将正在使用的学期设为当前学期。
-4. 在「统一调休」维护所有学校共用的放假、补班日期。
+4. 在「统一调休」维护所有学校共用的放假、补班日期；「导入国务院安排」可直接拉取当年的官方放假安排，补班日需要自己选定上哪天的课。
 5. 在「APNs 推送」保存凭据，服务端会自动为每所学校创建 production 和 sandbox 频道。
 6. 在「使用统计」查看各学校已注册且启用的去重设备数。
 
@@ -163,6 +163,17 @@ curl --fail http://127.0.0.1:8787/v1/shares/ABCD1234
 
 `off` 是这天不上课，`swap` 是这天改上 `source` 那天的课。`swap` 不写 `source`（或日期非法）会被拒绝而不是当成放假。统一调休会注入每个学校的公开学期响应，也会随分享固化下发，以兼容旧客户端并保证历史分享不漂移。
 
+### 从国务院安排导入
+
+管理页「统一调休」里的「导入国务院安排」调用 `POST /v1/admin/calendar/import`，从 [holiday-cn](https://github.com/NateScarlet/holiday-cn)（按国务院公告生成，附 CDN 镜像备用）读取当年、以及次年安排公布后的次年安排：
+
+```sh
+curl --fail-with-body -X POST http://127.0.0.1:8787/v1/admin/calendar/import \
+  -H "X-Admin-Token: $NAPTABLE_ADMIN_TOKEN" -H 'Content-Type: application/json' -d '{"years":[2026]}'
+```
+
+这个接口**只返回预览，不写库**。放假日直接给出 `off` 行；补班日只能给出 `swap` 行和 `source` 为空的 `needsSource` 标记，因为公告只说某个周末要上班，不说上哪一天的课——那是各校自己的通知。`candidates` 是同一个假期里被调休掉的工作日，管理页把它们做成可点选的建议，选定后再点「保存调休」写入。已经配置过的日期原样保留，不会被覆盖。
+
 ### 限制
 
 课程最多 600 门、序列化后不超过 256 KiB，每门必须有名称；统一调休最多 200 条。`owner` 超长截断到 40 字，留空记为「匿名」。学校名以服务端目录为准，不采信客户端上传的那一份，所以读的人看到的是「南京大学」而不是 `nju`。
@@ -219,7 +230,7 @@ curl --fail-with-body \
   --data-binary @nju-term.json
 ```
 
-统一调休写入 `/v1/admin/calendar`，统计读取 `/v1/admin/stats`，两者都需要 `X-Admin-Token`。读取公开配置：
+统一调休写入 `/v1/admin/calendar`，从国务院安排预览走 `/v1/admin/calendar/import`，统计读取 `/v1/admin/stats`，都需要 `X-Admin-Token`。读取公开配置：
 
 ```sh
 curl --fail http://127.0.0.1:8787/v1/schools

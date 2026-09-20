@@ -6,15 +6,15 @@ TLS/authentication at the edge for a public deployment.
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, secrets, sqlite3, threading, re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from pathlib import Path
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import live_activity
+    from . import holidays, live_activity
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import live_activity
+    import holidays, live_activity
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
@@ -338,6 +338,37 @@ class Store:
             self.db.execute("UPDATE school_terms SET version=version+1,updated_at=?", (stamp,))
             self.db.commit()
         return self.global_calendar()
+    def import_calendar(self, value):
+        """Preview the published arrangement against what is already stored.
+
+        Nothing is written: the admin reviews the rows, fills in which day's
+        classes each worked weekend runs, and saves through the normal path.
+        """
+        raw_years = value.get("years") if isinstance(value, dict) else None
+        if raw_years:
+            try:
+                years = sorted({int(year) for year in raw_years})
+            except (TypeError, ValueError):
+                raise ValueError("years 必须是年份列表")
+            if len(years) > 5 or any(year < 2000 or year > 2100 for year in years):
+                raise ValueError("years 超出范围")
+        else:
+            years = holidays.years_to_fetch(datetime.now(timezone(timedelta(hours=8))).date())
+        existing = self.global_calendar()["adjustments"]
+        results, errors = [], []
+        for year in years:
+            try:
+                arrangement = holidays.fetch_year(year)
+            except holidays.HolidayError as error:
+                errors.append(str(error))
+                continue
+            plan = holidays.plan(arrangement["days"], existing)
+            results.append({"year": year, "source": arrangement["source"],
+                            "papers": arrangement["papers"], **plan})
+        if not results and errors:
+            raise ValueError("；".join(errors))
+        return {"years": results, "errors": errors,
+                "proposed": [row for item in results for row in item["proposed"]]}
     def schools(self):
         with self.lock:
             # Keep the historical demo school first for older clients; shared
@@ -546,6 +577,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
                     return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.save_global_calendar(self.body()))
+            if path == "/v1/admin/calendar/import":
+                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
+                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
+                    return self.send_json(403, {"error": "admin token required"})
+                return self.send_json(200, self.store.import_calendar(self.body()))
             if path == "/v1/shares": return self.send_json(201,self.store.create(self.body()))
             if path.startswith("/v1/shares/") and path.endswith("/resync"):
                 code=path[len("/v1/shares/"):-len("/resync")]

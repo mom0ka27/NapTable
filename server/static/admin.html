@@ -188,7 +188,8 @@
           <button id="saveCalendarButton" class="button primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>保存调休</button>
         </div>
         <section class="settings-panel calendar-panel">
-          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="importCalendarButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入国务院安排</button><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div id="calendarImportNote" class="inline-empty" hidden></div>
           <div id="globalAdjustmentList" class="adjustment-list"></div>
           <div id="globalAdjustmentEmpty" class="inline-empty">尚未配置统一调休</div>
         </section>
