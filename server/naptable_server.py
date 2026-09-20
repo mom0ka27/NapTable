@@ -7,6 +7,7 @@ TLS/authentication at the edge for a public deployment.
 from __future__ import annotations
 import argparse, hashlib, json, os, secrets, sqlite3, threading, re
 from datetime import datetime, timedelta, timezone
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from pathlib import Path
@@ -41,6 +42,10 @@ CREATE TABLE IF NOT EXISTS global_calendar (
  id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 1,
  adjustments_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_sessions (
+ token_hash TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
+ created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS shares (
  code TEXT PRIMARY KEY, write_token_hash TEXT NOT NULL, owner TEXT NOT NULL,
  school_id TEXT NOT NULL, school_name TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -51,6 +56,12 @@ CREATE TABLE IF NOT EXISTS shares (
 """
 
 def now(): return datetime.now(timezone.utc).isoformat()
+
+# The console keeps its session in a cookie so a page reload does not ask for
+# the token again. It is bound to the admin token in force when it was issued,
+# so rotating NAPTABLE_ADMIN_TOKEN signs every console out.
+ADMIN_COOKIE = "naptable_admin"
+ADMIN_SESSION_TTL = timedelta(hours=12)
 
 # A share is handed back in one response and installed as one table, so the
 # payload is bounded here rather than left to whatever a client uploads.
@@ -160,6 +171,38 @@ class Store:
             self.db.commit(); self.seed(); self._migrate_configuration_model()
     def close(self):
         with self.lock: self.db.close()
+    @staticmethod
+    def _digest(value): return hashlib.sha256(value.encode()).hexdigest()
+    def create_admin_session(self, secret, ttl=ADMIN_SESSION_TTL):
+        raw = secrets.token_urlsafe(32)
+        stamp = datetime.now(timezone.utc)
+        with self.lock:
+            self.db.execute("DELETE FROM admin_sessions WHERE expires_at<=?", (stamp.isoformat(),))
+            self.db.execute("INSERT INTO admin_sessions (token_hash,secret_hash,created_at,expires_at) VALUES (?,?,?,?)",
+                            (self._digest(raw), self._digest(secret), stamp.isoformat(), (stamp + ttl).isoformat()))
+            self.db.commit()
+        return raw
+    def admin_session_valid(self, raw, secret, ttl=ADMIN_SESSION_TTL):
+        """Accept a console session cookie, sliding its expiry so an admin who
+        keeps working is not signed out mid-edit."""
+        if not raw or not secret: return False
+        digest = self._digest(raw)
+        stamp = datetime.now(timezone.utc)
+        with self.lock:
+            row = self.db.execute("SELECT secret_hash,expires_at FROM admin_sessions WHERE token_hash=?", (digest,)).fetchone()
+            if not row: return False
+            if row["expires_at"] <= stamp.isoformat() or not secrets.compare_digest(row["secret_hash"], self._digest(secret)):
+                self.db.execute("DELETE FROM admin_sessions WHERE token_hash=?", (digest,))
+                self.db.commit()
+                return False
+            self.db.execute("UPDATE admin_sessions SET expires_at=? WHERE token_hash=?", ((stamp + ttl).isoformat(), digest))
+            self.db.commit()
+        return True
+    def delete_admin_session(self, raw):
+        if not raw: return
+        with self.lock:
+            self.db.execute("DELETE FROM admin_sessions WHERE token_hash=?", (self._digest(raw),))
+            self.db.commit()
     def apns_config(self):
         """Return the WebUI-managed APNs settings, or None before first save."""
         with self.lock:
@@ -504,8 +547,34 @@ class Handler(BaseHTTPRequestHandler):
     store=None
     live_activity=None
     def log_message(self, fmt, *args): return
-    def send_json(self, status, value):
-        data=json.dumps(value,ensure_ascii=False).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data))); self.end_headers(); self.wfile.write(data)
+    def send_json(self, status, value, headers=()):
+        data=json.dumps(value,ensure_ascii=False).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data)))
+        for name, header_value in headers: self.send_header(name, header_value)
+        self.end_headers(); self.wfile.write(data)
+    def admin_secret(self): return os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
+    def cookie(self, name):
+        jar = SimpleCookie()
+        try: jar.load(self.headers.get("Cookie", ""))
+        except CookieError: return ""
+        found = jar.get(name)
+        return found.value if found else ""
+    def same_origin(self):
+        """The session cookie is only honoured on same-origin requests, so a
+        third-party page cannot ride a signed-in admin's session."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site: return site in ("same-origin", "none")
+        origin = self.headers.get("Origin")
+        if not origin: return True  # not a browser request
+        return urlparse(origin).netloc == self.headers.get("Host", "")
+    def require_admin(self):
+        secret = self.admin_secret()
+        if not secret: return False
+        if secrets.compare_digest(self.headers.get("X-Admin-Token", ""), secret): return True
+        return self.same_origin() and self.store.admin_session_valid(self.cookie(ADMIN_COOKIE), secret)
+    def session_cookie(self, value, max_age):
+        parts = [f"{ADMIN_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
+        if self.headers.get("X-Forwarded-Proto", "").lower() == "https": parts.append("Secure")
+        return "; ".join(parts)
     def send_file(self, path, content_type):
         try: data = path.read_bytes()
         except OSError: return self.send_json(404, {"error": "not found"})
@@ -523,18 +592,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/static/admin.css": return self.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8")
         if path == "/static/admin.js": return self.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8")
         if path == "/health": return self.send_json(200,{"ok":True})
+        if path == "/v1/admin/session":
+            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
+            return self.send_json(200, {"authenticated": True})
         if path == "/v1/admin/apns":
-            admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-            if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
-                return self.send_json(403, {"error": "admin token required"})
+            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
             return self.send_json(200, self.store.apns_config() or {
                 "keyPath": "", "keyID": "", "teamID": "", "bundleID": "",
                 "tickSeconds": 5, "channels": {}, "updatedAt": None,
             })
         if path in ("/v1/admin/calendar", "/v1/admin/stats"):
-            admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-            if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
-                return self.send_json(403, {"error": "admin token required"})
+            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
             value = self.store.global_calendar() if path.endswith("/calendar") else self.store.usage_stats()
             return self.send_json(200, value)
         if path == "/v1/schools": return self.send_json(200,{"schools":self.store.schools()})
@@ -549,10 +617,16 @@ class Handler(BaseHTTPRequestHandler):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "POST", path): return
         try:
-            if path == "/v1/admin/apns":
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
+            if path == "/v1/admin/session":
+                secret = self.admin_secret()
+                supplied = str(self.body().get("token", ""))
+                if not secret or not secrets.compare_digest(supplied, secret):
                     return self.send_json(403, {"error": "admin token required"})
+                cookie = self.session_cookie(self.store.create_admin_session(secret),
+                                             int(ADMIN_SESSION_TTL.total_seconds()))
+                return self.send_json(200, {"authenticated": True}, [("Set-Cookie", cookie)])
+            if path == "/v1/admin/apns":
+                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 candidate = self.body()
                 # Parse the key before writing, so a typo cannot replace a
                 # working configuration with one that the dispatcher cannot use.
@@ -565,22 +639,16 @@ class Handler(BaseHTTPRequestHandler):
                 value["channelSync"] = {"created": sync["created"], "errors": sync["errors"]}
                 return self.send_json(200, value)
             if path == "/v1/admin/apns/reconcile":
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
-                    return self.send_json(403, {"error": "admin token required"})
+                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 sync = self.store.reconcile_apns_channels(getattr(self.live_activity, "client", None))
                 if self.live_activity is not None and sync.get("config"):
                     live_activity.apply_config(self.live_activity, sync["config"])
                 return self.send_json(200, sync)
             if path == "/v1/admin/calendar":
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
-                    return self.send_json(403, {"error": "admin token required"})
+                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.save_global_calendar(self.body()))
             if path == "/v1/admin/calendar/import":
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
-                    return self.send_json(403, {"error": "admin token required"})
+                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.import_calendar(self.body()))
             if path == "/v1/shares": return self.send_json(201,self.store.create(self.body()))
             if path.startswith("/v1/shares/") and path.endswith("/resync"):
@@ -588,8 +656,7 @@ class Handler(BaseHTTPRequestHandler):
                 value=self.store.resync(code,self.headers.get("X-Write-Token",""))
                 return self.send_json(200,value) if value else self.send_json(403,{"error":"invalid write token"})
             if path.startswith("/v1/schools/"):
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin):
+                if not self.require_admin():
                     return self.send_json(403,{"error":"school template is read-only without admin token"})
                 value=self.body(); value["id"]=path.rsplit("/",1)[-1]
                 saved = self.store.save_school(value)
@@ -598,8 +665,7 @@ class Handler(BaseHTTPRequestHandler):
                     if sync.get("config"): live_activity.apply_config(self.live_activity, sync["config"])
                 return self.send_json(200, saved)
             if path.startswith("/v1/admin/schools/") and path.endswith("/terms"):
-                admin = os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
-                if not admin or not secrets.compare_digest(self.headers.get("X-Admin-Token", ""), admin): return self.send_json(403,{"error":"admin token required"})
+                if not self.require_admin(): return self.send_json(403,{"error":"admin token required"})
                 school_id = path.split("/")[4]; value=self.body(); required=[value.get("id"),value.get("semesterStartMonday"),value.get("weekCount"),value.get("timezone")]
                 if not all(required): return self.send_json(400,{"error":"term id, semesterStartMonday, weekCount and timezone are required"})
                 if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", str(value["id"])):
@@ -649,6 +715,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "DELETE", path): return
+        if path == "/v1/admin/session":
+            self.store.delete_admin_session(self.cookie(ADMIN_COOKIE))
+            return self.send_json(200, {"authenticated": False}, [("Set-Cookie", self.session_cookie("", 0))])
         token=self.headers.get("X-Write-Token","")
         if path.startswith("/v1/shares/"): return self.send_json(200,{"revoked":True}) if self.store.revoke(path.rsplit("/",1)[-1],token) else self.send_json(403,{"error":"invalid write token"})
         self.send_json(404,{"error":"not found"})

@@ -1,4 +1,5 @@
 import http.client, json, os, sqlite3, tempfile, threading, unittest
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -138,3 +139,85 @@ class ServerTests(unittest.TestCase):
         r=urlopen(Request(self.base+path,method=method));
         with r: return dict(r.headers)
 if __name__=='__main__': unittest.main()
+
+
+class AdminSessionTests(unittest.TestCase):
+    """The console exchanges the admin token for a cookie so a page reload does
+    not ask for it again."""
+
+    def setUp(self):
+        self.db = tempfile.NamedTemporaryFile(suffix='.sqlite3')
+        Handler.store = Store(self.db.name); Handler.live_activity = None
+        self.http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.thread = threading.Thread(target=self.http.serve_forever); self.thread.start()
+        self.previous = os.environ.get('NAPTABLE_ADMIN_TOKEN')
+        os.environ['NAPTABLE_ADMIN_TOKEN'] = 'admin-test'
+
+    def tearDown(self):
+        if self.previous is None: os.environ.pop('NAPTABLE_ADMIN_TOKEN', None)
+        else: os.environ['NAPTABLE_ADMIN_TOKEN'] = self.previous
+        self.http.shutdown(); self.http.server_close(); self.thread.join(timeout=2)
+        Handler.store.close(); self.db.close()
+
+    def raw(self, method, path, value=None, headers=None):
+        body = None if value is None else json.dumps(value).encode()
+        head = {'Content-Type': 'application/json'}; head.update(headers or {})
+        connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=5)
+        try:
+            connection.request(method, path, body=body, headers=head)
+            response = connection.getresponse()
+            payload = response.read()
+            return response.status, dict(response.getheaders()), json.loads(payload) if payload else {}
+        finally:
+            connection.close()
+
+    def sign_in(self, token='admin-test'):
+        status, headers, _ = self.raw('POST', '/v1/admin/session', {'token': token})
+        return status, headers.get('Set-Cookie', '')
+
+    def test_sign_in_issues_a_scoped_cookie_that_authenticates_later_requests(self):
+        status, cookie = self.sign_in()
+        self.assertEqual(status, 200)
+        self.assertIn('HttpOnly', cookie)
+        self.assertIn('SameSite=Strict', cookie)
+        self.assertIn('Path=/', cookie)
+        session = cookie.split(';')[0]
+        self.assertEqual(self.raw('GET', '/v1/admin/session', headers={'Cookie': session})[0], 200)
+        self.assertEqual(self.raw('GET', '/v1/admin/calendar', headers={'Cookie': session})[0], 200)
+        self.assertEqual(self.raw('POST', '/v1/admin/calendar', {'adjustments': []}, {'Cookie': session})[0], 200)
+
+    def test_a_wrong_token_is_refused_and_sets_no_cookie(self):
+        status, cookie = self.sign_in('nope')
+        self.assertEqual(status, 403)
+        self.assertEqual(cookie, '')
+        self.assertEqual(self.raw('GET', '/v1/admin/session')[0], 403)
+
+    def test_the_cookie_is_ignored_on_a_cross_site_request(self):
+        session = self.sign_in()[1].split(';')[0]
+        for headers in ({'Cookie': session, 'Sec-Fetch-Site': 'cross-site'},
+                        {'Cookie': session, 'Origin': 'https://evil.example'}):
+            self.assertEqual(self.raw('POST', '/v1/admin/calendar', {'adjustments': []}, headers)[0], 403)
+
+    def test_sign_out_revokes_the_session(self):
+        session = self.sign_in()[1].split(';')[0]
+        status, headers, _ = self.raw('DELETE', '/v1/admin/session', headers={'Cookie': session})
+        self.assertEqual(status, 200)
+        self.assertIn('Max-Age=0', headers.get('Set-Cookie', ''))
+        self.assertEqual(self.raw('GET', '/v1/admin/session', headers={'Cookie': session})[0], 403)
+
+    def test_rotating_the_admin_token_invalidates_existing_sessions(self):
+        session = self.sign_in()[1].split(';')[0]
+        os.environ['NAPTABLE_ADMIN_TOKEN'] = 'admin-rotated'
+        self.assertEqual(self.raw('GET', '/v1/admin/session', headers={'Cookie': session})[0], 403)
+
+    def test_an_expired_session_is_refused(self):
+        session = self.sign_in()[1].split(';')[0]
+        expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        with Handler.store.lock:
+            Handler.store.db.execute('UPDATE admin_sessions SET expires_at=?', (expired,))
+            Handler.store.db.commit()
+        self.assertEqual(self.raw('GET', '/v1/admin/session', headers={'Cookie': session})[0], 403)
+
+    def test_the_header_still_works_for_non_browser_clients(self):
+        self.assertEqual(self.raw('GET', '/v1/admin/calendar', headers={'X-Admin-Token': 'admin-test'})[0], 200)
+        self.assertEqual(self.raw('GET', '/v1/admin/calendar')[0], 403)

@@ -1,6 +1,6 @@
 (() => {
   const state = {
-    token: "", schools: [], school: null, term: null, apns: null,
+    authenticated: false, schools: [], school: null, term: null, apns: null,
     calendar: { version: 1, adjustments: [] }, stats: { totalUsers: 0, schools: [] }, view: "schools"
   };
   const $ = id => document.getElementById(id);
@@ -22,8 +22,7 @@
   };
   const request = async (path, options = {}) => {
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-    if (state.token) headers["X-Admin-Token"] = state.token;
-    const response = await fetch(path, { ...options, headers });
+    const response = await fetch(path, { credentials: "same-origin", ...options, headers });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     return data;
@@ -56,7 +55,7 @@
     state.view = view;
     document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view));
     document.querySelectorAll(".content-view").forEach(element => {
-      element.hidden = !state.token || element.id !== `${view}View`;
+      element.hidden = !state.authenticated || element.id !== `${view}View`;
     });
     $("pageTitle").textContent = viewCopy[view][0];
     $("breadcrumbCurrent").textContent = viewCopy[view][0];
@@ -411,32 +410,54 @@
     document.querySelector(".metadata-section").open = true;
     notice("学校已加入编辑区，请保存学校配置", "success");
   };
+  const loadConsole = async () => {
+    const [catalogue, apns, calendar, stats] = await Promise.all([
+      request("/v1/schools"), request("/v1/admin/apns"), request("/v1/admin/calendar"), request("/v1/admin/stats")
+    ]);
+    state.authenticated = true;
+    state.schools = catalogue.schools || [];
+    state.school = null; state.term = null; state.calendar = calendar; state.stats = stats;
+    $("saveApnsButton").disabled = false; $("saveCalendarButton").disabled = false;
+    fillApns(apns); renderCalendar(); renderStats(); renderSchools(); updateMetrics(); updateConnectionUI(true);
+  };
+  const signedOut = () => {
+    state.authenticated = false; state.schools = []; state.school = null; state.term = null;
+    $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
+    updateConnectionUI(false);
+  };
   const connect = async event => {
     event?.preventDefault();
-    state.token = $("adminToken").value.trim();
-    if (!state.token) return;
+    const token = $("adminToken").value.trim();
+    if (!token) return;
     const button = $("connectButton");
     setLoading(button, true); notice("正在读取服务配置…");
     try {
-      const [catalogue, apns, calendar, stats] = await Promise.all([
-        request("/v1/schools"), request("/v1/admin/apns"), request("/v1/admin/calendar"), request("/v1/admin/stats")
-      ]);
-      state.schools = catalogue.schools || [];
-      state.school = null; state.term = null; state.calendar = calendar; state.stats = stats;
-      $("saveApnsButton").disabled = false; $("saveCalendarButton").disabled = false;
-      fillApns(apns); renderCalendar(); renderStats(); renderSchools(); updateMetrics(); updateConnectionUI(true);
+      // The token is exchanged for an HttpOnly session cookie and then dropped,
+      // so a reload restores the console without asking for it again.
+      await request("/v1/admin/session", { method: "POST", body: JSON.stringify({ token }) });
+      $("adminToken").value = "";
+      await loadConsole();
       notice(`已读取 ${state.schools.length} 所学校`, "success");
     } catch (error) {
-      state.token = "";
-      $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
-      updateConnectionUI(false);
+      signedOut();
       notice(error.message === "admin token required" ? "管理员令牌无效" : error.message, "error");
     } finally { setLoading(button, false); }
   };
-  const disconnect = () => {
-    state.token = ""; state.schools = []; state.school = null; state.term = null;
-    $("adminToken").value = ""; $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
-    updateConnectionUI(false); notice("管理会话已断开", "success"); $("adminToken").focus();
+  const restore = async () => {
+    try {
+      await request("/v1/admin/session");
+    } catch { return signedOut(); }
+    try {
+      await loadConsole();
+    } catch (error) {
+      signedOut();
+      notice(error.message, "error");
+    }
+  };
+  const disconnect = async () => {
+    try { await request("/v1/admin/session", { method: "DELETE" }); } catch { /* the cookie is dropped either way */ }
+    $("adminToken").value = "";
+    signedOut(); notice("管理会话已断开", "success"); $("adminToken").focus();
   };
 
   document.querySelectorAll(".nav-item").forEach(item => { item.onclick = () => showView(item.dataset.view); });
@@ -478,4 +499,5 @@
   $("sidebarScrim").onclick = () => document.body.classList.remove("nav-open");
   $("newSchoolDialog").addEventListener("click", event => { if (event.target === $("newSchoolDialog")) $("newSchoolDialog").close(); });
   updateConnectionUI(false);
+  restore();
 })();
