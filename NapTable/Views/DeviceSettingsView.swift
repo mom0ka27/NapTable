@@ -602,24 +602,16 @@ struct LiveActivitySettingsScreen: View {
 }
 
 /// Server driven start. Separate from the rest of the screen because it is the
-/// only part that needs a reachable NapTable server with an APNs key.
+/// only part that needs a reachable NapTable server with an APNs key. It has no
+/// switch of its own: the Live Activity toggle above turns it on.
 @available(iOS 17.2, *)
 private struct LiveActivityPushSection: View {
     let enabled: Bool
     @ObservedObject private var service = LiveActivityPushService.shared
-    @State private var pushEnabled = LiveActivityPushService.shared.isEnabled
 
     var body: some View {
         Section {
-            Toggle("由服务端推送启动", isOn: Binding(
-                get: { pushEnabled },
-                set: { value in
-                    pushEnabled = value
-                    LiveActivityPushService.shared.setEnabled(value)
-                }
-            ))
-            .disabled(!enabled)
-            if pushEnabled {
+            if enabled {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: symbol)
                         .foregroundStyle(color)
@@ -644,11 +636,9 @@ private struct LiveActivityPushSection: View {
         } header: {
             Text("不打开 App 也出现")
         } footer: {
-            Text("开启后把接下来一周的课程时间交给「设置 → 学校与分享」里的服务地址，"
-                 + "到点由服务端推送启动实时活动，不用先打开 App。\n"
-                 + "需要服务端配置 APNs 推送密钥；关闭后回到打开 App 才启动。")
+            Text("接下来一周的课程时间会交给 NapTable 服务端，到点由服务端推送启动实时活动，"
+                 + "不用先打开 App。服务端没有配置 APNs 推送密钥时，回到打开 App 才启动。")
         }
-        .onAppear { pushEnabled = LiveActivityPushService.shared.isEnabled }
     }
 
     private var symbol: String {

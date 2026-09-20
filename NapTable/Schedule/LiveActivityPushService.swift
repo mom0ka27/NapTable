@@ -49,9 +49,6 @@ final class LiveActivityPushService: ObservableObject {
     }
 
     static let shared = LiveActivityPushService()
-    /// Opt-in: the server has to exist, be reachable, and hold an APNs key
-    /// before any of this does anything.
-    static let enabledKey = "scheduleLiveActivityPushEnabled"
     /// The device credential lives beside the share token rather than in the
     /// App Group: only the app itself ever talks to the server.
     private static let deviceIDKey = "naptable.liveActivity.deviceID"
@@ -70,14 +67,16 @@ final class LiveActivityPushService: ObservableObject {
     @Published private(set) var status: Status = .off
 
     private let defaults = UserDefaults.standard
-    private var groupDefaults: UserDefaults? { UserDefaults(suiteName: NextWidgetConfiguration.appGroup) }
     private var startTokenTask: Task<Void, Never>?
     private var activityTask: Task<Void, Never>?
     private var tokenTasks: [String: Task<Void, Never>] = [:]
     private var uploadTask: Task<Void, Never>?
     private var pendingStartToken: String?
 
-    var isEnabled: Bool { groupDefaults?.object(forKey: Self.enabledKey) as? Bool ?? false }
+    /// Server push is not a separate feature: whoever turned Live Activities on
+    /// wants them to appear without opening the app, so this follows the single
+    /// switch the controller owns.
+    var isEnabled: Bool { NativeLiveActivityController.shared.isEnabled }
     var deviceID: String? { defaults.string(forKey: Self.deviceIDKey) }
     var channelID: String? { defaults.string(forKey: Self.channelIDKey) }
     private var secret: String? { defaults.string(forKey: Self.secretKey) }
@@ -124,8 +123,9 @@ final class LiveActivityPushService: ObservableObject {
         }
     }
 
-    func setEnabled(_ enabled: Bool) {
-        groupDefaults?.set(enabled, forKey: Self.enabledKey)
+    /// Called by the controller right after the Live Activity switch changes.
+    /// It never writes the setting itself — `isEnabled` reads the same key.
+    func enabledDidChange(_ enabled: Bool) {
         // A locally started activity is only push-updatable when it was
         // requested with a token, so the controller has to know before it
         // creates the next one.

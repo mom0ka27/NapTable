@@ -138,6 +138,11 @@ final class NativeLiveActivityController: ObservableObject {
 
     func setEnabled(_ enabled: Bool) {
         UserDefaults(suiteName: NextWidgetConfiguration.appGroup)?.set(enabled, forKey: Self.enabledKey)
+        // Server push has no switch of its own: registering here is what lets
+        // the activity appear while the app is suspended.
+        #if os(iOS)
+        if #available(iOS 17.2, *) { LiveActivityPushService.shared.enabledDidChange(enabled) }
+        #endif
         if enabled, let lastSnapshot {
             status = .waiting
             accept(lastSnapshot)

@@ -100,7 +100,7 @@ App 注册设备时会上传 `schoolID`、`termID` 和系统环境；服务端�
 
 ### 客户端流程
 
-在 App 的「设置 → 实时活动 → 由服务端推送启动」里打开。之后：
+App 的「设置 → 实时活动 → 显示实时活动」打开即生效，没有单独的推送开关。之后：
 
 1. 系统下发 push-to-start 令牌，App `POST /v1/live-activity/devices` 注册，服务端返回一次性的 `deviceID` 与 `secret`（之后所有设备接口都用 `X-Device-Secret`）。
 2. App 每次课表或实时活动设置变化时 `PUT /v1/live-activity/devices/{id}/plan` 上传计划；内容没变就不重传。
