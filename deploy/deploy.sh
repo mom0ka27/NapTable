@@ -36,6 +36,7 @@ trap cleanup EXIT
 mkdir -p "$staging_dir/bundle/server" "$staging_dir/bundle/deploy"
 cp "$root_dir/server/__init__.py" \
    "$root_dir/server/apns.py" \
+   "$root_dir/server/holidays.py" \
    "$root_dir/server/live_activity.py" \
    "$root_dir/server/naptable_server.py" \
    "$staging_dir/bundle/server/"

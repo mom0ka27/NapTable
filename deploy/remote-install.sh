@@ -72,6 +72,7 @@ tar -xzf "$archive" -C "$release_path" --no-same-owner
 
 required_files=(
     server/apns.py
+    server/holidays.py
     server/live_activity.py
     server/naptable_server.py
     server/static/admin.html
@@ -101,6 +102,7 @@ find "$release_path" -type f -exec chmod 0644 {} +
 chmod 0755 "$release_path/deploy/backup.py" "$release_path/deploy/reload-nginx-after-renewal.sh"
 /usr/bin/python3.11 -m py_compile \
     "$release_path/server/apns.py" \
+    "$release_path/server/holidays.py" \
     "$release_path/server/live_activity.py" \
     "$release_path/server/naptable_server.py"
 
