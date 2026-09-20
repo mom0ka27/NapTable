@@ -42,6 +42,13 @@ struct ChineseCalendarChecks {
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-19") == "周末快乐～", "周六的问候")
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-20") == "周末快乐～", "周日的问候")
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-18") == nil, "普通工作日不道喜")
+        // 调休：周末排了课就不道「周末快乐」
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-19", hasCourses: true) == nil, "周六调休上课不道喜")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-20", hasCourses: true) == nil, "周日调休上课不道喜")
+        expect(
+            ChineseCalendarInfo.restGreeting(forDate: "2026-09-25", hasCourses: true) == "中秋快乐～",
+            "法定假日照旧道贺"
+        )
         // 清明也是周日，假期优先，且不说「快乐」
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-04-05") == "清明安康～", "清明的问候")
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-06-19") == "端午安康～", "端午说安康")

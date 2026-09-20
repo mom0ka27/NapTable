@@ -1,0 +1,23 @@
+[Unit]
+Description=NapTable server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=naptable
+Group=naptable
+WorkingDirectory=/opt/naptable/current/server
+EnvironmentFile=/etc/naptable/naptable.env
+ExecStart=/usr/bin/python3.11 /opt/naptable/current/server/naptable_server.py --host 127.0.0.1 --port 8787 --db /var/lib/naptable/naptable.sqlite3
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/naptable
+
+[Install]
+WantedBy=multi-user.target

@@ -20,6 +20,10 @@ class FakeClient:
         self.sent.append({"token": token, "payload": payload, **kwargs})
         return self.result
 
+    def broadcast(self, channel_id, payload, **kwargs):
+        self.sent.append({"channelID": channel_id, "payload": payload, **kwargs})
+        return self.result
+
 
 def item(item_id, fire_at, event="start", **extra):
     value = {"id": item_id, "fireAt": fire_at, "event": event, "contentState": dict(STATE)}
@@ -167,12 +171,13 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("expired", results[0]["detail"])
         self.assertEqual(self.client.sent, [])
 
-    def test_start_without_a_token_is_skipped(self):
+    def test_start_without_a_token_waits_for_registration(self):
         service = live_activity.LiveActivityService(
             self.db, threading.RLock(), client=self.client, now=lambda: self.clock[0])
         device = service.register({})
         service.replace_plan(device["deviceID"], [item("a", 1_700_000_000)])
-        self.assertEqual(service.dispatch_due()[0]["state"], "skipped")
+        self.assertEqual(service.dispatch_due()[0]["state"], "retrying")
+        self.assertEqual(service.status(device["deviceID"])["pendingCount"], 1)
 
     def test_updates_use_the_registered_activity_token(self):
         device_id = self.device["deviceID"]
@@ -181,17 +186,17 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.dispatch_due()[0]["state"], "sent")
         self.assertEqual(self.client.sent[0]["token"], "ff00")
 
-    def test_update_without_an_activity_is_skipped(self):
+    def test_update_without_an_activity_waits_for_registration(self):
         self.plan([item("u", 1_700_000_000, "update")])
         result = self.service.dispatch_due()[0]
-        self.assertEqual(result["state"], "skipped")
+        self.assertEqual(result["state"], "retrying")
         self.assertIn("update token", result["detail"])
 
     def test_an_expired_activity_token_is_not_used(self):
         self.service.remember_activity(self.device["deviceID"],
                                        {"activityID": "A1", "updateToken": "ff00", "expiresAt": 1_699_999_000})
         self.plan([item("u", 1_700_000_000, "update")])
-        self.assertEqual(self.service.dispatch_due()[0]["state"], "skipped")
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "retrying")
 
     def test_a_rejected_start_token_is_dropped(self):
         self.client.result = {"ok": False, "status": 410, "reason": "Unregistered"}
@@ -213,15 +218,47 @@ class ServiceTests(unittest.TestCase):
     def test_other_failures_keep_the_token(self):
         self.client.result = {"ok": False, "status": 503, "reason": "ServiceUnavailable"}
         self.plan([item("a", 1_700_000_000)])
-        self.assertEqual(self.service.dispatch_due()[0]["state"], "failed")
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "retrying")
         self.assertTrue(self.service.status(self.device["deviceID"])["hasStartToken"])
+
+    def test_transient_failure_is_retried_after_backoff(self):
+        self.client.result = {"ok": False, "status": 503, "reason": "ServiceUnavailable"}
+        self.plan([item("a", 1_700_000_000)])
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "retrying")
+        self.client.result = {"ok": True, "status": 200, "reason": ""}
+        self.clock[0] += live_activity.RETRY_BASE_SECONDS + 1
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "sent")
+        self.assertEqual(len(self.client.sent), 2)
+
+    def test_update_waits_then_sends_when_activity_token_arrives(self):
+        self.plan([item("u", 1_700_000_000, "update")])
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "retrying")
+        self.service.remember_activity(self.device["deviceID"], {"activityID": "A1", "updateToken": "ff00"})
+        self.clock[0] += live_activity.RETRY_BASE_SECONDS + 1
+        self.assertEqual(self.service.dispatch_due()[0]["state"], "sent")
+
+    def test_old_dispatch_completion_cannot_finish_a_replaced_plan(self):
+        self.plan([item("same", 1_700_000_000)])
+        old = self.db.execute(
+            "SELECT revision FROM la_plan WHERE device_id=? AND item_id=?",
+            (self.device["deviceID"], "same"),
+        ).fetchone()[0]
+        self.plan([item("same", 1_700_000_600)])
+        result = self.service._finish(self.device["deviceID"], "same", "sent", "", old)
+        self.assertEqual(result["state"], "sent")
+        current = self.db.execute(
+            "SELECT state,revision FROM la_plan WHERE device_id=? AND item_id=?",
+            (self.device["deviceID"], "same"),
+        ).fetchone()
+        self.assertEqual(current["state"], "pending")
+        self.assertNotEqual(current["revision"], old)
 
     def test_without_apns_the_plan_is_accepted_but_nothing_is_sent(self):
         service = live_activity.LiveActivityService(self.db, threading.RLock(), client=None, now=lambda: self.clock[0])
         device = service.register({"startToken": "ab"})
         service.replace_plan(device["deviceID"], [item("a", 1_700_000_000)])
         result = service.dispatch_due()[0]
-        self.assertEqual(result["state"], "skipped")
+        self.assertEqual(result["state"], "retrying")
         self.assertIn("APNs", result["detail"])
         self.assertFalse(service.status(device["deviceID"])["pushConfigured"])
 
@@ -238,6 +275,86 @@ class ServiceTests(unittest.TestCase):
         self.service.remember_activity(device_id, {"activityID": "A1", "updateToken": "ff00"})
         self.service.forget_activity(device_id, "A1")
         self.assertEqual(self.service.status(device_id)["activityCount"], 0)
+
+    def test_school_broadcast_is_one_push_for_a_channel_and_contains_no_course(self):
+        import datetime
+        from zoneinfo import ZoneInfo
+        # The dispatcher normally wakes a few seconds after the exact bell.
+        clock = datetime.datetime(2026, 9, 18, 8, 0, 3, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        client = FakeClient()
+        with db:
+            db.executescript("""
+            CREATE TABLE school_configs (id TEXT PRIMARY KEY, periods_json TEXT);
+            CREATE TABLE school_terms (
+              school_id TEXT, term_id TEXT, version INTEGER, semester_start_monday TEXT,
+              week_count INTEGER, periods_json TEXT, timezone TEXT, note TEXT,
+              updated_at TEXT, adjustments_json TEXT, is_current INTEGER
+            );
+            CREATE TABLE global_calendar (id INTEGER PRIMARY KEY, adjustments_json TEXT);
+            INSERT INTO school_configs VALUES
+              ('nju','[{"id":1,"start":"08:00","end":"08:50"}]');
+            INSERT INTO school_terms VALUES
+              ('nju','fall',1,'2026-09-14',18,
+               '[]','Asia/Shanghai','', '', '[]', 1);
+            INSERT INTO global_calendar VALUES (1, '[]');
+            """)
+            service = live_activity.LiveActivityService(
+                db, threading.RLock(), client=client, now=lambda: clock,
+                channels={("production", "nju"): "dHN0LXNyY2gtY2hubA=="})
+            device = service.register({
+                "environment": "production", "bundleID": "b", "schoolID": "nju",
+                "termID": "fall", "supportsBroadcast": True,
+            })
+            self.assertEqual(device["channelID"], "dHN0LXNyY2gtY2hubA==")
+            results = service.dispatch_due()
+            self.assertEqual([result["state"] for result in results], ["sent"])
+            self.assertEqual(len(client.sent), 1)
+            self.assertEqual(client.sent[0]["channelID"], device["channelID"])
+            state = client.sent[0]["payload"]["aps"]["content-state"]
+            self.assertEqual(state["broadcastDateKey"], "2026-09-18")
+            self.assertEqual(state["broadcastPeriod"], 1)
+            self.assertEqual(state["broadcastPhase"], "started")
+            self.assertEqual(state["courseName"], "")
+        db.close()
+
+    def test_school_broadcast_includes_a_weekend_swap_day(self):
+        import datetime
+        from zoneinfo import ZoneInfo
+        clock = datetime.datetime(2026, 9, 20, 8, 0, 3, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        client = FakeClient()
+        with db:
+            db.executescript("""
+            CREATE TABLE school_configs (id TEXT PRIMARY KEY, periods_json TEXT);
+            CREATE TABLE school_terms (
+              school_id TEXT, term_id TEXT, version INTEGER, semester_start_monday TEXT,
+              week_count INTEGER, periods_json TEXT, timezone TEXT, note TEXT,
+              updated_at TEXT, adjustments_json TEXT, is_current INTEGER
+            );
+            CREATE TABLE global_calendar (id INTEGER PRIMARY KEY, adjustments_json TEXT);
+            INSERT INTO school_configs VALUES
+              ('nju','[{"id":1,"start":"08:00","end":"08:50"}]');
+            INSERT INTO school_terms VALUES
+              ('nju','fall',1,'2026-09-14',18,
+               '[]','Asia/Shanghai','', '', '[]', 1);
+            INSERT INTO global_calendar VALUES
+              (1, '[{"date":"2026-09-20","kind":"swap","source":"2026-09-18"}]');
+            """)
+            service = live_activity.LiveActivityService(
+                db, threading.RLock(), client=client, now=lambda: clock,
+                channels={("production", "nju"): "dHN0LXNyY2gtY2hubA=="})
+            service.register({
+                "environment": "production", "bundleID": "b", "schoolID": "nju",
+                "termID": "fall", "supportsBroadcast": True,
+            })
+            results = service.dispatch_due()
+            self.assertEqual([result["state"] for result in results], ["sent"])
+            state = client.sent[0]["payload"]["aps"]["content-state"]
+            self.assertEqual(state["broadcastDateKey"], "2026-09-20")
+        db.close()
 
     def test_activity_registration_validates_its_token(self):
         with self.assertRaises(live_activity.PlanError):

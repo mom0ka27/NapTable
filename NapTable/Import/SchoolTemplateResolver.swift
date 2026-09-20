@@ -16,6 +16,8 @@ enum SchoolTemplateResolver {
         }
         if let explicit = schedule.termID, !explicit.isEmpty {
             candidates = candidates.filter { $0.id == explicit }
+        } else if let currentTermID = school.currentTermID {
+            candidates = candidates.filter { $0.id == currentTermID }
         } else if let academic = academicTerm(in: schedule.name) {
             candidates = candidates.filter { term in
                 guard let date = WeekCalculator.parseDay(term.semesterStartMonday) else { return false }

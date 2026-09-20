@@ -530,6 +530,8 @@ class HTTP2Connection:
 
 PRODUCTION_HOST = "api.push.apple.com"
 SANDBOX_HOST = "api.sandbox.push.apple.com"
+CHANNEL_PRODUCTION_HOST = "api-manage-broadcast.push.apple.com"
+CHANNEL_SANDBOX_HOST = "api-manage-broadcast.sandbox.push.apple.com"
 MAX_PAYLOAD = 4096
 # Apple rejects a provider token younger than 20 minutes on refresh and older
 # than 60 minutes on use.
@@ -540,7 +542,7 @@ class APNsClient:
     """Sends Live Activity pushes to one bundle id, on both APNs environments."""
 
     def __init__(self, key, key_id, team_id, bundle_id, port=443, timeout=10.0,
-                 hosts=None, now=time.time):
+                 hosts=None, now=time.time, channel_hosts=None, channel_ports=None):
         self.key = key
         self.key_id = key_id
         self.team_id = team_id
@@ -548,6 +550,11 @@ class APNsClient:
         self.port = port
         self.timeout = timeout
         self.hosts = hosts or {"production": PRODUCTION_HOST, "sandbox": SANDBOX_HOST}
+        self.channel_hosts = channel_hosts or {
+            "production": CHANNEL_PRODUCTION_HOST,
+            "sandbox": CHANNEL_SANDBOX_HOST,
+        }
+        self.channel_ports = channel_ports or {"production": 2196, "sandbox": 2195}
         self.now = now
         self._lock = threading.Lock()
         self._connections = {}
@@ -614,6 +621,105 @@ class APNsClient:
             status = 200 if not response else 400
         return {"ok": status == 200, "status": status, "reason": reason}
 
+    def broadcast(self, channel_id, payload, environment="production", priority=10,
+                  expiration=0, collapse_id=None, topic=None):
+        """Broadcast one Live Activity update to a channel.
+
+        Broadcast requests use APNs' broadcast endpoint rather than the device
+        endpoint. The payload must be identical for every activity subscribed
+        to the channel; callers should put only a compact boundary signal in
+        ``content-state`` and let the widget resolve local timetable data.
+        """
+        channel_id = str(channel_id or "").strip()
+        if not channel_id:
+            return {"ok": False, "status": 0, "reason": "MissingChannelID"}
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        if len(body) > MAX_PAYLOAD:
+            return {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
+        headers = [
+            ("authorization", "bearer " + self.authorization()),
+            ("apns-channel-id", channel_id),
+            ("apns-push-type", "liveactivity"),
+            ("apns-priority", str(priority)),
+            ("apns-expiration", str(int(expiration))),
+        ]
+        if collapse_id:
+            headers.append(("apns-collapse-id", collapse_id[:64]))
+        path = "/4/broadcasts/apps/" + (topic or self.bundle_id)
+        for attempt in (0, 1):
+            connection = self._connection(environment, reset=attempt == 1)
+            try:
+                status, response = connection.request("POST", path, headers, body)
+                break
+            except (APNsError, OSError, ssl.SSLError) as error:
+                connection.close()
+                if attempt:
+                    return {"ok": False, "status": 0, "reason": f"TransportError: {error}"}
+        reason = ""
+        if response:
+            try:
+                reason = json.loads(response.decode("utf-8")).get("reason", "")
+            except (ValueError, UnicodeDecodeError):
+                reason = response[:200].decode("utf-8", "replace")
+        if status is None:
+            status = 200 if not response else 400
+        return {"ok": status == 200, "status": status, "reason": reason}
+
+    def _channel_call(self, method, suffix, environment="production", body=None, channel_id=None):
+        """Call Apple's Broadcast Channel Management API."""
+        payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+        headers = [
+            ("authorization", "bearer " + self.authorization()),
+            ("content-type", "application/json"),
+        ]
+        if channel_id: headers.append(("apns-channel-id", channel_id))
+        path = f"/1/apps/{self.bundle_id}/{suffix.lstrip('/')}"
+        for attempt in (0, 1):
+            connection = self._channel_connection(environment, reset=attempt == 1)
+            try:
+                status, response = connection.request(method, path, headers, payload)
+                break
+            except (APNsError, OSError, ssl.SSLError) as error:
+                connection.close()
+                if attempt: raise APNsError(f"channel transport error: {error}") from error
+        if status not in (200, 201, 204):
+            reason = ""
+            if response:
+                try: reason = json.loads(response.decode()).get("reason", "")
+                except (ValueError, UnicodeDecodeError): reason = response[:200].decode("utf-8", "replace")
+            raise APNsError(f"channel API returned {status or 0} {reason}".strip())
+        if not response: return None
+        try: return json.loads(response.decode())
+        except (ValueError, UnicodeDecodeError) as error: raise APNsError("invalid channel API response") from error
+
+    def list_channels(self, environment="production"):
+        value = self._channel_call("GET", "all-channels", environment=environment) or {}
+        channels = value.get("channels", []) if isinstance(value, dict) else []
+        if not isinstance(channels, list): raise APNsError("invalid channel list")
+        return [str(channel).strip() for channel in channels if str(channel).strip()]
+
+    def create_channel(self, environment="production"):
+        """Create one Live Activity channel and return its APNs channel ID.
+
+        APNs returns the ID in a response header. The minimal HTTP/2 layer only
+        decodes status headers, so a before/after list diff obtains the same ID
+        without embedding a full HPACK Huffman decoder.
+        """
+        before = set(self.list_channels(environment))
+        self._channel_call("POST", "channels", environment=environment, body={
+            "message-storage-policy": 1,
+            "push-type": "LiveActivity",
+        })
+        after = set(self.list_channels(environment))
+        created = sorted(after - before)
+        if len(created) != 1: raise APNsError("APNs did not return one new channel")
+        return created[0]
+
+    def delete_channel(self, channel_id, environment="production"):
+        channel_id = str(channel_id or "").strip()
+        if not channel_id: raise APNsError("missing channel ID")
+        self._channel_call("DELETE", "channels", environment=environment, channel_id=channel_id)
+
     def _connection(self, environment, reset=False):
         host = self.hosts.get(environment) or self.hosts["production"]
         with self._lock:
@@ -624,6 +730,20 @@ class APNsClient:
             if connection is None or connection.closed:
                 connection = HTTP2Connection(host, self.port, self.timeout)
                 self._connections[host] = connection
+            return connection
+
+    def _channel_connection(self, environment, reset=False):
+        host = self.channel_hosts.get(environment) or self.channel_hosts["production"]
+        port = int(self.channel_ports.get(environment) or self.channel_ports["production"])
+        key = ("channel", host, port)
+        with self._lock:
+            connection = self._connections.get(key)
+            if reset and connection is not None:
+                connection.close()
+                connection = None
+            if connection is None or connection.closed:
+                connection = HTTP2Connection(host, port, self.timeout)
+                self._connections[key] = connection
             return connection
 
     def close(self):

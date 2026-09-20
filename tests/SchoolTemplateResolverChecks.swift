@@ -28,6 +28,13 @@ struct SchoolTemplateResolverChecks {
         precondition(active.termID == "2026-fall")
         let upcoming = try resolve("我的课表", at: "2026-08-01")
         precondition(upcoming.termID == "2026-fall")
+        var currentSchools = schools
+        currentSchools[0].currentTermID = "2027-spring"
+        let serverCurrent = try SchoolTemplateResolver.applying(
+            to: ImportedSchedule(name: "我的课表", courses: []),
+            schoolID: "nju", schools: currentSchools, now: WeekCalculator.parseDay("2026-09-16")!
+        )
+        precondition(serverCurrent.termID == "2027-spring")
         do { _ = try resolve("2025-2026学年 第1学期"); fatalError("Historical term must not use current template") }
         catch is ScheduleServiceError {}
         do { _ = try resolve("我的课表", "other"); fatalError("Must not substitute NJU for another school") }
@@ -39,6 +46,6 @@ struct SchoolTemplateResolverChecks {
                 schoolID: "nju", schools: duplicate)
             fatalError("Ambiguous school term must not be chosen arbitrarily")
         } catch is ScheduleServiceError {}
-        print("PASS: academic-year matching, active/upcoming selection, template priority, authoritative fields, missing school/term and ambiguity")
+        print("PASS: server current term, academic-year matching, active/upcoming selection, template priority, authoritative fields, missing school/term and ambiguity")
     }
 }

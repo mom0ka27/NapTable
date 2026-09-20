@@ -22,6 +22,11 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
     public let calendar: NativeScheduleCalendar?
     public let auth: NativeScheduleAuth
     public let sourceLabel: String?
+    /// Identifies the school's broadcast channel. It is metadata only; the
+    /// timetable itself remains local to the device.
+    public let schoolID: String?
+    public let termID: String?
+    public let timeZone: String?
     public let error: String?
 
     public init(
@@ -35,6 +40,9 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         calendar: NativeScheduleCalendar? = nil,
         auth: NativeScheduleAuth = NativeScheduleAuth(),
         sourceLabel: String? = nil,
+        schoolID: String? = nil,
+        termID: String? = nil,
+        timeZone: String? = nil,
         error: String? = nil
     ) {
         self.version = version
@@ -47,6 +55,9 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         self.calendar = calendar
         self.auth = auth
         self.sourceLabel = sourceLabel?.trimmedNonEmpty
+        self.schoolID = schoolID?.trimmedNonEmpty
+        self.termID = termID?.trimmedNonEmpty
+        self.timeZone = timeZone?.trimmedNonEmpty
         self.error = error?.trimmedNonEmpty
     }
 }

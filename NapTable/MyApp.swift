@@ -26,6 +26,7 @@ struct MyApp: App {
                 .environmentObject(store)
                 .task {
                     store.seedSampleIfNeeded()
+                    await ScheduleSharingService.shared.refreshCurrentTerms(in: store)
                     store.refreshForToday()
                 }
                 .onChange(of: scenePhase) { phase in
@@ -33,6 +34,7 @@ struct MyApp: App {
                     // roll over while the app sits in the background.
                     if phase == .active {
                         store.refreshForToday()
+                        Task { await ScheduleSharingService.shared.refreshCurrentTerms(in: store) }
                         #if os(iOS)
                         if #available(iOS 17.2, *) {
                             Task { await LiveActivityPushService.shared.refreshStatus() }

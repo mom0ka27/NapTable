@@ -82,6 +82,25 @@ final class NativeLiveActivityController: ObservableObject {
     /// token, so the flag has to be in place before the next `request`.
     var wantsPushToken = false
 
+    /// The APNs channel assigned to the selected school. iOS 26 uses this for
+    /// scheduled activities; older systems keep using the device-token path.
+    var broadcastChannelID: String? {
+        didSet {
+            guard oldValue != broadcastChannelID,
+                  let snapshot = lastSnapshot,
+                  !isPreviewActive else { return }
+            refreshTask?.cancel()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.endActivities()
+                guard self.isEnabled, !self.isPreviewActive else { return }
+                self.accept(snapshot)
+            }
+        }
+    }
+
+    var currentScheduleMetadata: NativeScheduleSnapshot? { lastSnapshot }
+
     /// Called with a freshly rendered plan whenever the timetable or the
     /// activity settings change. The push service uploads it; nothing else
     /// observes it.
@@ -95,6 +114,10 @@ final class NativeLiveActivityController: ObservableObject {
         Activity<ScheduleLiveActivityAttributes>.activities.first {
             $0.activityState == .active || $0.activityState == .stale
         }
+    }
+
+    private var anyActivity: Activity<ScheduleLiveActivityAttributes>? {
+        Activity<ScheduleLiveActivityAttributes>.activities.first
     }
 
     init(now: @escaping () -> Date = { .now }) {
@@ -416,6 +439,9 @@ final class NativeLiveActivityController: ObservableObject {
             await endActivities()
             return nil
         }
+        if #available(iOS 26.0, *), let channel = broadcastChannelID, !channel.isEmpty {
+            return await synchronizeScheduled(snapshot, channelID: channel)
+        }
         let currentDate = now()
         guard let occurrence = nextOccurrence(in: snapshot, now: currentDate) else {
             status = .unavailable("今天和接下来没有可显示的课程。")
@@ -493,6 +519,62 @@ final class NativeLiveActivityController: ObservableObject {
             // Retry transient failures while the app can execute.
             return 30
         }
+    }
+
+    /// iOS 26 can schedule the activity itself. The activity starts locally at
+    /// the first class of a day, while the school channel only carries compact
+    /// boundary markers afterwards. No course text is sent through APNs.
+    @available(iOS 26.0, *)
+    private func synchronizeScheduled(_ snapshot: NativeScheduleSnapshot, channelID: String) async -> TimeInterval? {
+        let currentDate = now()
+        let events = occurrences(in: snapshot)
+            .filter { $0.end > currentDate && $0.start < currentDate.addingTimeInterval(2 * 24 * 3600) }
+            .sorted { $0.start < $1.start }
+        guard !events.isEmpty else {
+            status = .unavailable("今天和明天没有可显示的课程。")
+            await endActivities()
+            return nil
+        }
+
+        var days: [String: [Occurrence]] = [:]
+        for event in events { days[event.dateKey, default: []].append(event) }
+        let selectedDays = days.keys.sorted().prefix(2)
+        for dateKey in selectedDays {
+            guard let dayEvents = days[dateKey], let first = dayEvents.first, let last = dayEvents.last else { continue }
+            let attributes = Self.attributes(for: first, in: snapshot)
+            let exists = Activity<ScheduleLiveActivityAttributes>.activities.contains {
+                $0.attributes == attributes
+            }
+            if exists { continue }
+
+            let start = max(first.start.addingTimeInterval(-leadTime), currentDate.addingTimeInterval(1))
+            let initial = Self.contentState(
+                for: Self.enriched(first, followedBy: dayEvents.dropFirst().first),
+                phase: first.start <= currentDate ? .inProgress : .upcoming,
+                sourceLabel: snapshot.sourceLabel,
+                updatedAt: first.start <= currentDate ? first.start : currentDate
+            )
+            let alert = AlertConfiguration(
+                title: "课程提醒",
+                body: LocalizedStringResource(stringLiteral: first.name),
+                sound: .default
+            )
+            do {
+                _ = try Activity<ScheduleLiveActivityAttributes>.request(
+                    attributes: attributes,
+                    content: ActivityContent(state: initial, staleDate: last.end),
+                    pushType: .channel(channelID),
+                    style: .standard,
+                    alertConfiguration: alert,
+                    start: start
+                )
+            } catch {
+                status = .failed(error.localizedDescription)
+                return 30
+            }
+        }
+        status = anyActivity == nil ? .waiting : .active
+        return 60
     }
 
     /// Wake at the next meaningful boundary instead of polling on a fixed

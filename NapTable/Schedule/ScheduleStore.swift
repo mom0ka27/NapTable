@@ -118,6 +118,9 @@ final class NativeScheduleStore: ObservableObject {
                     account: followed.meta.code
                 ),
                 sourceLabel: followed.name,
+                schoolID: followed.meta.schoolID,
+                termID: followed.meta.termID,
+                timeZone: "Asia/Shanghai",
                 error: nil
             )
         }
@@ -137,6 +140,9 @@ final class NativeScheduleStore: ObservableObject {
                 account: String(app.selectedTableId)
             ),
             sourceLabel: sourceLabel,
+            schoolID: app.selectedTable?.schoolID,
+            termID: app.selectedTable?.termID,
+            timeZone: app.selectedTable?.termTimezone,
             error: errorMessage
         )
     }

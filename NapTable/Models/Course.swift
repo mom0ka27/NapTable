@@ -172,6 +172,9 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     var termVersion: Int?
     var termWeekCount: Int?
     var termTimezone: String?
+    /// `false` marks a server share snapshot whose calendar must remain frozen.
+    /// Optional keeps old on-disk tables decodable; nil follows current terms.
+    var serviceConfigurationUpdatesEnabled: Bool?
     /// 这个学期的调休安排（补班改上哪天的课、哪天放假）。服务端按学期下发，
     /// 旧的存档里没有这个键，所以用可选类型解码。
     var calendarAdjustments: [CalendarAdjustment]?
@@ -186,6 +189,7 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         termVersion: Int? = nil,
         termWeekCount: Int? = nil,
         termTimezone: String? = nil,
+        serviceConfigurationUpdatesEnabled: Bool? = nil,
         calendarAdjustments: [CalendarAdjustment]? = nil
     ) {
         self.id = id
@@ -197,6 +201,7 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         self.termVersion = termVersion
         self.termWeekCount = termWeekCount
         self.termTimezone = termTimezone
+        self.serviceConfigurationUpdatesEnabled = serviceConfigurationUpdatesEnabled
         self.calendarAdjustments = calendarAdjustments
     }
 

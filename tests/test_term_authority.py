@@ -49,10 +49,16 @@ class TermAuthorityTests(unittest.TestCase):
     def term(self):
         return {'id': 'verified-test', 'semesterStartMonday': '2026-09-14',
                 'weekCount': 20, 'timezone': 'Asia/Shanghai', 'note': 'Test only',
-                'periods': [{'id': 1, 'name': '第1节', 'start': '07:30', 'end': '08:15'},
-                            {'id': 2, 'name': '第2节', 'start': '08:25', 'end': '09:10'}]}
+                'current': True}
+
+    def save_periods(self, first_start='07:30'):
+        periods = [{'id': 1, 'name': '第1节', 'start': first_start, 'end': '08:15'},
+                   {'id': 2, 'name': '第2节', 'start': '08:25', 'end': '09:10'}]
+        return self.request('POST', '/v1/schools/nju', {
+            'name': '南京大学', 'periods': periods, 'note': 'Test only'}, admin=True)
 
     def test_authority_version_snapshot_and_restart(self):
+        self.assertEqual(self.save_periods()[0], 200)
         term = self.term()
         path = '/v1/admin/schools/nju/terms'
         status, saved = self.request('POST', path, term, admin=True)
@@ -67,10 +73,10 @@ class TermAuthorityTests(unittest.TestCase):
         self.assertEqual(shared['class_time_list'][0]['start'], '07:30')
         self.assertEqual(shared['term_week_count'], 20)
         term['semesterStartMonday'] = '2026-09-21'
-        term['periods'][0]['start'] = '07:45'
         status, updated = self.request('POST', path, term, admin=True)
         self.assertEqual(status, 200)
         self.assertEqual(updated['version'], 2)
+        self.assertEqual(self.save_periods('07:45')[0], 200)
         status, old = self.request('GET', '/v1/shares/' + shared['id'])
         self.assertEqual(status, 200)
         self.assertEqual(old['termVersion'], 1)
@@ -78,25 +84,26 @@ class TermAuthorityTests(unittest.TestCase):
         self.assertEqual(old['class_time_list'][0]['start'], '07:30')
         reopened = Store(self.path)
         try:
-            self.assertEqual(reopened.find_term('nju', term['id'])['version'], 2)
+            self.assertEqual(reopened.find_term('nju', term['id'])['version'], 3)
             self.assertEqual(reopened.get(shared['id'])['termVersion'], 1)
         finally:
             reopened.close()
 
-    def test_adjustments_ride_along_with_the_term(self):
-        """调休跟着学期配置走：保存、下发、分享快照都要带上。"""
+    def test_global_adjustments_ride_along_with_every_term(self):
+        """统一调休下发给所有学校，分享仍冻结发布时的快照。"""
         path = '/v1/admin/schools/nju/terms'
         term = self.term()
-        term['adjustments'] = [
+        self.assertEqual(self.request('POST', path, term, admin=True)[0], 200)
+        adjustments = [
             {'date': '2026-10-01', 'kind': 'off', 'note': '国庆节'},
             {'date': '2026-10-11', 'kind': 'swap', 'source': '2026-10-09', 'note': '补周五的课'},
         ]
-        status, saved = self.request('POST', path, term, admin=True)
+        status, calendar = self.request('POST', '/v1/admin/calendar', {'adjustments': adjustments}, admin=True)
         self.assertEqual(status, 200)
-        self.assertEqual(len(saved['adjustments']), 2)
+        self.assertEqual(len(calendar['adjustments']), 2)
         # 放假条目不该把空的 source 一起存下来，客户端按 kind 分支。
-        self.assertNotIn('source', saved['adjustments'][0])
-        self.assertEqual(saved['adjustments'][1]['source'], '2026-10-09')
+        self.assertNotIn('source', calendar['adjustments'][0])
+        self.assertEqual(calendar['adjustments'][1]['source'], '2026-10-09')
 
         status, catalogue = self.request('GET', '/v1/schools')
         self.assertEqual(status, 200)
@@ -109,16 +116,15 @@ class TermAuthorityTests(unittest.TestCase):
         self.assertEqual(status, 201)
         status, fetched = self.request('GET', '/v1/shares/' + shared['id'])
         self.assertEqual(status, 200)
-        self.assertEqual(fetched['calendar_adjustments'], saved['adjustments'])
+        self.assertEqual(fetched['calendar_adjustments'], calendar['adjustments'])
 
-        # 分享是学期当时的快照：学期后来清空调休，老分享码还是老安排。
-        term['adjustments'] = []
-        self.assertEqual(self.request('POST', path, term, admin=True)[0], 200)
+        # 分享是发布时的快照：全局调休后来清空，老分享码还是老安排。
+        self.assertEqual(self.request('POST', '/v1/admin/calendar', {'adjustments': []}, admin=True)[0], 200)
         status, old_share = self.request('GET', '/v1/shares/' + shared['id'])
         self.assertEqual(len(old_share['calendar_adjustments']), 2)
 
     def test_invalid_adjustments_are_rejected(self):
-        path = '/v1/admin/schools/nju/terms'
+        path = '/v1/admin/calendar'
         broken = [
             [{'date': '2026-13-01', 'kind': 'off'}],
             [{'date': '2026-02-30', 'kind': 'off'}],
@@ -129,13 +135,8 @@ class TermAuthorityTests(unittest.TestCase):
             'off',
         ]
         for adjustments in broken:
-            term = self.term()
-            term['adjustments'] = adjustments
-            self.assertEqual(self.request('POST', path, term, admin=True)[0], 400, adjustments)
-        # 老客户端不发这个字段，仍然要能保存。
-        term = self.term()
-        term.pop('adjustments', None)
-        status, saved = self.request('POST', path, term, admin=True)
+            self.assertEqual(self.request('POST', path, {'adjustments': adjustments}, admin=True)[0], 400, adjustments)
+        status, saved = self.request('POST', path, {}, admin=True)
         self.assertEqual(status, 200)
         self.assertEqual(saved['adjustments'], [])
 
@@ -150,8 +151,9 @@ class TermAuthorityTests(unittest.TestCase):
             term = self.term()
             term['weekCount'] = weeks
             self.assertEqual(self.request('POST', path, term, admin=True)[0], 400)
-        term = self.term()
-        term['periods'][1]['start'] = '08:00'
-        self.assertEqual(self.request('POST', path, term, admin=True)[0], 400)
+        status, _ = self.request('POST', '/v1/schools/nju', {
+            'name': '南京大学', 'periods': [
+                {'start': '08:00', 'end': '09:00'}, {'start': '08:30', 'end': '09:30'}]}, admin=True)
+        self.assertEqual(status, 400)
         self.assertEqual(self.request('POST', '/v1/shares', {
             'schoolID': 'nju', 'termID': 'missing', 'courses': []})[0], 400)

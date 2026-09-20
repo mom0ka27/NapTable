@@ -140,12 +140,13 @@ private struct ScheduleLiveActivityDisplay {
     private let hasMoreToday: Bool
 
     init(state: ScheduleLiveActivityAttributes.ContentState, isStale: Bool) {
+        let localState = state.resolvedFromLocalSchedule() ?? state
         // Only a persistent activity carries on to the next class; otherwise
         // it is on its way out and should simply say the class is over.
         self.state = isStale && NextWidgetConfiguration.liveActivityIsPersistent
-            ? state.afterEndState
-            : (isStale ? nil : state)
-        self.hasMoreToday = state.afterEndState != nil
+            ? localState.afterEndState
+            : (isStale ? nil : localState)
+        self.hasMoreToday = localState.afterEndState != nil
     }
 
     var islandTitle: String { state?.phaseTitle ?? closingTitle }
@@ -153,6 +154,74 @@ private struct ScheduleLiveActivityDisplay {
     /// 今天还有课但这一节已经结束（非常驻马上就收起）时说「已下课」；今天没课了
     /// 就说「今日无课」，而不是预告明天的课。
     var closingTitle: String { hasMoreToday ? "已下课" : "今日无课" }
+}
+
+private extension ScheduleLiveActivityAttributes.ContentState {
+    /// Broadcast pushes deliberately contain no course content. Resolve the
+    /// boundary against the timetable written by the app into the App Group.
+    func resolvedFromLocalSchedule() -> Self? {
+        guard let dateKey = broadcastDateKey,
+              let timestamp = broadcastTimestamp,
+              let payload = ScheduleWidgetStore.load(),
+              let day = payload.knownDay(for: dateKey) else { return nil }
+
+        let datedCourses = day.courseList.compactMap { course -> (WidgetCourse, Date, Date)? in
+            guard let start = Self.date(dateKey, time: course.startTime),
+                  let end = Self.date(dateKey, time: course.endTime), end > start else { return nil }
+            return (course, start, end)
+        }.sorted { $0.1 < $1.1 }
+        guard !datedCourses.isEmpty else { return nil }
+
+        let currentIndex = datedCourses.firstIndex { $0.1 <= timestamp && timestamp < $0.2 }
+        let selectedIndex = currentIndex ?? datedCourses.firstIndex { $0.1 > timestamp }
+        guard let index = selectedIndex else { return nil }
+        let selected = datedCourses[index]
+        let next = datedCourses.dropFirst(index + 1).first
+        let inProgress = currentIndex != nil
+        let period = selected.0.startSlot.flatMap { start in
+            selected.0.endSlot.map { end in
+                start == end ? "第 \(start) 节" : "第 \(start)-\(end) 节"
+            }
+        }
+        return Self(
+            phase: inProgress ? .inProgress : .upcoming,
+            courseName: selected.0.displayName,
+            teacher: selected.0.normalizedTeacher ?? "",
+            location: selected.0.normalizedLocation ?? "",
+            periodLabel: period,
+            dateLabel: day.displayLabel,
+            weekRangeLabel: weekRangeLabel,
+            startDate: selected.1,
+            endDate: selected.2,
+            nextCourseName: next?.0.displayName,
+            nextCoursePeriod: next.flatMap { value in
+                guard let start = value.0.startSlot, let end = value.0.endSlot else { return nil }
+                return start == end ? "第 \(start) 节" : "第 \(start)-\(end) 节"
+            },
+            nextCourseDateLabel: day.displayLabel,
+            nextCourseWeekRangeLabel: next?.0.slotNote,
+            nextCourseTeacher: next?.0.normalizedTeacher,
+            nextCourseLocation: next?.0.normalizedLocation,
+            nextCourseStart: next?.1,
+            nextCourseEnd: next?.2,
+            sourceLabel: sourceLabel,
+            updatedAt: inProgress ? selected.1 : timestamp,
+            broadcastDateKey: dateKey,
+            broadcastPeriod: broadcastPeriod,
+            broadcastPhase: broadcastPhase,
+            broadcastTimestamp: timestamp
+        )
+    }
+
+    private static func date(_ date: String, time: String?) -> Date? {
+        guard let time, !time.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: "\(date) \(time.prefix(5))")
+    }
 }
 
 @available(iOS 18.0, *)
@@ -900,9 +969,14 @@ private struct LockScreenScheduleView: View {
     }
 
     /// 单行锁屏只有一句话的位置：放假先道贺，平时让位给明天 / 假期这类更有用的信息。
+    /// 这一行已经能写出明天的课时，周末问候就让位给课——两句话挤不进一行。
     private var inlineEmptyText: String {
-        if let greeting = ChineseCalendarInfo.restGreeting() { return greeting }
-        return afterClassText ?? TodayRestMessage.text(hadCourses: !day.courseList.isEmpty)
+        let hadCourses = !day.courseList.isEmpty
+        let showsCourses = tomorrowCourseText != nil
+        if let greeting = TodayRestMessage.greeting(hadCourses: hadCourses, showsCourses: showsCourses) {
+            return greeting
+        }
+        return afterClassText ?? TodayRestMessage.text(hadCourses: hadCourses)
     }
 
     /// 今天没课之后，锁屏这一行改成明天第一节课或最近的假期。
@@ -911,15 +985,20 @@ private struct LockScreenScheduleView: View {
         case .none:
             return nil
         case .tomorrow:
-            if let tomorrow = payload.tomorrow(), let course = tomorrow.courseList.first {
-                return ["明天", options.showTime ? course.startLabel : nil, course.displayName]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-            }
-            return AfterClassView.holidayLine()
+            return tomorrowCourseText ?? AfterClassView.holidayLine()
         case .holiday:
             return AfterClassView.holidayLine()
         }
+    }
+
+    /// 「明天 08:00 高数」；设置不是「明天的课程」或明天空着时为 `nil`。
+    private var tomorrowCourseText: String? {
+        guard options.afterClass == .tomorrow,
+              let tomorrow = payload.tomorrow(),
+              let course = tomorrow.courseList.first else { return nil }
+        return ["明天", options.showTime ? course.startLabel : nil, course.displayName]
+            .compactMap { $0 }
+            .joined(separator: " ")
     }
 
     private var circularView: some View {
@@ -990,17 +1069,32 @@ private struct LockScreenScheduleView: View {
                         .minimumScaleFactor(0.72)
                 }
             } else {
-                Text(TodayRestMessage.text(hadCourses: !day.courseList.isEmpty))
+                let lines = emptyLines
+                Text(lines.primary)
                     .font(.system(size: 14, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
-                Text(afterClassText ?? "打开课表查看本周安排")
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                if let secondary = lines.secondary {
+                    Text(secondary)
+                        .font(.system(size: 10, weight: .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    /// 今天没有在上的课时，这块写什么：放假道贺 > 明天的课 > 「今天没有课～」。
+    /// 明天的课一旦顶上来，就不再另起一行说今天，两行都留给真正有用的信息。
+    private var emptyLines: (primary: String, secondary: String?) {
+        let hadCourses = !day.courseList.isEmpty
+        let tomorrow = tomorrowCourseText
+        if let greeting = TodayRestMessage.greeting(hadCourses: hadCourses, showsCourses: tomorrow != nil) {
+            return (greeting, afterClassText ?? "打开课表查看本周安排")
+        }
+        if let tomorrow { return (tomorrow, AfterClassView.holidayLine()) }
+        return (TodayRestMessage.text(hadCourses: hadCourses), afterClassText ?? "打开课表查看本周安排")
     }
 
     private func inlineText(_ course: WidgetCourse) -> String {
@@ -1228,7 +1322,8 @@ private struct TwoDayScheduleView: View {
             DayColumn(
                 day: today,
                 nowMinutes: today.date == todayDate ? WidgetSchedulePayload.minutesSinceMidnight(now) : nil,
-                isToday: today.date == todayDate
+                isToday: today.date == todayDate,
+                siblingHasCourses: !tomorrow.courseList.isEmpty
             )
             Divider()
             DayColumn(day: tomorrow, nowMinutes: nil)
@@ -1241,6 +1336,8 @@ private struct DayColumn: View {
     let nowMinutes: Int?
     /// 明天那一列没课就照常说「没有课程」，祝福只属于今天。
     var isToday = false
+    /// 另一列排着课：这半边即使今天空着也不道「周末快乐～」。
+    var siblingHasCourses = false
 
     var body: some View {
         let window = day.courseWindow(limit: 5, nowMinutes: nowMinutes)
@@ -1248,7 +1345,11 @@ private struct DayColumn: View {
             WidgetDateHeader(day: day, compact: true)
             if day.courseList.isEmpty {
                 // 这一支本来就是「这天没有课」，所以今天那列固定说「今天没有课～」。
-                EmptyCoursesView(message: isToday ? TodayRestMessage.text(hadCourses: false) : "没有课程")
+                EmptyCoursesView(
+                    message: isToday
+                        ? TodayRestMessage.text(hadCourses: false, showsCourses: siblingHasCourses)
+                        : "没有课程"
+                )
             } else {
                 ForEach(Array(window.courses.enumerated()), id: \.offset) { _, course in
                     TodayCourseRow(
@@ -1479,9 +1580,15 @@ private struct HolidayBadge: View {
 /// 「距国庆节 12 天」这类假期提示不在这里，由 `AfterClassView.holidayFootnote`
 /// 作为下面一行小字保留。
 private enum TodayRestMessage {
-    static func text(hadCourses: Bool, now: Date = .now) -> String {
-        if let greeting = ChineseCalendarInfo.restGreeting(for: now) { return greeting }
+    /// `showsCourses` 是这块界面上还列着课（两日课表的另一列、课后的明天预览）。
+    /// 旁边摆着一排课还说「周末快乐～」就成了反话，此时只报事实；法定假日照旧道贺。
+    static func text(hadCourses: Bool, showsCourses: Bool = false, now: Date = .now) -> String {
+        if let greeting = greeting(hadCourses: hadCourses, showsCourses: showsCourses, now: now) { return greeting }
         return hadCourses ? "今天的课上完啦～" : "今天没有课～"
+    }
+
+    static func greeting(hadCourses: Bool, showsCourses: Bool = false, now: Date = .now) -> String? {
+        ChineseCalendarInfo.restGreeting(for: now, hasCourses: hadCourses || showsCourses)
     }
 }
 
@@ -1528,12 +1635,20 @@ private struct AfterClassView: View {
 
     private func tomorrowPreview(_ day: WidgetDay) -> some View {
         let visible = Array(day.courseList.prefix(max(1, limit)))
+        // 明天的课已经把这块占满了，就不再留一行说「今天没有课～」；
+        // 法定假日那句「中秋快乐～」还是值得一行。
+        let greeting = TodayRestMessage.greeting(
+            hadCourses: !payload.currentDay().courseList.isEmpty,
+            showsCourses: true
+        )
         return VStack(alignment: .leading, spacing: 5) {
-            Text(todayMessage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(WidgetPalette.muted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            if let greeting {
+                Text(greeting)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(WidgetPalette.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
             HStack(spacing: 5) {
                 Text("明天")
                     .font(.system(size: 10, weight: .bold))

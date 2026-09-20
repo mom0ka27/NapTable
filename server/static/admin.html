@@ -1,20 +1,259 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NapTable 管理台</title><link rel="stylesheet" href="/static/admin.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>NapTable 管理台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar"><div><p class="eyebrow">NapTable / Server</p><h1>学校与学期配置</h1><p class="muted">服务端权威配置管理。令牌只在本次页面会话内存中使用。</p></div><div class="status-dot" id="connectionStatus">未连接</div></header>
-    <section class="panel auth-panel"><div class="section-title"><div><h2>管理员会话</h2><p class="muted">请输入服务启动时设置的 <code>NAPTABLE_ADMIN_TOKEN</code>。</p></div></div><div class="form-grid auth-grid"><label>管理员令牌<input id="adminToken" type="password" autocomplete="off" placeholder="不会写入 URL 或浏览器存储"></label><button id="connectButton" class="primary">连接服务</button></div></section>
-    <div id="notice" class="notice" role="status" aria-live="polite"></div>
-    <section class="workspace" aria-label="配置编辑区">
-      <aside class="panel school-panel"><div class="section-title"><div><h2>学校</h2><p class="muted">稳定 ID 用于客户端绑定。</p></div><button id="newSchoolButton" class="icon-button" title="新增学校" aria-label="新增学校">＋</button></div><div id="schoolList" class="school-list"></div></aside>
-      <section class="panel editor-panel"><div class="section-title"><div><p class="eyebrow" id="editorEyebrow">未选择学校</p><h2 id="editorTitle">选择学校开始配置</h2></div><button id="newTermButton" class="secondary" disabled>新增学期</button></div><div id="editorEmpty" class="empty-state">连接服务后选择学校。</div><div id="editor" hidden>
-        <div class="form-grid school-fields"><label>学校 ID<input id="schoolId" readonly></label><label>学校名称<input id="schoolName" maxlength="80"></label><label class="wide">备注<textarea id="schoolNote" rows="2" maxlength="240"></textarea></label><button id="saveSchoolButton" class="secondary">保存学校元数据</button></div>
-        <div class="term-layout"><nav><h3>学期列表</h3><div id="termList" class="term-list"></div></nav><div class="term-editor"><div class="term-header"><div><h3 id="termTitle">新学期</h3><span id="termVersion" class="badge">未保存</span></div><button id="saveTermButton" class="primary">保存学期</button></div><div class="form-grid"><label>学期 ID<input id="termId" maxlength="80" placeholder="例如 2026-fall"></label><label>时区<select id="termTimezone"><option value="Asia/Shanghai">Asia/Shanghai</option></select></label><label>第一周周一<input id="termStart" type="date"></label><label>总周数<input id="termWeeks" type="number" min="1" max="40" step="1"></label><label class="wide">备注<textarea id="termNote" rows="2" maxlength="240"></textarea></label></div><div class="period-heading"><h3>节次时间</h3><button id="addPeriodButton" class="secondary small">添加节次</button></div><div id="periodList" class="period-list"></div><div class="period-heading"><h3>调休</h3><button id="addAdjustmentButton" class="secondary small">添加调休</button></div><p class="hint">补班那天改上哪一天的课、哪一天放假。按国务院当年的通知填，客户端会按日期覆盖课表。</p><div id="adjustmentList" class="adjustment-list"></div></div></div>
-      </div></section>
-    </section>
-  </main><script src="/static/admin.js"></script>
-</body></html>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="NapTable 管理台首页">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span><strong>NapTable</strong><small>Server Console</small></span>
+      </a>
+
+      <nav class="main-nav" aria-label="主导航">
+        <p class="nav-label">工作区</p>
+        <button class="nav-item active" type="button" data-view="schools">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg>
+          <span>学校配置</span>
+        </button>
+        <button class="nav-item" type="button" data-view="calendar">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
+          <span>统一调休</span>
+        </button>
+        <button class="nav-item" type="button" data-view="stats">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16V5"/></svg>
+          <span>使用统计</span>
+        </button>
+        <button class="nav-item" type="button" data-view="apns">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10.3 21h3.4"/><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/></svg>
+          <span>APNs 推送</span>
+          <span id="apnsNavDot" class="nav-dot" aria-label="未配置"></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="session-card">
+          <span id="sessionIndicator" class="session-indicator"></span>
+          <span><small>管理会话</small><strong id="sidebarSessionText">尚未连接</strong></span>
+          <button id="disconnectButton" class="icon-button subtle" type="button" title="断开连接" aria-label="断开连接" hidden>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
+          </button>
+        </div>
+        <p class="build-label">服务端权威配置</p>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button id="menuButton" class="icon-button mobile-menu" type="button" aria-label="打开导航" title="打开导航">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="page-heading">
+          <p class="breadcrumb">控制台 <span>/</span> <strong id="breadcrumbCurrent">学校配置</strong></p>
+          <h1 id="pageTitle">学校配置</h1>
+          <p id="pageSubtitle">维护客户端使用的学校、学期与教学时间。</p>
+        </div>
+        <div id="connectionStatus" class="connection-pill"><span></span>未连接</div>
+      </header>
+
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+      <section id="authView" class="auth-view">
+        <div class="auth-copy">
+          <span class="auth-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </span>
+          <p class="section-kicker">身份验证</p>
+          <h2>连接 NapTable 服务</h2>
+          <p>输入服务启动时设置的管理员令牌，连接后即可管理学校与推送配置。令牌仅保留在当前页面内存中。</p>
+        </div>
+        <form id="authForm" class="auth-form">
+          <label for="adminToken">管理员令牌</label>
+          <div class="password-field">
+            <input id="adminToken" type="password" autocomplete="off" placeholder="NAPTABLE_ADMIN_TOKEN" required>
+            <button id="toggleTokenButton" class="field-icon" type="button" title="显示令牌" aria-label="显示令牌">
+              <svg class="eye-open" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.7 10.7 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2 3"/><path d="M6.6 6.6C3.6 8.5 2 12 2 12s3.5 8 10 8a9.8 9.8 0 0 0 4.1-.9"/></svg>
+            </button>
+          </div>
+          <button id="connectButton" class="button primary full" type="submit">
+            <span>连接服务</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <section id="schoolsView" class="content-view" hidden>
+        <div class="metric-strip" aria-label="配置概览">
+          <div><span>学校</span><strong id="schoolCount">0</strong><small>所已配置</small></div>
+          <div><span>学期</span><strong id="termCount">0</strong><small>个模板</small></div>
+          <div><span>节次</span><strong id="periodCount">0</strong><small>条时间记录</small></div>
+          <div class="metric-status"><span>配置状态</span><strong><i></i>服务正常</strong><small>数据已从服务器载入</small></div>
+        </div>
+
+        <div class="section-toolbar">
+          <div><h2>学校与学期</h2><p>选择学校后维护元数据和学期模板。</p></div>
+          <button id="newSchoolButton" class="button primary" type="button">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            新增学校
+          </button>
+        </div>
+
+        <section class="management-panel">
+          <aside class="school-browser">
+            <div class="search-field">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="schoolSearch" type="search" placeholder="搜索学校" aria-label="搜索学校">
+            </div>
+            <div id="schoolList" class="school-list"></div>
+          </aside>
+
+          <div class="editor-panel">
+            <div id="editorEmpty" class="empty-state">
+              <span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg></span>
+              <h3>选择一所学校</h3>
+              <p>从左侧列表选择学校，或新增学校开始配置。</p>
+            </div>
+
+            <div id="editor" hidden>
+              <div class="editor-heading">
+                <div><p id="editorEyebrow" class="section-kicker">学校 ID</p><h2 id="editorTitle">学校名称</h2></div>
+                <button id="newTermButton" class="button secondary" type="button" disabled>
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                  新增学期
+                </button>
+              </div>
+
+              <details class="metadata-section">
+                <summary>
+                  <span><strong>学校信息</strong><small>名称、稳定 ID 与内部备注</small></span>
+                  <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+                </summary>
+                <div class="form-grid school-fields">
+                  <label>学校 ID<input id="schoolId" readonly></label>
+                  <label>学校名称<input id="schoolName" maxlength="80"></label>
+                  <label class="wide">备注<textarea id="schoolNote" rows="2" maxlength="240" placeholder="仅供管理员查看"></textarea></label>
+                </div>
+                <div class="school-periods">
+                  <div class="editor-section-heading">
+                    <div><strong>学校节次时间</strong><p>所有学期共用，只需配置一次。</p></div>
+                    <button id="addSchoolPeriodButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加节次</button>
+                  </div>
+                  <div class="table-head period-head"><span>节次</span><span>开始时间</span><span>结束时间</span><span></span></div>
+                  <div id="schoolPeriodList" class="period-list"></div>
+                  <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button></div>
+                </div>
+              </details>
+
+              <div class="term-tabs-wrap">
+                <div class="term-tabs-heading"><span>学期模板</span><small id="termListSummary"></small></div>
+                <div id="termList" class="term-list" role="tablist"></div>
+              </div>
+
+              <div class="term-editor">
+                <div class="term-header">
+                  <div><h3 id="termTitle">新学期</h3><span id="termVersion" class="badge">未保存</span></div>
+                  <button id="saveTermButton" class="button primary" type="button">
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+                    保存学期
+                  </button>
+                </div>
+
+                <section class="editor-section first">
+                  <div class="editor-section-title"><span class="step">01</span><div><h4>基础设置</h4><p>定义学期范围与时区。</p></div></div>
+                  <div class="form-grid term-fields">
+                    <label>学期 ID<input id="termId" maxlength="80" placeholder="例如 2026-fall"></label>
+                    <label>时区<select id="termTimezone"><option value="Asia/Shanghai">Asia/Shanghai</option></select></label>
+                    <label>第一周周一<input id="termStart" type="date"></label>
+                    <label>总周数<input id="termWeeks" type="number" min="1" max="40" step="1"></label>
+                    <label class="toggle-field wide"><input id="termCurrent" type="checkbox"><span><strong>设为当前学期</strong><small>客户端会自动拉取该学期的第一周配置</small></span></label>
+                    <label class="wide">备注<textarea id="termNote" rows="2" maxlength="240" placeholder="选填，例如校历版本或适用范围"></textarea></label>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="calendarView" class="content-view" hidden>
+        <div class="section-toolbar">
+          <div><div class="title-with-badge"><h2>统一调休配置</h2><span id="calendarVersion" class="badge">v1</span></div><p>调休按日期对所有学校生效，客户端自动同步。</p></div>
+          <button id="saveCalendarButton" class="button primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>保存调休</button>
+        </div>
+        <section class="settings-panel calendar-panel">
+          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div id="globalAdjustmentList" class="adjustment-list"></div>
+          <div id="globalAdjustmentEmpty" class="inline-empty">尚未配置统一调休</div>
+        </section>
+      </section>
+
+      <section id="statsView" class="content-view" hidden>
+        <div class="metric-strip stats-metrics" aria-label="使用统计">
+          <div><span>已注册用户</span><strong id="totalUserCount">0</strong><small>台设备</small></div>
+          <div><span>覆盖学校</span><strong id="activeSchoolCount">0</strong><small>所有使用记录</small></div>
+        </div>
+        <div class="section-toolbar"><div><h2>各学校使用人数</h2><p>按已注册且启用的设备去重统计。</p></div><button id="refreshStatsButton" class="button secondary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14"/><path d="M20 4v7h-7"/></svg>刷新</button></div>
+        <section class="settings-panel stats-panel"><div class="stats-head"><span>学校</span><span>学校 ID</span><span>使用人数</span></div><div id="statsList" class="stats-list"></div></section>
+      </section>
+
+      <section id="apnsView" class="content-view" hidden>
+        <div class="section-toolbar apns-toolbar">
+          <div><div class="title-with-badge"><h2>APNs 推送配置</h2><span id="apnsStatus" class="badge">未配置</span></div><p>管理 Live Activity 使用的 Apple Push Notification 凭据。</p></div>
+          <button id="saveApnsButton" class="button primary" type="button" disabled>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+            保存配置
+          </button>
+        </div>
+
+        <div class="apns-layout">
+          <section class="settings-panel">
+            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7.1 7.1 5 5 0 0 1 7.1-7.1ZM12 12l3-3m0 0 2 2 3-3-2-2m-3 3-2-2"/></svg></span><div><h3>服务凭据</h3><p>四项凭据全部留空可关闭推送。</p></div></div>
+            <div class="form-grid">
+              <label class="wide">密钥文件路径<input id="apnsKeyPath" type="text" autocomplete="off" placeholder="/path/to/AuthKey_XXXX.p8"></label>
+              <label>Key ID<input id="apnsKeyID" type="text" autocomplete="off" placeholder="10 位标识"></label>
+              <label>Team ID<input id="apnsTeamID" type="text" autocomplete="off" placeholder="开发者团队标识"></label>
+              <label class="wide">Bundle ID<input id="apnsBundleID" type="text" autocomplete="off" placeholder="me.example.app"></label>
+              <label>调度间隔<input id="apnsTickSeconds" type="number" min="0.5" max="3600" step="0.5"><span class="input-suffix">秒</span></label>
+            </div>
+          </section>
+
+          <section class="settings-panel">
+            <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 12.8a10 10 0 0 1 14 0"/><path d="M2 9.2a14 14 0 0 1 20 0"/></svg></span><div><h3>自动广播频道</h3><p>每所学校的生产与沙盒频道由服务自动创建和维护。</p></div><button id="reconcileChannelsButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14"/><path d="M20 4v7h-7"/></svg>同步频道</button></div>
+            <div class="table-head channel-head"><span>学校与环境</span><span>频道 ID</span><span>状态</span></div>
+            <div id="apnsChannelList" class="apns-channel-list"></div>
+            <div id="channelEmpty" class="inline-empty">尚未添加广播频道</div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="sidebarScrim" class="sidebar-scrim"></div>
+
+  <dialog id="newSchoolDialog" class="dialog">
+    <form id="newSchoolForm" method="dialog">
+      <div class="dialog-header">
+        <div><p class="section-kicker">新增配置</p><h2>新增学校</h2></div>
+        <button id="closeSchoolDialog" class="icon-button subtle" type="button" aria-label="关闭" title="关闭">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <p class="dialog-copy">学校 ID 创建后不可修改，请使用稳定、简短的英文标识。</p>
+      <div class="dialog-fields">
+        <label>学校 ID<input id="newSchoolId" maxlength="80" placeholder="例如 nju" pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{1,79}" required><small>2–80 位字母、数字、点、下划线或短横线</small></label>
+        <label>学校名称<input id="newSchoolName" maxlength="80" placeholder="例如 南京大学" required></label>
+      </div>
+      <div class="dialog-actions"><button id="cancelSchoolDialog" class="button secondary" type="button">取消</button><button class="button primary" type="submit">创建并编辑</button></div>
+    </form>
+  </dialog>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

@@ -4,6 +4,7 @@ import Foundation
 struct ServiceClassPeriod: Codable, Identifiable, Equatable { var id: Int; var name: String; var start: String; var end: String }
 struct ServiceTermConfiguration: Codable, Identifiable, Equatable {
     var id: String; var version: Int; var semesterStartMonday: String; var weekCount: Int; var periods: [ServiceClassPeriod]; var timezone: String; var note: String; var updatedAt: String?
+    var current: Bool? = nil
     /// 这个学期的调休安排。老服务端没有这个字段，解码成 `nil`。
     var adjustments: [CalendarAdjustment]?
     var classTimes: [ClassTime] { periods.map { ClassTime(start: $0.start, end: $0.end) } }
@@ -11,6 +12,12 @@ struct ServiceTermConfiguration: Codable, Identifiable, Equatable {
 }
 struct ServiceSchoolConfiguration: Codable, Identifiable, Equatable {
     var id: String; var name: String; var timezone: String; var terms: [ServiceTermConfiguration]; var note: String; var updatedAt: String?
+    var periods: [ServiceClassPeriod]? = nil
+    var currentTermID: String? = nil
+    var currentTerm: ServiceTermConfiguration? {
+        if let currentTermID, let term = terms.first(where: { $0.id == currentTermID }) { return term }
+        return terms.first(where: { $0.current == true })
+    }
 }
 struct SharedScheduleEnvelope: Codable { var id: String; var owner: String; var schoolID: String; var schoolName: String; var name: String?; var termID: String; var termVersion: Int; var courses: [[String: AnyCodable]]; var createdAt: String; var updatedAt: String; var writeToken: String? }
 struct AnyCodable: Codable {
@@ -20,16 +27,24 @@ struct AnyCodable: Codable {
 }
 enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String), missingBaseURL; var errorDescription: String? { switch self { case .invalidResponse: return "服务返回格式错误"; case .server(let v): return v; case .missingBaseURL: return "未配置 NapTable 服务地址" } } }
 
+private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -> [ServiceSchoolConfiguration] {
+    // The shared server also hosts CPU's timetable and APNs records. NapTable
+    // remains a separate product and must not present or import that school.
+    schools.filter { $0.id.caseInsensitiveCompare("cpu") != .orderedSame }
+}
+
 @MainActor final class ScheduleSharingService: ObservableObject {
     static let shared = ScheduleSharingService(); @Published private(set) var schools: [ServiceSchoolConfiguration] = []
     @Published private(set) var usingCachedSchools = false
     private let defaults = UserDefaults.standard
-    var serverURLString: String { defaults.string(forKey: "naptable.serverURL") ?? "http://127.0.0.1:8787" }
-    private var baseURL: URL? { URL(string: serverURLString) }
+    /// The production service. Device credentials and schedule data only ever
+    /// travel over HTTPS to this host, so the address is fixed in the app
+    /// instead of being configurable.
+    let serverURLString = "https://naptable.mom0ka27.top"
+    var validatedBaseURL: URL? { URL(string: serverURLString) }
     /// The most recently created share, kept for the screens that only ever
     /// showed one. `myShares` is the full list.
     var savedShareCode: String? { myShares.last?.code }
-    func setServerURL(_ value: String) throws { let normalized=value.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/")); guard let url=URL(string: normalized), url.scheme != nil, url.host != nil else { throw ScheduleServiceError.missingBaseURL }; defaults.set(normalized, forKey: "naptable.serverURL") }
     func loadSchools() async throws -> [ServiceSchoolConfiguration] {
         let cacheKey = "naptable.schoolsCache." + serverURLString
         usingCachedSchools = false
@@ -37,18 +52,25 @@ enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String)
             let data = try await request(path: "/v1/schools", method: "GET")
             let result = try JSONDecoder().decode([String: [ServiceSchoolConfiguration]].self, from: data)
             guard let loaded = result["schools"] else { throw ScheduleServiceError.invalidResponse }
-            schools = loaded
+            schools = napTableSupportedSchools(loaded)
             defaults.set(data, forKey: cacheKey)
         } catch {
             guard let data = defaults.data(forKey: cacheKey),
                   let result = try? JSONDecoder().decode([String: [ServiceSchoolConfiguration]].self, from: data),
                   let cached = result["schools"] else { throw error }
-            schools = cached
+            schools = napTableSupportedSchools(cached)
             usingCachedSchools = true
         }
         return schools
     }
+    func refreshCurrentTerms(in store: AppStore) async {
+        guard let schools = try? await loadSchools() else { return }
+        store.refreshServiceConfiguration(schools)
+    }
     func share(courses: [Course], schoolID: String, termID: String, owner: String="我") async throws -> SharedScheduleEnvelope {
+        guard schoolID.caseInsensitiveCompare("cpu") != .orderedSame else {
+            throw ScheduleServiceError.server("NapTable 不支持中国药科大学课表")
+        }
         let rows = try courses.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) as! [String:Any] }
         let schoolName = schools.first(where: { $0.id == schoolID })?.name ?? schoolID
         let body:[String:Any] = ["owner":owner,"schoolID":schoolID,"termID":termID,"schoolName":schoolName,"courses":rows]
@@ -60,6 +82,6 @@ enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String)
     func revokeSavedShare() async throws { guard let credential = myShares.last else { throw ScheduleServiceError.server("本机没有可撤销的分享") }; try await revoke(credential) }
     /// Not private: `ScheduleSharing.swift` extends this service with the
     /// share endpoints and needs the same transport.
-    func request(path:String,method:String,body:Any?=nil,headers:[String:String]=[:]) async throws -> Data { guard let baseURL, let url=URL(string:path,relativeTo:baseURL) else { throw ScheduleServiceError.missingBaseURL }; var r=URLRequest(url:url); r.httpMethod=method; r.setValue("application/json",forHTTPHeaderField:"Content-Type"); headers.forEach { r.setValue($1,forHTTPHeaderField:$0) }; if let body { r.httpBody=try JSONSerialization.data(withJSONObject:body) }; let (data,response)=try await URLSession.shared.data(for:r); guard let http=response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }; guard (200..<300).contains(http.statusCode) else { let m=(try? JSONSerialization.jsonObject(with:data) as? [String:Any])?["error"] as? String ?? "HTTP \(http.statusCode)"; throw ScheduleServiceError.server(m) }; return data }
+    func request(path:String,method:String,body:Any?=nil,headers:[String:String]=[:]) async throws -> Data { guard let baseURL=validatedBaseURL, let url=URL(string:path,relativeTo:baseURL) else { throw ScheduleServiceError.missingBaseURL }; var r=URLRequest(url:url); r.httpMethod=method; r.setValue("application/json",forHTTPHeaderField:"Content-Type"); headers.forEach { r.setValue($1,forHTTPHeaderField:$0) }; if let body { r.httpBody=try JSONSerialization.data(withJSONObject:body) }; let (data,response)=try await URLSession.shared.data(for:r); guard let http=response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }; guard (200..<300).contains(http.statusCode) else { let m=(try? JSONSerialization.jsonObject(with:data) as? [String:Any])?["error"] as? String ?? "HTTP \(http.statusCode)"; throw ScheduleServiceError.server(m) }; return data }
 }
 enum ServiceSchoolCatalog { static let nju=ServiceSchoolConfiguration(id:"nju",name:"南京大学",timezone:"Asia/Shanghai",terms:[],note:"服务端模板，需按校历校准") }

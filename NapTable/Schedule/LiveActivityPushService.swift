@@ -56,7 +56,16 @@ final class LiveActivityPushService: ObservableObject {
     /// App Group: only the app itself ever talks to the server.
     private static let deviceIDKey = "naptable.liveActivity.deviceID"
     private static let secretKey = "naptable.liveActivity.deviceSecret"
+    private static let channelIDKey = "naptable.liveActivity.channelID"
     private static let digestKey = "naptable.liveActivity.planDigest"
+    private static let pendingStartTokenKey = "naptable.liveActivity.pendingStartToken"
+    private static let pendingActivityTokensKey = "naptable.liveActivity.pendingActivityTokens"
+
+    private struct PendingActivityRegistration: Codable, Equatable {
+        var activityID: String
+        var updateToken: String
+        var expiresAt: Int
+    }
 
     @Published private(set) var status: Status = .off
 
@@ -70,6 +79,7 @@ final class LiveActivityPushService: ObservableObject {
 
     var isEnabled: Bool { groupDefaults?.object(forKey: Self.enabledKey) as? Bool ?? false }
     var deviceID: String? { defaults.string(forKey: Self.deviceIDKey) }
+    var channelID: String? { defaults.string(forKey: Self.channelIDKey) }
     private var secret: String? { defaults.string(forKey: Self.secretKey) }
 
     /// `development` for a build signed with a development profile, so the
@@ -96,6 +106,7 @@ final class LiveActivityPushService: ObservableObject {
     /// only delivered to a running app.
     func activate() {
         NativeLiveActivityController.shared.wantsPushToken = isEnabled
+        NativeLiveActivityController.shared.broadcastChannelID = channelID
         NativeLiveActivityController.shared.planDidChange = { [weak self] plan in self?.submit(plan) }
         observeActivities()
         guard isEnabled else {
@@ -104,7 +115,13 @@ final class LiveActivityPushService: ObservableObject {
         }
         status = deviceID == nil ? .waitingForToken : status
         observeStartToken()
-        Task { await self.refreshStatus() }
+        Task {
+            if let token = self.defaults.string(forKey: Self.pendingStartTokenKey) {
+                await self.registerDevice(startToken: token)
+            }
+            await self.flushPendingActivityRegistrations()
+            await self.refreshStatus()
+        }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -117,7 +134,7 @@ final class LiveActivityPushService: ObservableObject {
             status = .waitingForToken
             observeStartToken()
             // A token that arrived while the feature was off is still valid.
-            if let pendingStartToken {
+            if let pendingStartToken = pendingStartToken ?? defaults.string(forKey: Self.pendingStartTokenKey) {
                 self.pendingStartToken = nil
                 Task { await self.registerDevice(startToken: pendingStartToken) }
             }
@@ -135,7 +152,10 @@ final class LiveActivityPushService: ObservableObject {
         guard startTokenTask == nil else { return }
         startTokenTask = Task { @MainActor [weak self] in
             for await data in Activity<ScheduleLiveActivityAttributes>.pushToStartTokenUpdates {
-                await self?.registerDevice(startToken: Self.hex(data))
+                guard let self else { continue }
+                let token = Self.hex(data)
+                self.defaults.set(token, forKey: Self.pendingStartTokenKey)
+                await self.registerDevice(startToken: token)
             }
         }
     }
@@ -171,40 +191,126 @@ final class LiveActivityPushService: ObservableObject {
 
     private func registerDevice(startToken: String) async {
         guard isEnabled else {
+            if !startToken.isEmpty {
+                defaults.set(startToken, forKey: Self.pendingStartTokenKey)
+            }
             pendingStartToken = startToken
             return
         }
-        var body: [String: Any] = [
+        if !startToken.isEmpty {
+            defaults.set(startToken, forKey: Self.pendingStartTokenKey)
+        }
+        let baseBody: [String: Any] = [
             "startToken": startToken,
             "environment": Self.environment,
             "bundleID": Bundle.main.bundleIdentifier ?? "",
             "timeZone": "Asia/Shanghai",
         ]
-        if let deviceID { body["deviceID"] = deviceID }
-        do {
-            let result = try await request(path: "/v1/live-activity/devices", method: "POST", body: body)
-            if let id = result["deviceID"] as? String { defaults.set(id, forKey: Self.deviceIDKey) }
-            if let secret = result["secret"] as? String { defaults.set(secret, forKey: Self.secretKey) }
-            if result["pushConfigured"] as? Bool == false {
-                status = .failed("服务端还没有配置 APNs 推送密钥。")
-                return
+        var lastError: Error?
+        for attempt in 0..<4 {
+            var body = baseBody
+            if #available(iOS 26.0, *) { body["supportsBroadcast"] = true }
+            if let snapshot = NativeLiveActivityController.shared.currentScheduleMetadata {
+                body["schoolID"] = snapshot.schoolID ?? ""
+                body["termID"] = snapshot.termID ?? ""
             }
-            // A token can arrive before or after the first plan is rendered.
-            defaults.removeObject(forKey: Self.digestKey)
-            NativeLiveActivityController.shared.replanForPush()
-        } catch {
-            status = .failed(error.localizedDescription)
+            if let deviceID { body["deviceID"] = deviceID }
+            do {
+                let result = try await request(path: "/v1/live-activity/devices", method: "POST", body: body)
+                if let id = result["deviceID"] as? String { defaults.set(id, forKey: Self.deviceIDKey) }
+                if let secret = result["secret"] as? String { defaults.set(secret, forKey: Self.secretKey) }
+                if !startToken.isEmpty {
+                    defaults.removeObject(forKey: Self.pendingStartTokenKey)
+                }
+                if let channelID = result["channelID"] as? String {
+                    defaults.set(channelID, forKey: Self.channelIDKey)
+                    NativeLiveActivityController.shared.broadcastChannelID = channelID
+                } else {
+                    defaults.removeObject(forKey: Self.channelIDKey)
+                    NativeLiveActivityController.shared.broadcastChannelID = nil
+                }
+                if result["pushConfigured"] as? Bool == false {
+                    status = .failed("服务端还没有配置 APNs 推送密钥。")
+                    return
+                }
+                // A token can arrive before or after the first plan is rendered.
+                defaults.removeObject(forKey: Self.digestKey)
+                NativeLiveActivityController.shared.replanForPush()
+                await flushPendingActivityRegistrations()
+                return
+            } catch {
+                lastError = error
+                if attempt < 3 {
+                    try? await Task.sleep(for: .seconds(Double(1 << attempt)))
+                }
+            }
         }
+        status = .failed(lastError?.localizedDescription ?? "无法注册推送设备")
     }
 
     private func registerActivity(_ activity: Activity<ScheduleLiveActivityAttributes>, token: String) async {
-        guard isEnabled, let deviceID else { return }
-        let expires = activity.content.state.endDate.addingTimeInterval(6 * 3600)
-        _ = try? await request(
-            path: "/v1/live-activity/devices/\(deviceID)/activities",
-            method: "POST",
-            body: ["activityID": activity.id, "updateToken": token, "expiresAt": Int(expires.timeIntervalSince1970)]
+        guard isEnabled else { return }
+        let expires = max(
+            activity.content.state.endDate.addingTimeInterval(48 * 3600),
+            Date().addingTimeInterval(48 * 3600)
         )
+        let registration = PendingActivityRegistration(
+            activityID: activity.id,
+            updateToken: token,
+            expiresAt: Int(expires.timeIntervalSince1970)
+        )
+        savePendingActivityRegistration(registration)
+        await retryActivityRegistration(registration)
+    }
+
+    private func retryActivityRegistration(_ registration: PendingActivityRegistration) async {
+        guard isEnabled else { return }
+        for attempt in 0..<4 {
+            guard deviceID != nil else { return }
+            do {
+                let id = registration.activityID
+                _ = try await request(
+                    path: "/v1/live-activity/devices/\(deviceID!)/activities",
+                    method: "POST",
+                    body: ["activityID": id, "updateToken": registration.updateToken, "expiresAt": registration.expiresAt]
+                )
+                removePendingActivityRegistration(id)
+                return
+            } catch {
+                if attempt < 3 {
+                    try? await Task.sleep(for: .seconds(Double(1 << attempt)))
+                }
+            }
+        }
+    }
+
+    private func pendingActivityRegistrations() -> [PendingActivityRegistration] {
+        guard let data = defaults.data(forKey: Self.pendingActivityTokensKey),
+              let values = try? JSONDecoder().decode([PendingActivityRegistration].self, from: data) else { return [] }
+        return values
+    }
+
+    private func savePendingActivityRegistration(_ registration: PendingActivityRegistration) {
+        var values = pendingActivityRegistrations().filter { $0.activityID != registration.activityID }
+        values.append(registration)
+        if let data = try? JSONEncoder().encode(values) {
+            defaults.set(data, forKey: Self.pendingActivityTokensKey)
+        }
+    }
+
+    private func removePendingActivityRegistration(_ activityID: String) {
+        let values = pendingActivityRegistrations().filter { $0.activityID != activityID }
+        if values.isEmpty {
+            defaults.removeObject(forKey: Self.pendingActivityTokensKey)
+        } else if let data = try? JSONEncoder().encode(values) {
+            defaults.set(data, forKey: Self.pendingActivityTokensKey)
+        }
+    }
+
+    private func flushPendingActivityRegistrations() async {
+        for registration in pendingActivityRegistrations() {
+            await retryActivityRegistration(registration)
+        }
     }
 
     private func forgetActivity(_ activityID: String) async {
@@ -217,12 +323,23 @@ final class LiveActivityPushService: ObservableObject {
         _ = try? await request(path: "/v1/live-activity/devices/\(deviceID)", method: "DELETE")
         defaults.removeObject(forKey: Self.deviceIDKey)
         defaults.removeObject(forKey: Self.secretKey)
+        defaults.removeObject(forKey: Self.channelIDKey)
+        NativeLiveActivityController.shared.broadcastChannelID = nil
     }
 
     /// Upload a freshly rendered plan, skipping the round trip when nothing
     /// about it changed since the last upload.
     func submit(_ plan: [NativeLiveActivityController.PlannedPush]) {
-        guard isEnabled, deviceID != nil else { return }
+        guard isEnabled else { return }
+        guard deviceID != nil else {
+            // Scheduled Live Activities on iOS 26 do not need a push-to-start
+            // token. Register a lightweight device row so the server can
+            // return the school's broadcast channel.
+            if #available(iOS 26.0, *) {
+                Task { await self.registerDevice(startToken: "") }
+            }
+            return
+        }
         let items = plan.map(Self.payload)
         let digest = Self.digest(of: items)
         guard digest != defaults.string(forKey: Self.digestKey) else { return }
@@ -230,6 +347,7 @@ final class LiveActivityPushService: ObservableObject {
         uploadTask = Task { @MainActor [weak self] in
             guard let self, let deviceID = self.deviceID else { return }
             do {
+                await self.refreshDeviceMetadata()
                 let result = try await self.request(
                     path: "/v1/live-activity/devices/\(deviceID)/plan", method: "PUT", body: ["items": items])
                 self.defaults.set(digest, forKey: Self.digestKey)
@@ -239,6 +357,27 @@ final class LiveActivityPushService: ObservableObject {
                 self.defaults.removeObject(forKey: Self.digestKey)
                 self.status = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    private func refreshDeviceMetadata() async {
+        guard let deviceID, let snapshot = NativeLiveActivityController.shared.currentScheduleMetadata else { return }
+        var body: [String: Any] = [
+            "deviceID": deviceID,
+            "environment": Self.environment,
+            "bundleID": Bundle.main.bundleIdentifier ?? "",
+            "timeZone": snapshot.timeZone ?? "Asia/Shanghai",
+            "schoolID": snapshot.schoolID ?? "",
+            "termID": snapshot.termID ?? "",
+        ]
+        if #available(iOS 26.0, *) { body["supportsBroadcast"] = true }
+        guard let result = try? await request(path: "/v1/live-activity/devices", method: "POST", body: body) else { return }
+        if let channelID = result["channelID"] as? String {
+            defaults.set(channelID, forKey: Self.channelIDKey)
+            NativeLiveActivityController.shared.broadcastChannelID = channelID
+        } else {
+            defaults.removeObject(forKey: Self.channelIDKey)
+            NativeLiveActivityController.shared.broadcastChannelID = nil
         }
     }
 
@@ -254,7 +393,14 @@ final class LiveActivityPushService: ObservableObject {
             status = .failed("服务端还没有配置 APNs 推送密钥。")
             return
         }
-        if result["hasStartToken"] as? Bool == false {
+        if let channelID = result["channelID"] as? String {
+            defaults.set(channelID, forKey: Self.channelIDKey)
+            NativeLiveActivityController.shared.broadcastChannelID = channelID
+        } else {
+            defaults.removeObject(forKey: Self.channelIDKey)
+            NativeLiveActivityController.shared.broadcastChannelID = nil
+        }
+        if result["hasStartToken"] as? Bool == false && channelID == nil {
             status = .waitingForToken
             return
         }
@@ -318,7 +464,7 @@ final class LiveActivityPushService: ObservableObject {
 
     @discardableResult
     private func request(path: String, method: String, body: [String: Any]? = nil) async throws -> [String: Any] {
-        guard let base = URL(string: ScheduleSharingService.shared.serverURLString),
+        guard let base = ScheduleSharingService.shared.validatedBaseURL,
               let url = URL(string: path, relativeTo: base) else { throw ScheduleServiceError.missingBaseURL }
         var value = URLRequest(url: url)
         value.httpMethod = method

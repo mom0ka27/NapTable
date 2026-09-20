@@ -16,6 +16,8 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
     var termVersion: Int?
     var termWeekCount: Int?
     var termTimezone: String?
+    /// 分享携带的是发布时快照，不能被学校当前学期的自动刷新覆盖。
+    var configurationFrozen: Bool
     /// 学期的调休安排，跟着学期配置一起进课表。
     var calendarAdjustments: [CalendarAdjustment]?
 
@@ -29,6 +31,7 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
         termVersion: Int? = nil,
         termWeekCount: Int? = nil,
         termTimezone: String? = nil,
+        configurationFrozen: Bool = false,
         calendarAdjustments: [CalendarAdjustment]? = nil
     ) {
         self.name = name
@@ -36,6 +39,7 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
         self.classTimeList = classTimeList
         self.semesterStartMonday = semesterStartMonday
         self.schoolID = schoolID; self.termID = termID; self.termVersion = termVersion; self.termWeekCount = termWeekCount; self.termTimezone = termTimezone
+        self.configurationFrozen = configurationFrozen
         self.calendarAdjustments = calendarAdjustments
     }
 
@@ -49,6 +53,7 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
             && lhs.classTimeList == rhs.classTimeList
             && lhs.semesterStartMonday == rhs.semesterStartMonday
             && lhs.schoolID == rhs.schoolID && lhs.termID == rhs.termID && lhs.termVersion == rhs.termVersion && lhs.termWeekCount == rhs.termWeekCount && lhs.termTimezone == rhs.termTimezone
+            && lhs.configurationFrozen == rhs.configurationFrozen
             && lhs.calendarAdjustments == rhs.calendarAdjustments
     }
 }
@@ -94,6 +99,8 @@ nonisolated enum CoursePayloadCodec {
         let termVersion = (root["termVersion"] as? NSNumber)?.intValue ?? (root["term_version"] as? NSNumber)?.intValue
         let termWeekCount = (root["termWeekCount"] as? NSNumber)?.intValue ?? (root["term_week_count"] as? NSNumber)?.intValue
         let termTimezone = root["termTimezone"] as? String ?? root["term_timezone"] as? String
+        let configurationFrozen = root["configurationFrozen"] as? Bool
+            ?? (root["owner"] != nil && root["id"] != nil && termID != nil)
         let adjustments = decodeAdjustments(root["calendar_adjustments"] ?? root["calendarAdjustments"] ?? root["adjustments"])
         return ImportedSchedule(
             name: (name?.isEmpty == false ? name! : defaultTableName()),
@@ -101,6 +108,7 @@ nonisolated enum CoursePayloadCodec {
             classTimeList: (classTimes?.isEmpty == false) ? classTimes : nil,
             semesterStartMonday: (startMonday?.isEmpty == false) ? startMonday : nil
             , schoolID: schoolID, termID: termID, termVersion: termVersion, termWeekCount: termWeekCount, termTimezone: termTimezone,
+            configurationFrozen: configurationFrozen,
             calendarAdjustments: adjustments
         )
     }

@@ -121,6 +121,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         self.assertEqual(seu["term_week_count"], 20)
         self.assertEqual(len(seu["class_time_list"]), 3)
         self.assertEqual(seu["term_timezone"], "Asia/Shanghai")
+        self.assertTrue(seu["configurationFrozen"])
 
     def test_the_reader_sees_the_catalogue_school_name(self):
         # The sharer's app may never have loaded the catalogue and can send the
@@ -135,12 +136,12 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         created = self.create(owner="   ")
         self.assertEqual(created["owner"], "匿名")
 
-    def test_a_share_carries_its_school_holiday_table(self):
-        adjusted = dict(SEU_TERM, adjustments=[
+    def test_a_share_carries_the_global_holiday_table(self):
+        adjustments = [
             {"date": "2026-10-01", "kind": "off", "note": "国庆节"},
             {"date": "2026-10-11", "kind": "swap", "source": "2026-10-09"},
-        ])
-        self.req("POST", "/v1/admin/schools/seu/terms", adjusted, {"X-Admin-Token": ADMIN})
+        ]
+        self.req("POST", "/v1/admin/calendar", {"adjustments": adjustments}, {"X-Admin-Token": ADMIN})
         term = next(t for s in self.req("GET", "/v1/schools")["schools"] if s["id"] == "seu"
                     for t in s["terms"] if t["id"] == "2026-fall")
         self.assertEqual(len(term["adjustments"]), 2)
@@ -149,20 +150,20 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         nju = self.req("GET", "/v1/shares/" + self.create()["id"])
         self.assertEqual([a["date"] for a in seu["calendar_adjustments"]], ["2026-10-01", "2026-10-11"])
         self.assertEqual(seu["calendar_adjustments"][1]["source"], "2026-10-09")
-        self.assertEqual(nju["calendar_adjustments"], [],
-                         "A school with no 调休 table must not inherit another school's")
+        self.assertEqual(nju["calendar_adjustments"], seu["calendar_adjustments"],
+                         "统一调休必须对所有学校生效")
         self.assertEqual(self.req("GET", f"/v1/shares/{seu['id']}/meta")["adjustmentCount"], 2)
 
     def test_an_invalid_adjustment_table_is_refused(self):
-        broken = dict(SEU_TERM, adjustments=[{"date": "2026-10-11", "kind": "swap"}])
-        body = self.req("POST", "/v1/admin/schools/seu/terms", broken, {"X-Admin-Token": ADMIN}, expect=400)
+        broken = {"adjustments": [{"date": "2026-10-11", "kind": "swap"}]}
+        body = self.req("POST", "/v1/admin/calendar", broken, {"X-Admin-Token": ADMIN}, expect=400)
         self.assertIn("调课", body["error"])
 
     def test_resync_picks_up_a_newly_published_holiday_table(self):
         created = self.create(school="seu", term="2026-fall")
         self.assertEqual(self.req("GET", "/v1/shares/" + created["id"])["calendar_adjustments"], [])
-        self.req("POST", "/v1/admin/schools/seu/terms",
-                 dict(SEU_TERM, adjustments=[{"date": "2026-10-01", "kind": "off", "note": "国庆节"}]),
+        self.req("POST", "/v1/admin/calendar",
+                 {"adjustments": [{"date": "2026-10-01", "kind": "off", "note": "国庆节"}]},
                  {"X-Admin-Token": ADMIN})
         self.assertEqual(self.req("GET", "/v1/shares/" + created["id"])["calendar_adjustments"], [])
         resynced = self.req("POST", f"/v1/shares/{created['id']}/resync", None,
@@ -246,9 +247,10 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
 
     def test_a_corrected_bell_schedule_reaches_a_share_only_on_resync(self):
         created = self.create(school="seu", term="2026-fall")
-        corrected = dict(SEU_TERM, periods=[dict(p, start="08:00", end="08:40") if p["id"] == 1 else p
-                                            for p in SEU_TERM["periods"]])
-        self.req("POST", "/v1/admin/schools/seu/terms", corrected, {"X-Admin-Token": ADMIN})
+        corrected = [dict(p, start="08:00", end="08:40") if p["id"] == 1 else p
+                     for p in SEU_TERM["periods"]]
+        self.req("POST", "/v1/schools/seu", {"name": "东南大学", "periods": corrected},
+                 {"X-Admin-Token": ADMIN})
 
         frozen = self.req("GET", "/v1/shares/" + created["id"])
         self.assertEqual(frozen["class_time_list"][0]["start"], "07:50",

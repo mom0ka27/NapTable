@@ -216,7 +216,9 @@ class HTTP2Tests(unittest.TestCase):
     def _client(self, server):
         key = apns.ES256Key(VECTOR_KEY)
         return apns.APNsClient(key, "KEYID", "TEAMID", "me.mom0ka27.naptable",
-                               port=server.port, hosts={"production": "127.0.0.1", "sandbox": "127.0.0.1"})
+                               port=server.port, hosts={"production": "127.0.0.1", "sandbox": "127.0.0.1"},
+                               channel_hosts={"production": "127.0.0.1", "sandbox": "127.0.0.1"},
+                               channel_ports={"production": server.port, "sandbox": server.port})
 
     def _patched(self, client):
         original = apns.HTTP2Connection.connect
@@ -258,6 +260,35 @@ class HTTP2Tests(unittest.TestCase):
         client.close()
         self.assertEqual(result, {"ok": False, "status": 400, "reason": "BadDeviceToken"})
 
+    def test_broadcast_uses_the_apns_broadcast_endpoint_and_channel_header(self):
+        server = FakeAPNs(status=200)
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        result = client.broadcast(
+            "dHN0LXNyY2gtY2hubA==", {"aps": {"event": "update"}},
+            environment="production", expiration=0, collapse_id="school-boundary")
+        client.close()
+        self.assertEqual(result, {"ok": True, "status": 200, "reason": ""})
+        request = server.requests[0]
+        self.assertEqual(request["headers"][":path"], "/4/broadcasts/apps/me.mom0ka27.naptable")
+        self.assertEqual(request["headers"]["apns-channel-id"], "dHN0LXNyY2gtY2hubA==")
+        self.assertEqual(request["headers"]["apns-push-type"], "liveactivity")
+        self.assertEqual(request["headers"]["apns-expiration"], "0")
+        self.assertNotIn("apns-topic", request["headers"])
+
+    def test_channel_list_uses_the_management_endpoint(self):
+        server = FakeAPNs(status=200, body=json.dumps({"channels": ["channel-a"]}).encode())
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        self.assertEqual(client.list_channels("sandbox"), ["channel-a"])
+        client.close()
+        request = server.requests[0]
+        self.assertEqual(request["headers"][":method"], "GET")
+        self.assertEqual(request["headers"][":path"], "/1/apps/me.mom0ka27.naptable/all-channels")
+        self.assertEqual(request["body"], b"")
+
     def test_transport_failure_is_reported_not_raised(self):
         server = FakeAPNs()
         server.start()
@@ -286,6 +317,37 @@ class HTTP2Tests(unittest.TestCase):
         self.assertEqual(first, client.authorization())
         clock[0] += apns.TOKEN_LIFETIME + 1
         self.assertNotEqual(first, client.authorization())
+
+
+class ChannelManagementTests(unittest.TestCase):
+    def client_with_calls(self, responses):
+        client = object.__new__(apns.APNsClient)
+        calls = []
+
+        def call(method, suffix, environment="production", body=None, channel_id=None):
+            calls.append((method, suffix, environment, body, channel_id))
+            return responses.pop(0)
+
+        client._channel_call = call
+        return client, calls
+
+    def test_create_finds_the_new_channel_from_before_and_after_lists(self):
+        client, calls = self.client_with_calls([
+            {"channels": ["existing"]}, None, {"channels": ["existing", "created"]},
+        ])
+        self.assertEqual(client.create_channel("sandbox"), "created")
+        self.assertEqual(calls[1], ("POST", "channels", "sandbox", {
+            "message-storage-policy": 1, "push-type": "LiveActivity"}, None))
+
+    def test_create_rejects_an_ambiguous_list_diff(self):
+        client, _ = self.client_with_calls([{"channels": []}, None, {"channels": ["a", "b"]}])
+        with self.assertRaises(apns.APNsError):
+            client.create_channel()
+
+    def test_delete_sends_the_channel_header(self):
+        client, calls = self.client_with_calls([None])
+        client.delete_channel("channel-a", "production")
+        self.assertEqual(calls, [("DELETE", "channels", "production", None, "channel-a")])
 
 
 class EnvironmentTests(unittest.TestCase):

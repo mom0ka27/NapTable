@@ -293,6 +293,37 @@ final class AppStore: ObservableObject {
         scheduleSave(); resetWeekToLive()
     }
 
+    func refreshServiceConfiguration(_ schools: [ServiceSchoolConfiguration]) {
+        var selectedChanged = false
+        var changed = false
+        for index in tables.indices {
+            guard let schoolID = tables[index].schoolID,
+                  tables[index].serviceConfigurationUpdatesEnabled != false,
+                  let school = schools.first(where: { $0.id == schoolID }),
+                  let term = school.currentTerm else { continue }
+            let classTimes = term.classTimes
+            let adjustments = term.calendarAdjustments
+            guard tables[index].termID != term.id
+                    || tables[index].termVersion != term.version
+                    || tables[index].semesterStartMonday != term.semesterStartMonday
+                    || tables[index].termWeekCount != term.weekCount
+                    || tables[index].classTimeList != classTimes
+                    || tables[index].calendarAdjustments != adjustments else { continue }
+            tables[index].termID = term.id
+            tables[index].termVersion = term.version
+            tables[index].termWeekCount = term.weekCount
+            tables[index].termTimezone = term.timezone
+            tables[index].semesterStartMonday = term.semesterStartMonday
+            tables[index].classTimeList = classTimes
+            tables[index].calendarAdjustments = adjustments
+            selectedChanged = selectedChanged || tables[index].id == selectedTableId
+            changed = true
+        }
+        guard changed else { return }
+        scheduleSave()
+        if selectedChanged { resetWeekToLive() }
+    }
+
     func deleteTable(_ id: Int) {
         guard tables.count > 1 else { return }
         tables.removeAll { $0.id == id }
@@ -414,6 +445,7 @@ final class AppStore: ObservableObject {
             tables[index].termVersion = payload.termVersion
             tables[index].termWeekCount = payload.termWeekCount
             tables[index].termTimezone = payload.termTimezone
+            tables[index].serviceConfigurationUpdatesEnabled = !payload.configurationFrozen
             if let start = payload.semesterStartMonday { tables[index].semesterStartMonday = start }
             if let times = payload.classTimeList, !times.isEmpty { tables[index].classTimeList = times }
             // 学期换了就整张替换，包括「这学期没有调休」这种空表。

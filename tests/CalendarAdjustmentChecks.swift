@@ -100,6 +100,8 @@ struct CalendarAdjustmentChecks {
         ])
         expect(decoded?.count == 2, "坏日期和缺源日期的调课都被丢掉，实际 \(decoded?.count ?? -1)")
         expect(decoded?.first?.kind == .swap && decoded?.first?.source == "2026-10-09", "调课的源日期解析出来了")
+        let shared = try! CoursePayloadCodec.decode(json: #"{"id":"ABC123","owner":"张三","schoolID":"nju","termID":"fall","courses":[]}"#)
+        expect(shared.configurationFrozen, "分享课表保留发布时的服务端配置快照")
 
         print(failures == 0 ? "\n全部通过" : "\n\(failures) 项未通过")
         exit(failures == 0 ? 0 : 1)

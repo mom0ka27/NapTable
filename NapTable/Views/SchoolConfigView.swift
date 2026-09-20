@@ -2,19 +2,14 @@ import SwiftUI
 
 struct SchoolConfigView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var serverURL = ScheduleSharingService.shared.serverURLString
-    @State private var message: String?
 
     var body: some View {
         Form {
             Section("服务地址") {
-                TextField("服务地址", text: $serverURL)
-                Button("保存服务地址") {
-                    do {
-                        try ScheduleSharingService.shared.setServerURL(serverURL)
-                        message = "已保存，导入时会自动读取对应学校配置"
-                    } catch { message = error.localizedDescription }
-                }
+                LabeledContent("服务地址", value: ScheduleSharingService.shared.serverURLString)
+                Text("导入时会自动读取对应学校配置。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section("当前课表配置") {
                 if let table = store.selectedTable, let school = table.schoolID, let term = table.termID {
@@ -47,7 +42,6 @@ struct SchoolConfigView: View {
                     LabeledContent("第\(index + 1)节", value: "\(period.start)–\(period.end)")
                 }
             }
-            if let message { Text(message).foregroundStyle(.secondary) }
         }
         .navigationTitle("课表服务")
     }

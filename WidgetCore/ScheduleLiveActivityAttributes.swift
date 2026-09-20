@@ -36,6 +36,12 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         public let nextCourseEnd: Date?
         public let sourceLabel: String?
         public let updatedAt: Date
+        /// Compact school broadcast marker. When present, the widget resolves
+        /// the visible course from the timetable stored in the App Group.
+        public let broadcastDateKey: String?
+        public let broadcastPeriod: Int?
+        public let broadcastPhase: String?
+        public let broadcastTimestamp: Date?
 
         /// A persisted activity can render after its deadline. Keep its timer
         /// interval valid even when a late update arrives after the course ends.
@@ -101,7 +107,11 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             nextCourseStart: Date? = nil,
             nextCourseEnd: Date? = nil,
             sourceLabel: String? = nil,
-            updatedAt: Date = .now
+            updatedAt: Date = .now,
+            broadcastDateKey: String? = nil,
+            broadcastPeriod: Int? = nil,
+            broadcastPhase: String? = nil,
+            broadcastTimestamp: Date? = nil
         ) {
             self.phase = phase
             self.courseName = courseName
@@ -122,6 +132,10 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             self.nextCourseEnd = nextCourseEnd
             self.sourceLabel = sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
             self.updatedAt = updatedAt
+            self.broadcastDateKey = broadcastDateKey
+            self.broadcastPeriod = broadcastPeriod
+            self.broadcastPhase = broadcastPhase
+            self.broadcastTimestamp = broadcastTimestamp
         }
 
         // MARK: Wire format
@@ -139,6 +153,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             case startDate, endDate, nextCourseName, nextCoursePeriod, nextCourseDateLabel
             case nextCourseWeekRangeLabel, nextCourseTeacher, nextCourseLocation
             case nextCourseStart, nextCourseEnd, sourceLabel, updatedAt
+            case broadcastDateKey, broadcastPeriod, broadcastPhase, broadcastTimestamp
         }
 
         /// An activity started by an earlier build outlives the app update that
@@ -154,15 +169,16 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
 
         public init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
-            phase = try values.decode(Phase.self, forKey: .phase)
-            courseName = try values.decode(String.self, forKey: .courseName)
+            phase = try values.decodeIfPresent(Phase.self, forKey: .phase) ?? .upcoming
+            courseName = try values.decodeIfPresent(String.self, forKey: .courseName) ?? ""
             teacher = try values.decodeIfPresent(String.self, forKey: .teacher) ?? ""
             location = try values.decodeIfPresent(String.self, forKey: .location) ?? ""
             periodLabel = try values.decodeIfPresent(String.self, forKey: .periodLabel)
             dateLabel = try values.decodeIfPresent(String.self, forKey: .dateLabel)
             weekRangeLabel = try values.decodeIfPresent(String.self, forKey: .weekRangeLabel)
-            startDate = Self.instant(try values.decode(Double.self, forKey: .startDate))
-            endDate = Self.instant(try values.decode(Double.self, forKey: .endDate))
+            let fallback = Date()
+            startDate = try values.decodeIfPresent(Double.self, forKey: .startDate).map(Self.instant) ?? fallback
+            endDate = try values.decodeIfPresent(Double.self, forKey: .endDate).map(Self.instant) ?? startDate
             nextCourseName = try values.decodeIfPresent(String.self, forKey: .nextCourseName)
             nextCoursePeriod = try values.decodeIfPresent(String.self, forKey: .nextCoursePeriod)
             nextCourseDateLabel = try values.decodeIfPresent(String.self, forKey: .nextCourseDateLabel)
@@ -172,7 +188,11 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             nextCourseStart = try values.decodeIfPresent(Double.self, forKey: .nextCourseStart).map(Self.instant)
             nextCourseEnd = try values.decodeIfPresent(Double.self, forKey: .nextCourseEnd).map(Self.instant)
             sourceLabel = try values.decodeIfPresent(String.self, forKey: .sourceLabel)
-            updatedAt = Self.instant(try values.decode(Double.self, forKey: .updatedAt))
+            updatedAt = try values.decodeIfPresent(Double.self, forKey: .updatedAt).map(Self.instant) ?? fallback
+            broadcastDateKey = try values.decodeIfPresent(String.self, forKey: .broadcastDateKey)
+            broadcastPeriod = try values.decodeIfPresent(Int.self, forKey: .broadcastPeriod)
+            broadcastPhase = try values.decodeIfPresent(String.self, forKey: .broadcastPhase)
+            broadcastTimestamp = try values.decodeIfPresent(Double.self, forKey: .broadcastTimestamp).map(Self.instant)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -196,6 +216,10 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             try values.encodeIfPresent(nextCourseEnd?.timeIntervalSince1970, forKey: .nextCourseEnd)
             try values.encodeIfPresent(sourceLabel, forKey: .sourceLabel)
             try values.encode(updatedAt.timeIntervalSince1970, forKey: .updatedAt)
+            try values.encodeIfPresent(broadcastDateKey, forKey: .broadcastDateKey)
+            try values.encodeIfPresent(broadcastPeriod, forKey: .broadcastPeriod)
+            try values.encodeIfPresent(broadcastPhase, forKey: .broadcastPhase)
+            try values.encodeIfPresent(broadcastTimestamp?.timeIntervalSince1970, forKey: .broadcastTimestamp)
         }
     }
 
