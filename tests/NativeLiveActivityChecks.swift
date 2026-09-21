@@ -389,7 +389,27 @@ struct NativeLiveActivityChecks {
                         .state.normalizedAdjustmentNote == nil,
                      "An ordinary day carries no adjustment note")
 
-        print("Live Activity checks passed: lead window, lead setting, create, cache update, start, end, retry, settings, permission, persistence, background reconcile, reset, preview, push plan and 调休")
+        // A school channel continues sending boundaries after our last class.
+        // Tomorrow's scheduled activity must not keep today's empty one alive.
+        controller.end()
+        await settle()
+        defaults.set(true, forKey: NativeLiveActivityController.enabledKey)
+        clock = start
+        controller.broadcastDayChannels = ["2026-09-16": "school-16", "2026-09-17": "school-17"]
+        await settle()
+        controller.accept(multiCourseFixture())
+        await settle()
+        precondition(activeActivities.contains { $0.attributes.dateKey == "2026-09-16" })
+        precondition(activeActivities.contains { $0.attributes.dateKey == "2026-09-17" })
+        clock = start.addingTimeInterval(8 * 3600)
+        controller.foreground()
+        await settle()
+        precondition(!activeActivities.contains { $0.attributes.dateKey == "2026-09-16" }, "Finished day must be dismissed even with tomorrow scheduled")
+        precondition(activeActivities.contains { $0.attributes.dateKey == "2026-09-17" }, "Tomorrow's activity must survive cleanup")
+        controller.end()
+        await settle()
+
+        print("Live Activity checks passed: lead window, lead setting, create, cache update, start, end, retry, settings, permission, persistence, background reconcile, reset, preview, push plan, scheduled cleanup and 调休")
     }
 
     @MainActor

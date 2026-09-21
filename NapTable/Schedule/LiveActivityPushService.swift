@@ -72,6 +72,7 @@ final class LiveActivityPushService: ObservableObject {
     private var tokenTasks: [String: Task<Void, Never>] = [:]
     private var uploadTask: Task<Void, Never>?
     private var pendingStartToken: String?
+    private var dayConfigTask: Task<Void, Never>?
 
     /// Server push is not a separate feature: whoever turned Live Activities on
     /// wants them to appear without opening the app, so this follows the single
@@ -104,6 +105,13 @@ final class LiveActivityPushService: ObservableObject {
     /// triggers: the update token of the activity the system just created is
     /// only delivered to a running app.
     func activate() {
+        if #available(iOS 26.0, *) {
+            let controller = NativeLiveActivityController.shared
+            controller.wantsPushToken = false
+            controller.planDidChange = { [weak self] _ in self?.refreshDayChannels() }
+            refreshDayChannels()
+            return
+        }
         NativeLiveActivityController.shared.wantsPushToken = isEnabled
         NativeLiveActivityController.shared.broadcastChannelID = channelID
         NativeLiveActivityController.shared.planDidChange = { [weak self] plan in self?.submit(plan) }
@@ -126,6 +134,16 @@ final class LiveActivityPushService: ObservableObject {
     /// Called by the controller right after the Live Activity switch changes.
     /// It never writes the setting itself — `isEnabled` reads the same key.
     func enabledDidChange(_ enabled: Bool) {
+        if #available(iOS 26.0, *) {
+            if enabled { activate() }
+            else {
+                dayConfigTask?.cancel()
+                NativeLiveActivityController.shared.broadcastDayChannels = [:]
+                Task { await self.forgetDevice() }
+                status = .off
+            }
+            return
+        }
         // A locally started activity is only push-updatable when it was
         // requested with a token, so the controller has to know before it
         // creates the next one.
@@ -330,6 +348,7 @@ final class LiveActivityPushService: ObservableObject {
     /// Upload a freshly rendered plan, skipping the round trip when nothing
     /// about it changed since the last upload.
     func submit(_ plan: [NativeLiveActivityController.PlannedPush]) {
+        if #available(iOS 26.0, *) { refreshDayChannels(); return }
         guard isEnabled else { return }
         guard deviceID != nil else {
             // Scheduled Live Activities on iOS 26 do not need a push-to-start
@@ -382,6 +401,7 @@ final class LiveActivityPushService: ObservableObject {
     }
 
     func refreshStatus() async {
+        if #available(iOS 26.0, *) { refreshDayChannels(); return }
         guard isEnabled, let deviceID else { return }
         if let result = try? await request(path: "/v1/live-activity/devices/\(deviceID)", method: "GET") {
             apply(result)
@@ -410,6 +430,33 @@ final class LiveActivityPushService: ObservableObject {
     }
 
     // MARK: - Payload
+
+    private func refreshDayChannels() {
+        guard isEnabled, dayConfigTask == nil else { return }
+        dayConfigTask = Task { [weak self] in
+            guard let self else { return }
+            defer { dayConfigTask = nil }
+            // Retire the pre-upgrade credential before scheduling local starts.
+            if let deviceID {
+                do {
+                    _ = try await request(path: "/v1/live-activity/devices/\(deviceID)", method: "DELETE")
+                    defaults.removeObject(forKey: Self.deviceIDKey)
+                    defaults.removeObject(forKey: Self.secretKey)
+                } catch { status = .failed(error.localizedDescription); return }
+            }
+            guard let school = NativeLiveActivityController.shared.currentScheduleMetadata?.schoolID else { return }
+            do {
+                let result = try await request(path: "/v1/live-activity/day-channels", method: "POST", body: [
+                    "schoolID": school, "environment": Self.environment,
+                    "bundleID": Bundle.main.bundleIdentifier ?? ""
+                ])
+                guard !Task.isCancelled, isEnabled,
+                      school == NativeLiveActivityController.shared.currentScheduleMetadata?.schoolID else { return }
+                NativeLiveActivityController.shared.broadcastDayChannels = result["channels"] as? [String: String] ?? [:]
+                status = .ready(pending: 0, nextFireAt: nil)
+            } catch { status = .failed(error.localizedDescription) }
+        }
+    }
 
     private static func payload(_ push: NativeLiveActivityController.PlannedPush) -> [String: Any] {
         var item: [String: Any] = [

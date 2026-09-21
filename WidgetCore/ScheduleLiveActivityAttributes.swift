@@ -242,11 +242,19 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
     public let semester: String
     public let dateKey: String
     public let week: Int
+    public let reservationStart: Date?
+    public let reservationEnd: Date?
+    public let broadcastChannel: String?
+    public let reminderDate: Date?
 
-    public init(semester: String, dateKey: String, week: Int = 0) {
+    public init(semester: String, dateKey: String, week: Int = 0, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil) {
         self.semester = semester
         self.dateKey = dateKey
         self.week = week
+        self.reservationStart = reservationStart
+        self.reservationEnd = reservationEnd
+        self.broadcastChannel = broadcastChannel
+        self.reminderDate = reminderDate
     }
 
     /// The activity should open the exact timetable context represented by the

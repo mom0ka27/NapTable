@@ -34,6 +34,11 @@ except ImportError:  # pragma: no cover - depends on how the server was started
     import apns
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS la_day_channels (
+ school_id TEXT NOT NULL, date_key TEXT NOT NULL, environment TEXT NOT NULL,
+ bundle_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+ PRIMARY KEY (school_id,date_key,environment,bundle_id)
+);
 CREATE TABLE IF NOT EXISTS la_devices (
  device_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, start_token TEXT NOT NULL DEFAULT '',
  environment TEXT NOT NULL DEFAULT 'production', bundle_id TEXT NOT NULL DEFAULT '',
@@ -170,6 +175,8 @@ class LiveActivityService:
         self.channels = channels or {}
         self._stop = threading.Event()
         self._thread = None
+        self._day_channels_lock = threading.Lock()
+        self._day_channels_checked = 0
         with self.lock:
             self.db.executescript(SCHEMA)
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(la_devices)")}
@@ -243,6 +250,72 @@ class LiveActivityService:
                 print(f"live activity dispatch failed: {error}")
 
     # -- devices -----------------------------------------------------------
+
+    def ensure_day_channels(self):
+        """Provision two school dates, retaining yesterday for late delivery.
+
+        Only server-owned IDs are deleted. APNs allows 10,000 channels per
+        app/environment; failures leave rows intact so cleanup can retry.
+        """
+        if self.client is None or not hasattr(self.client, "create_channel"):
+            return
+        with self._day_channels_lock:
+            now = self.now()
+            if now - self._day_channels_checked < 60:
+                return
+            self._day_channels_checked = now
+            zone = timezone(timedelta(hours=8))
+            today = datetime.fromtimestamp(now, zone).date()
+            with self.lock:
+                if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='school_configs'").fetchone():
+                    return
+                schools = [r[0] for r in self.db.execute("SELECT id FROM school_configs")]
+                rows = self.db.execute("SELECT * FROM la_day_channels").fetchall()
+            bundle = self.client.bundle_id
+            for row in rows:
+                if row["bundle_id"] != bundle:
+                    continue
+                if row["date_key"] < (today - timedelta(days=1)).isoformat():
+                    try:
+                        self.client.delete_channel(row["channel_id"], environment=row["environment"])
+                        with self.lock:
+                            self.db.execute("DELETE FROM la_day_channels WHERE channel_id=?", (row["channel_id"],))
+                            self.db.execute("DELETE FROM la_broadcast_plan WHERE channel_id=?", (row["channel_id"],))
+                            self.db.commit()
+                    except Exception as error:
+                        print(f"day channel cleanup failed: {error}")
+            for school in schools:
+                for offset in range(2):
+                    date = (today + timedelta(days=offset)).isoformat()
+                    for environment in ("production", "sandbox"):
+                        with self.lock:
+                            exists = self.db.execute("SELECT 1 FROM la_day_channels WHERE school_id=? AND date_key=? AND environment=? AND bundle_id=?", (school, date, environment, bundle)).fetchone()
+                            count = self.db.execute("SELECT COUNT(*) FROM la_day_channels WHERE environment=? AND bundle_id=?", (environment, bundle)).fetchone()[0]
+                        if exists:
+                            continue
+                        if count + len(self.channels) >= 9000:
+                            continue
+                        try:
+                            channel = self.client.create_channel(environment=environment)
+                            with self.lock:
+                                self.db.execute("INSERT INTO la_day_channels VALUES (?,?,?,?,?)", (school, date, environment, bundle, channel))
+                                self.db.commit()
+                        except Exception as error:
+                            print(f"day channel provisioning failed: {error}")
+
+    def day_config(self, value):
+        environment = value.get("environment", "production")
+        school = value.get("schoolID", "")
+        if environment not in ("production", "sandbox"):
+            raise PlanError("invalid environment")
+        bundle = getattr(self.client, "bundle_id", "")
+        if bundle and value.get("bundleID") != bundle:
+            raise PlanError("Bundle ID mismatch")
+        # Read only: polling clients never trigger APNs management requests.
+        today = datetime.fromtimestamp(self.now(), timezone(timedelta(hours=8))).date()
+        with self.lock:
+            rows = self.db.execute("SELECT date_key,channel_id FROM la_day_channels WHERE school_id=? AND environment=? AND bundle_id=? AND date_key>=? AND date_key<=?", (school, environment, bundle, today.isoformat(), (today + timedelta(days=1)).isoformat())).fetchall()
+        return {"channels": {r[0]: r[1] for r in rows}, "pushConfigured": self.client is not None}
 
     def register(self, value):
         """Create a device row, or refresh the one identified by its secret."""
@@ -435,13 +508,15 @@ class LiveActivityService:
         only needs the school's bell schedule, not any student's courses.
         Devices decide locally whether the boundary maps to a course.
         """
-        if self.client is None or not self.channels:
+        if self.client is None:
             return
         with self.lock:
             devices = self.db.execute(
                 "SELECT DISTINCT channel_id,environment,bundle_id,school_id,time_zone "
                 "FROM la_devices WHERE enabled=1 AND broadcast_enabled=1 AND channel_id != ''"
             ).fetchall()
+            devices = list(devices) + [dict(r, time_zone="Asia/Shanghai") for r in self.db.execute(
+                "SELECT * FROM la_day_channels WHERE bundle_id=?", (getattr(self.client, "bundle_id", ""),)).fetchall()]
         horizon = 8
         for row in devices:
             with self.lock:
@@ -465,13 +540,14 @@ class LiveActivityService:
             rows = []
             for offset in range(horizon):
                 date = start + timedelta(days=offset)
+                if isinstance(row, dict) and row.get("date_key") != date.isoformat():
+                    continue
                 if date < term_start or date >= term_end:
                     continue
                 adjustment = adjustments.get(date.isoformat())
                 if adjustment and adjustment.get("kind") == "off":
                     continue
-                if date.weekday() >= 5 and not (adjustment and adjustment.get("kind") == "swap"):
-                    continue
+                last_end = max((str(p.get("end", "")) for p in periods), default="")
                 for index, period in enumerate(periods, 1):
                     for phase, clock in (("started", period.get("start")), ("ended", period.get("end"))):
                         try:
@@ -482,13 +558,17 @@ class LiveActivityService:
                         fire_at = int(instant.timestamp())
                         if fire_at <= now - 3600 or fire_at > now + MAX_HORIZON:
                             continue
-                        event = "end" if phase == "ended" and index == len(periods) else "update"
-                        event_id = f"{date.isoformat()}-{index}-{phase}"
+                        daily = isinstance(row, dict)
+                        event = "end" if not daily and phase == "ended" and clock == last_end else "update"
+                        event_id = f"day-{date.isoformat()}-{fire_at}" if daily else f"{date.isoformat()}-{index}-{phase}"
                         payload = self._broadcast_payload(date.isoformat(), index, phase, fire_at)
                         rows.append((row["channel_id"], row["environment"], row["bundle_id"], event_id,
                                      fire_at, fire_at + BROADCAST_LATE_WINDOW, event,
                                      json.dumps(payload, separators=(",", ":"))))
             if rows:
+                # Coincident bells collapse to one absolute signal. Legacy
+                # channels still prefer the final end event at that timestamp.
+                rows = list({(r[0], r[3]): r for r in sorted(rows, key=lambda r: r[6] == "end")}.values())
                 with self.lock:
                     self.db.executemany(
                         "INSERT INTO la_broadcast_plan (channel_id,environment,bundle_id,event_id,fire_at,expires_at,event,payload_json)"
@@ -503,6 +583,7 @@ class LiveActivityService:
         """Send every item whose moment has come. Returns the results, which
         the tests read and the loop ignores."""
         now = int(self.now())
+        self.ensure_day_channels()
         self._ensure_broadcast_plan(now)
         with self.lock:
             rows = self.db.execute(
@@ -546,9 +627,16 @@ class LiveActivityService:
         if self.client is None:
             return self._retry_broadcast(row, now, "APNs is not configured")
         payload = json.loads(row["payload_json"])
-        payload["aps"]["event"] = row["event"]
-        if row["event"] == "end":
+        with self.lock:
+            is_day_channel = self.db.execute(
+                "SELECT 1 FROM la_day_channels WHERE channel_id=? LIMIT 1", (row["channel_id"],)
+            ).fetchone() is not None
+        event = "update" if is_day_channel else row["event"]
+        payload["aps"]["event"] = event
+        if event == "end":
             payload["aps"]["dismissal-date"] = int(row["fire_at"])
+        else:
+            payload["aps"].pop("dismissal-date", None)
         result = self.client.broadcast(
             row["channel_id"], payload, environment=row["environment"],
             priority=10, expiration=0, collapse_id=f"school-{row['event_id']}", topic=row["bundle_id"])
@@ -724,6 +812,8 @@ def handle(handler, service, method, path):
     try:
         if method == "GET" and rest == "/health":
             return _send(handler, 200, {"ok": True, "pushConfigured": service.client is not None})
+        if method == "POST" and rest == "/day-channels":
+            return _send(handler, 200, service.day_config(handler.body()))
         if method == "POST" and rest == "/devices":
             return _send(handler, 200, service.register(handler.body()))
         parts = [part for part in rest.split("/") if part]

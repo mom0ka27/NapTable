@@ -46,7 +46,7 @@ private struct ScheduleLiveActivityWidget: Widget {
             // re-renders at that moment, which is the only callback available
             // to the extension: switch to the next class of the day, or to a
             // closing card until the app dismisses the activity.
-            let display = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale)
+            let display = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes)
             Group {
                 if let state = display.state {
                     if #available(iOS 18.0, *) {
@@ -68,7 +68,7 @@ private struct ScheduleLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.leading, priority: 1) {
                     HStack(spacing: 5) {
                         ScheduleLiveActivityLogo(size: 24)
-                        Text(ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale).islandTitle)
+                        Text(ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).islandTitle)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(ScheduleLiveActivityPalette.accent)
                             .lineLimit(1)
@@ -79,14 +79,14 @@ private struct ScheduleLiveActivityWidget: Widget {
                     .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.trailing, priority: 1) {
-                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale).state {
+                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).state {
                         ScheduleLiveActivityCountdown(state: state, compact: true, centered: true)
                             .frame(maxWidth: .infinity, minHeight: 24, alignment: .trailing)
                             .dynamicIsland(verticalPlacement: .belowIfTooWide)
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    let display = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale)
+                    let display = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes)
                     Group {
                         if let state = display.state {
                             ScheduleLiveActivityExpandedDetails(state: state)
@@ -101,7 +101,7 @@ private struct ScheduleLiveActivityWidget: Widget {
                     .accessibilityLabel("药大拾间课表")
             } compactTrailing: {
                 Group {
-                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale).state {
+                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).state {
                         ScheduleLiveActivityTimer(state: state)
                     } else {
                         Text("已下课")
@@ -139,8 +139,15 @@ private struct ScheduleLiveActivityDisplay {
     /// 今天是否还有下一节课。`afterEndState` 只认同一天的课，跨天就是 `nil`。
     private let hasMoreToday: Bool
 
-    init(state: ScheduleLiveActivityAttributes.ContentState, isStale: Bool) {
-        let localState = state.resolvedFromLocalSchedule() ?? state
+    init(state: ScheduleLiveActivityAttributes.ContentState, isStale: Bool, attributes: ScheduleLiveActivityAttributes) {
+        // A broadcast is only a clock marker, never displayable course content.
+        // No local match means today's classes are over (or unavailable).
+        guard let localState = state.broadcastDateKey == nil ? state : state.resolvedFromLocalSchedule(attributes: attributes) else {
+            self.state = nil
+            self.hasMoreToday = false
+            return
+        }
+        let isStale = isStale || localState.endDate <= Date()
         // Only a persistent activity carries on to the next class; otherwise
         // it is on its way out and should simply say the class is over.
         self.state = isStale && NextWidgetConfiguration.liveActivityIsPersistent
@@ -159,15 +166,19 @@ private struct ScheduleLiveActivityDisplay {
 private extension ScheduleLiveActivityAttributes.ContentState {
     /// Broadcast pushes deliberately contain no course content. Resolve the
     /// boundary against the timetable written by the app into the App Group.
-    func resolvedFromLocalSchedule() -> Self? {
+    func resolvedFromLocalSchedule(attributes: ScheduleLiveActivityAttributes) -> Self? {
         guard let dateKey = broadcastDateKey,
-              let timestamp = broadcastTimestamp,
+              let broadcastTimestamp,
               let payload = ScheduleWidgetStore.load(),
               let day = payload.knownDay(for: dateKey) else { return nil }
+        let timestamp = max(broadcastTimestamp, Date())
+        guard dateKey == attributes.dateKey else { return nil }
+        if let end = attributes.reservationEnd, timestamp >= end { return nil }
 
         let datedCourses = day.courseList.compactMap { course -> (WidgetCourse, Date, Date)? in
             guard let start = Self.date(dateKey, time: course.startTime),
                   let end = Self.date(dateKey, time: course.endTime), end > start else { return nil }
+            if let reserved = attributes.reservationStart, start != reserved { return nil }
             return (course, start, end)
         }.sorted { $0.1 < $1.1 }
         guard !datedCourses.isEmpty else { return nil }

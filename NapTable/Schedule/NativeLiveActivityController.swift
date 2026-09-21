@@ -81,6 +81,11 @@ final class NativeLiveActivityController: ObservableObject {
     /// created activity is only push-updatable if it was requested with a
     /// token, so the flag has to be in place before the next `request`.
     var wantsPushToken = false
+    var broadcastDayChannels: [String: String] = [:] {
+        didSet {
+            if oldValue != broadcastDayChannels, let snapshot = lastSnapshot { accept(snapshot) }
+        }
+    }
 
     /// The APNs channel assigned to the selected school. iOS 26 uses this for
     /// scheduled activities; older systems keep using the device-token path.
@@ -445,8 +450,8 @@ final class NativeLiveActivityController: ObservableObject {
             await endActivities()
             return nil
         }
-        if #available(iOS 26.0, *), let channel = broadcastChannelID, !channel.isEmpty {
-            return await synchronizeScheduled(snapshot, channelID: channel)
+        if #available(iOS 26.0, *), !broadcastDayChannels.isEmpty {
+            return await synchronizeScheduled(snapshot, channelID: "")
         }
         let currentDate = now()
         guard let occurrence = nextOccurrence(in: snapshot, now: currentDate) else {
@@ -542,20 +547,33 @@ final class NativeLiveActivityController: ObservableObject {
             return nil
         }
 
-        var days: [String: [Occurrence]] = [:]
-        for event in events { days[event.dateKey, default: []].append(event) }
-        let selectedDays = days.keys.sorted().prefix(2)
-        for dateKey in selectedDays {
-            guard let dayEvents = days[dateKey], let first = dayEvents.first, let last = dayEvents.last else { continue }
-            let attributes = Self.attributes(for: first, in: snapshot)
+        let reservations = events.compactMap { event -> (Occurrence, ScheduleLiveActivityAttributes, String)? in
+            guard let channel = broadcastDayChannels[event.dateKey] else { return nil }
+            let attributes = ScheduleLiveActivityAttributes(
+                semester: snapshot.data?.currentSemester ?? "", dateKey: event.dateKey, week: event.week,
+                reservationStart: event.start, reservationEnd: event.end, broadcastChannel: channel,
+                reminderDate: event.start.addingTimeInterval(-leadTime))
+            return (event, attributes, channel)
+        }
+        for activity in Activity<ScheduleLiveActivityAttributes>.activities {
+            if !reservations.contains(where: { $0.1 == activity.attributes }) {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        for (first, attributes, channelID) in reservations {
+            guard !Task.isCancelled, isEnabled, !isPreviewActive else { return nil }
             let exists = Activity<ScheduleLiveActivityAttributes>.activities.contains {
-                $0.attributes == attributes
+                $0.attributes == attributes && $0.activityState != .ended && $0.activityState != .dismissed
             }
             if exists { continue }
 
             let start = max(first.start.addingTimeInterval(-leadTime), currentDate.addingTimeInterval(1))
+            guard first.end.timeIntervalSince(start) < 8 * 3600 else {
+                status = .failed("课程及提前提醒超过实时活动的 8 小时上限。")
+                return nil
+            }
             let initial = Self.contentState(
-                for: Self.enriched(first, followedBy: dayEvents.dropFirst().first),
+                for: first,
                 phase: first.start <= currentDate ? .inProgress : .upcoming,
                 sourceLabel: snapshot.sourceLabel,
                 updatedAt: first.start <= currentDate ? first.start : currentDate
@@ -568,7 +586,7 @@ final class NativeLiveActivityController: ObservableObject {
             do {
                 _ = try Activity<ScheduleLiveActivityAttributes>.request(
                     attributes: attributes,
-                    content: ActivityContent(state: initial, staleDate: last.end),
+                    content: ActivityContent(state: initial, staleDate: first.end),
                     pushType: .channel(channelID),
                     style: .standard,
                     alertConfiguration: alert,
