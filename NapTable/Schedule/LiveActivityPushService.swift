@@ -7,6 +7,7 @@ import Security
 
 /// Serialized reconciliation preserves late registration credentials for revocation.
 /// Server mode is authoritative; a token update can never switch local back to remote.
+/// Only iOS 26 following a share asks for remote again, after retiring its reservations.
 @available(iOS 17.2, *)
 @MainActor
 final class LiveActivityPushService: ObservableObject {
@@ -105,7 +106,8 @@ final class LiveActivityPushService: ObservableObject {
         controller.activityTokensDidChange = { [weak self] in self?.enqueue() }
         guard isEnabled else { enqueue(); return }
         if #available(iOS 18.0, *) {
-            if #available(iOS 26.0, *) {} else { observeToken() }
+            // iOS 26 needs the push-to-start token too: a followed share starts remotely.
+            observeToken()
             observeActivities()
             enqueue()
         } else {
@@ -237,7 +239,20 @@ final class LiveActivityPushService: ObservableObject {
             guard current(captured, scope: scope) else { dirty = true; return }
         }
         var local = false
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), controller.pushMode == "token" {
+            if defaults.bool(forKey: Self.handoffKey) {
+                await controller.retireLocalReservations()
+                guard current(captured, scope: scope) else { dirty = true; return }
+                let (code, response) = try await send("/devices/\(device)/remote-resume", method: "POST", body: [:])
+                // An older server cannot go back to remote: its reservations use the channel.
+                if code == 404 { controller.disableTokenMode(); dirty = true; return }
+                guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
+                guard response["launchMode"] as? String == "remote" else { throw ScheduleServiceError.invalidResponse }
+                defaults.removeObject(forKey: Self.handoffKey)
+                defaults.removeObject(forKey: Self.handoffKey + ".history")
+                serverHistory = []
+            }
+        } else if #available(iOS 26.0, *) {
             if !defaults.bool(forKey: Self.handoffKey) {
                 let response = try await request("/devices/\(device)/local-handoff", method: "POST", body: [:])
                 guard response["launchMode"] as? String == "local" else { throw ScheduleServiceError.invalidResponse }

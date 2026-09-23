@@ -302,6 +302,18 @@ class Service:
             db.execute("UPDATE la_start_jobs SET state='localTaken' WHERE device=? AND state IN ('pending','claimed')", (device,))
         return self.status(device)
 
+    def resume_remote(self, device):
+        """iOS 26 following a share goes back to remote starts. The client ends its
+        local reservations first, so an occurrence handed over earlier may be started
+        remotely again; submitted history stays untouched."""
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM la_v2_devices WHERE id=?", (device,)).fetchone()
+            if row['revoked']:
+                raise ProtocolError("device revoked", 409)
+            db.execute("UPDATE la_v2_devices SET mode='remote',mode_revision=mode_revision+1 WHERE id=? AND mode!='remote'", (device,))
+            db.execute("UPDATE la_start_jobs SET state='cancelled' WHERE device=? AND state='localTaken'", (device,))
+        return self.status(device)
+
     def recovery(self, device, value):
         occurrence = identifier(value.get('occurrenceId'))
         with self.transaction() as db:
@@ -622,6 +634,8 @@ def handle(handler, service, method, path):
                 result = service.replace_plan(device, body())
             elif tail == 'local-handoff' and method == 'POST':
                 result = service.handoff(device)
+            elif tail == 'remote-resume' and method == 'POST':
+                result = service.resume_remote(device)
             elif tail == 'foreground-recovery' and method == 'POST':
                 result = service.recovery(device, body())
             elif len(parts) == 4 and parts[2] == 'activities' and method == 'PUT':

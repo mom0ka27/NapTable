@@ -8,7 +8,7 @@
 - 实际日期展开调休，每一来源的连续选中节次对应持久 UUID。文字变更不换 UUID，分段/合并记录 `supersedes`。冲突在设置页逐节选择；未解决的日期不安排。
 - 15 / 30 / 60 分钟提前量，提醒不早于前序课程结束。支持整堂与分节计时；连堂课间不重建实例。无具体日期时间的自由课程明确未安排。目前 Course 模型没有任意绝对时间课程；协议已支持 `busyIntervals`，没有把自由课猜测成公共节次。
 - App Group 先保存完整展示快照，Widget 只按 scope、occurrence、日期、作息版本读取。保留同作用域的旧作息快照供已有活动结束。网络计划和 APNs 不含课程名、教师、地点或展示帧。关心共享课表时（令牌模式，见下文）还会上传每个实时活动的推送令牌、日期与需要重画的时间点：自己的课和对方可能不同校，自己上下课的时刻不在对方学校的频道边界上，只有逐个推送才能让合并行按时出现和消失。仍只含时间，不含课程字段。
-- iOS 26：服务端确认 `local-handoff` 后本地预约未来连续 168 小时。账本持久记录预约和错误；当前会话移除不立即重建，下次前台可恢复。只让更晚的 pending 为近期课程让出额度，active 不让位。显示实际 N/M；映射离线不延期。没有远程启动兜底。
+- iOS 26：服务端确认 `local-handoff` 后本地预约未来连续 168 小时（仅频道模式；关心共享课表时改走 iOS 18 的远程启动，见令牌模式）。账本持久记录预约和错误；当前会话移除不立即重建，下次前台可恢复。只让更晚的 pending 为近期课程让出额度，active 不让位。显示实际 N/M；映射离线不延期。没有远程启动兜底。
 - iOS 18：完整计划上传后，服务端滚动物化未来 48 小时。start 自带最终节次频道，无活动更新 token 注册。前台自动重复启动路径已移除；`foreground-recovery` API 提供一次性接管，当前客户端依赖远程启动而不主动接管。
 - iOS 17：仅前台本地提醒/预览，升级会撤销旧远程服务。总开关不会因前台恢复自动打开。
 - 缺少学校映射、私有作息或时区不匹配时自动能力不可用，课表功能及预览仍可使用。设置页显示原因。
@@ -23,7 +23,8 @@
 | GET | `/broadcast-config` | 查询 `bundleID`、`environment`、`schoolID`、`scheduleId=default`；返回版本、periods、IANA 时区、最终节次 channels、status、issuedAt、createBefore、broadcastUntil |
 | PUT | `/devices/{id}/plan` | 原子完整快照，见下文；同 revision 同内容幂等，旧 revision 或同 revision 不同内容 409 |
 | GET | `/devices/{id}` | 模式/版本、接受的覆盖范围、pendingCount、提交历史及错误 |
-| POST | `/devices/{id}/local-handoff` | 幂等单向切换 local，终止未提交任务，返回 submitting/submitted/unknown 历史 |
+| POST | `/devices/{id}/local-handoff` | 幂等切换 local，终止未提交任务，返回 submitting/submitted/unknown 历史 |
+| POST | `/devices/{id}/remote-resume` | 幂等切回 remote（仅 iOS 26 关心共享课表时调用，客户端先结束全部本地活动）；`localTaken` 任务改为 cancelled 以便新计划重新物化，已提交历史不变；revoked 409 |
 | POST | `/devices/{id}/foreground-recovery` | `{occurrenceId}`；仅未提交任务返回一次 `mayStart=true` |
 | DELETE | `/devices/{id}` | 幂等墓碑；取消未提交任务，保留防重历史；关闭时离线撤销持久重试，成功前不清凭据 |
 | PUT | `/devices/{id}/activities/{occurrenceId}` | 令牌模式：`{token, dateKey, refreshAt, end}`，严格键集合；幂等替换令牌和未发送的刷新，已发送的保留；revoked 409；local/remote 模式都接受 |
@@ -42,10 +43,10 @@
 
 规格见 `live-activity-token-mode.md`。提醒快照是共享课表（`sourceLabel != nil`）时 `pushMode = token`，其余一律频道模式；模式随 `scheduleScope` 切换，同一 scope 内不混用。
 
-- iOS 26：预约使用 `pushType: .token`，attributes 带 `pushMode: "token"`、无 `broadcastChannel`；频道缺失不再阻止预约。iOS 18：计划带 `pushMode: "token"`，服务端 start 写 `"input-push-token": 1`、不引用频道，也不延长广播承诺。
+- iOS 18 与 iOS 26 相同：不做本地预约，计划带 `pushMode: "token"` 上传，服务端 start 写 `"input-push-token": 1`、不引用频道，也不延长广播承诺。原因：官方文档只保证 push-to-start 会唤醒 App 下发更新令牌，没有说明本地预约（pending）何时下发令牌。iOS 26 设备若已交接为 local，先结束本地活动再调用 `remote-resume`；取消关心后重新 `local-handoff` 并本地预约。iOS 26 同样订阅 `pushToStartTokenUpdates`。
 - App 订阅每个令牌活动的 `pushTokenUpdates`（请求后、`activityUpdates`、每次前台/后台刷新补订阅），把 `refreshAt`（除第一帧外所有帧的开始，加帧间空档的起点）和 `end` PUT 到上面的端点。App Group 小账本按 occurrence 记录上次被接受的摘要，内容不变不重复上传；活动结束或 occurrence 消失时尽力 DELETE。
 - 服务端 `la_activity_tokens` 以 Fernet 保存令牌，`la_token_updates` 每个时间点一条 update、`end` 一条 end。`token-updates` 循环同一活动只发最新到期的一条，过期不发；410 / `BadDeviceToken` / `DeviceTokenNotForTopic` 删除令牌并取消后续；408/429/5xx/结果不明在有效期内退避重试（update 幂等，可以重发）。
-- 拿不到令牌时只靠 App 前台/后台本地更新，令牌活动的本地更新把 `staleDate` 设为下一个刷新时刻。旧服务端对带 `pushMode` 的计划回 400、对新端点回 404：客户端本次会话回落频道模式，设置页提示「服务端尚不支持共享课表的实时刷新」。部署顺序仍是先服务端后客户端。
+- 拿不到令牌时只靠 App 前台/后台本地更新，令牌活动的本地更新把 `staleDate` 设为下一个刷新时刻。旧服务端对带 `pushMode` 的计划回 400、对新端点（含 `remote-resume`）回 404：客户端本次会话回落频道模式，设置页提示「服务端尚不支持共享课表的实时刷新」。部署顺序仍是先服务端后客户端。
 
 ## 调度与存储
 

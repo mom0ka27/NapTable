@@ -102,4 +102,4 @@ Debug 模拟器可以通过环境变量直接打开指定入口：
 
 更具体的服务端开发、APNs 配置和 API 示例见 [`server/README.md`](../server/README.md)。
 
-课程实时活动采用 v2：iOS 26 本地逐课程预约，iOS 18 远程启动，iOS 17 前台本地能力。协议、加密依赖、模式交接与验收见 [live-activity-v2.md](live-activity-v2.md)。
+课程实时活动采用 v2：iOS 26 本地逐课程预约（关心共享课表时改为远程启动），iOS 18 远程启动，iOS 17 前台本地能力。协议、加密依赖、模式交接与验收见 [live-activity-v2.md](live-activity-v2.md)。

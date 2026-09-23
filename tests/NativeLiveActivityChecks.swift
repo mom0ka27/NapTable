@@ -188,20 +188,22 @@ struct NativeLiveActivityChecks {
         precondition(shared.refreshAt() == [shared.start, nine], "The reader's own class start splits the share's frame")
         precondition(shared.refreshAt(after: shared.start + 60) == [shared.start, nine] && shared.refreshAt(after: shared.start + 61) == [nine],
                      "Instants more than a minute old are dropped")
-        // A followed share reserves token activities and announces their tokens.
+        // A followed share never reserves locally: iOS 26 waits for remote starts like iOS 18.
         let follower = NativeLiveActivityController(now: { now }, privacyDefaults: defaults)
         follower.setEnabled(true)
         var announcements = 0
         follower.activityTokensDidChange = { announcements += 1 }
         let followed = fixture(source: "小明", scope: "share")
         follower.accept(followed, own: mine)
+        follower.applyMapping(mapping, localHandoff: false, submitted: []); await settle()
+        precondition(follower.pushMode == "token" && live.isEmpty && announcements == 0, "Token mode makes no reservation")
         follower.applyMapping(mapping, localHandoff: true, submitted: []); await settle()
-        precondition(follower.pushMode == "token" && live.count == 2)
-        precondition(live.allSatisfy { $0.pushType == .token && $0.attributes.pushMode == "token" && $0.attributes.broadcastChannel == nil },
-                     "Token mode reserves with .token and no channel")
-        precondition(follower.tokenRegistrations().registrations.isEmpty && follower.tokenRegistrations().live.count == 2 && announcements == 1)
+        precondition(live.isEmpty, "Not even after a stale local handoff")
         let opening = follower.display!.occurrences[0]
-        let reserved = live.first { $0.attributes.occurrenceId == opening.item.occurrenceId }!
+        let reserved = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: .init(semester: "", dateKey: opening.item.dateKey, protocolVersion: 2,
+            scheduleScope: "share", occurrenceId: opening.item.occurrenceId, scheduleVersion: "version", pushMode: "token"), content: .init(state: opening.frames[0].state, staleDate: nil))
+        follower.foreground(); await settle()
+        precondition(follower.tokenRegistrations().registrations.isEmpty && follower.tokenRegistrations().live.count == 1 && announcements == 1)
         reserved.deliverPushToken(Data([0xab, 0xcd, 0x01])); await settle()
         var registrations = follower.tokenRegistrations().registrations
         precondition(announcements == 2 && registrations.count == 1 && registrations[0].token == "abcd01" && registrations[0].dateKey == "2026-09-22")
@@ -225,7 +227,9 @@ struct NativeLiveActivityChecks {
         precondition(follower.pushMode == "channel" && follower.tokenNotice == "服务端尚不支持共享课表的实时刷新")
         let fallback = live.filter { $0.id != reserved.id }
         precondition(live.contains { $0.id == reserved.id } && fallback.count == 1 && fallback[0].pushType == .channel("two") && fallback[0].attributes.pushMode == nil,
-                     "Pending reservations move to the channel; the active one finishes")
+                     "The rest reserve on the channel; the active one finishes")
+        await follower.retireLocalReservations()
+        precondition(live.isEmpty, "Going back to remote leaves no local activity behind")
         follower.setEnabled(false); await settle()
         print("Live Activity v2 Swift checks passed")
     }

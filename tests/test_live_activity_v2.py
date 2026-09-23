@@ -150,6 +150,24 @@ class V2Tests(unittest.TestCase):
         with self.assertRaises(ProtocolError): self.service.replace_plan(self.id, self.plan)
         self.assertEqual(self.service.handoff(self.id)['modeRevision'], 1)
 
+    def test_remote_resume_restarts_handed_over_occurrences_but_not_submissions(self):
+        submitted = dict(occurrenceId='occurrence-0', supersedes=[], dateKey='2026-09-22', startPeriod=1, endPeriod=1)
+        self.plan['items'].insert(0, submitted)
+        self.plan['items'][1].update(startPeriod=2, endPeriod=2)
+        self.service.replace_plan(self.id, self.plan)
+        self.db.execute("UPDATE la_start_jobs SET state='submitted' WHERE occurrence='occurrence-0'"); self.db.commit()
+        self.service.handoff(self.id)
+        resumed = self.service.resume_remote(self.id)
+        self.assertEqual((resumed['launchMode'], resumed['modeRevision']), ('remote', 2))
+        self.assertEqual(self.service.resume_remote(self.id)['modeRevision'], 2)
+        self.plan['planRevision'] = 2; self.plan['pushMode'] = 'token'
+        self.service.replace_plan(self.id, self.plan)
+        states = dict(self.db.execute('SELECT occurrence,state FROM la_start_jobs WHERE device=?', (self.id,)).fetchall())
+        self.assertEqual(states, {'occurrence-0': 'submitted', 'occurrence-1': 'pending'})
+        self.service.forget(self.id)
+        with self.assertRaises(ProtocolError) as error: self.service.resume_remote(self.id)
+        self.assertEqual(error.exception.status, 409)
+
     def test_delete_during_retry_does_not_resurrect(self):
         self.service.replace_plan(self.id, self.plan); self.clock = self.job()['fire_at']
         self.client.on_push = lambda: self.service.forget(self.id)
@@ -480,6 +498,8 @@ class HTTPV2Tests(unittest.TestCase):
         self.assertEqual(request('PUT', api + '/devices/' + self.id + '/plan', self.plan)[0], 200)
         self.assertEqual(request('POST', api + '/devices/' + self.id + '/local-handoff', {})[1]['launchMode'], 'local')
         self.assertEqual(request('PUT', api + '/devices/' + self.id + '/plan', self.plan)[0], 409)
+        self.assertEqual(request('POST', api + '/devices/' + self.id + '/remote-resume', {})[1]['launchMode'], 'remote')
+        self.assertEqual(request('POST', api + '/devices/' + self.id + '/local-handoff', {})[1]['launchMode'], 'local')
         activity = api + '/devices/' + self.id + '/activities/occurrence-1'
         body = dict(token='ab' * 16, dateKey='2026-09-22', refreshAt=[1790035200], end=1790041800)
         self.assertEqual(request('PUT', activity, body, 'wrong')[0], 403)

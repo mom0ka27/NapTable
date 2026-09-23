@@ -300,7 +300,9 @@ final class NativeLiveActivityController: ObservableObject {
         defer { announceTokens() }
         if #available(iOS 18.0, *) {
             guard let mapping else { status = .unavailable("等待学校作息映射；纯本地课表可使用前台预览。"); return }
-            if #available(iOS 26.0, *) {
+            // A followed share is pushed per activity, which a reservation cannot
+            // promise a token for; iOS 26 then starts remotely like iOS 18.
+            if #available(iOS 26.0, *), pushMode != "token" {
                 guard handoffConfirmed else { status = .unavailable("等待完成远程模式交接，联网后重试。"); return }
                 await reserve(display, mapping: mapping, generation: generation)
             } else {
@@ -357,10 +359,8 @@ final class NativeLiveActivityController: ObservableObject {
             }
             guard !removedThisSession.contains(id), !submitted.contains(id),
                   occurrence.item.supersedes.allSatisfy({ !submitted.contains($0) }) else { continue }
-            // Token mode needs no channel: each activity is pushed on its own token.
-            let channel = attributes.pushMode == "token" ? nil : mapping.channels[String(occurrence.item.endPeriod)]
             guard current < mapping.createBefore, occurrence.reminder < mapping.createBefore,
-                  occurrence.end <= mapping.broadcastUntil, attributes.pushMode == "token" || channel != nil else {
+                  occurrence.end <= mapping.broadcastUntil, let channel = mapping.channels[String(occurrence.item.endPeriod)] else {
                 failure = "部分频道缺失或映射已过期，联网后补充。"
                 continue
             }
@@ -370,7 +370,7 @@ final class NativeLiveActivityController: ObservableObject {
             ledger[id] = .init(activityID: nil, state: "requesting", end: occurrence.end)
             saveLedger()
             func request() throws -> Activity<ScheduleLiveActivityAttributes> {
-                try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)), pushType: channel.map { PushType.channel($0) } ?? .token, style: .standard,
+                try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)), pushType: .channel(channel), style: .standard,
                     alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default), start: Date(timeIntervalSince1970: plannedStart))
             }
             do {
@@ -387,7 +387,6 @@ final class NativeLiveActivityController: ObservableObject {
                 }
                 ledger[id] = .init(activityID: activity.id, state: "scheduled", end: occurrence.end)
                 accepted += 1
-                observeTokens(of: activity)
             } catch {
                 if Self.isCapacityError(error) {
                     ledger[id]?.state = "waitingForCapacity"
@@ -414,6 +413,19 @@ final class NativeLiveActivityController: ObservableObject {
     private static func isCapacityError(_ error: Error) -> Bool {
         guard let error = error as? ActivityAuthorizationError else { return false }
         return error == .targetMaximumExceeded || error == .globalMaximumExceeded
+    }
+    /// Called only while the device is still in local mode, so every course
+    /// activity around was requested here. The server may start the same course
+    /// remotely once it resumes, so none of them may stay behind.
+    func retireLocalReservations() async {
+        let local = Activity<ScheduleLiveActivityAttributes>.activities.filter {
+            $0.attributes.protocolVersion == 2 && $0.activityState != .ended && $0.activityState != .dismissed
+        }
+        for activity in local {
+            if let id = activity.attributes.occurrenceId { ledger[id] = nil }
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        saveLedger()
     }
     func end() {
         epoch += 1

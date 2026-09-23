@@ -80,7 +80,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 完整协议、迁移、测试与已知边界见 [Live Activity v2](../docs/live-activity-v2.md)。
 
-App 保存个人展示内容；服务器只接收课程实例 ID、实际日期和节次，使用不可变学校作息还原启动时间。iOS 18 使用逐设备 push-to-start 并直接订阅最终节次频道；iOS 26 完成远程模式交接后本地预约未来 168 小时，不使用远程兜底。iOS 17 只保留前台本地能力。
+App 保存个人展示内容；服务器只接收课程实例 ID、实际日期和节次，使用不可变学校作息还原启动时间。iOS 18 使用逐设备 push-to-start 并直接订阅最终节次频道；iOS 26 完成远程模式交接后本地预约未来 168 小时，不使用远程兜底；关心共享课表时 iOS 26 通过 `remote-resume` 切回远程启动，与 iOS 18 相同。iOS 17 只保留前台本地能力。
 
 在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`me.mom0ka27.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。管理页展示频道健康和失败原因，后台自动创建与回收，无需填写 Apple channel ID。
 
@@ -99,7 +99,7 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
 
-关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，iOS 26 本地预约设备此时同样需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：推送客户端每环境单连接串行发送，吞吐约为 1 / 往返时延；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
+关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：推送客户端每环境单连接串行发送，吞吐约为 1 / 往返时延；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
 ## 分享课表
 

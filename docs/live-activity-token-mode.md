@@ -1,5 +1,7 @@
 # Live Activity 令牌模式（共享课表 + 关心）
 
+> 更新（2026-09-23）：iOS 26 不再用 `.token` 本地预约，改为与 iOS 18 相同的远程启动（`input-push-token`），因为官方文档没有保证 pending 预约会下发更新令牌。下文 §3 的 iOS 26 小节与 §8、§10 中相应条目已被取代，现状以 `live-activity-v2.md` 为准。
+
 基线：`live-activity-v2.md`、`naptable-live-activity-migration.md`。本文是实现规格，交给实现者照做；未写到的行为一律沿用 v2 现状。
 
 ## 1. 背景与目标
