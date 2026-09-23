@@ -15,10 +15,10 @@ from zoneinfo import ZoneInfo
 
 try:
     from .live_activity_timeline import (DAY, ProtocolError, boundaries, canonical, digest,
-        identifier, normalize_schedule, public_state, validate_plan)
+        identifier, normalize_schedule, public_state, validate_activity, validate_plan)
 except ImportError:
     from live_activity_timeline import (DAY, ProtocolError, boundaries, canonical, digest,
-        identifier, normalize_schedule, public_state, validate_plan)
+        identifier, normalize_schedule, public_state, validate_activity, validate_plan)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS la_v2_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL);
@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS la_v2_broadcasts (
  PRIMARY KEY(channel_key,fire_at)
 );
 CREATE INDEX IF NOT EXISTS la_v2_broadcast_due ON la_v2_broadcasts(state,fire_at);
+CREATE TABLE IF NOT EXISTS la_activity_tokens (
+ device TEXT NOT NULL, occurrence TEXT NOT NULL, token TEXT NOT NULL,
+ day TEXT NOT NULL, end_at REAL NOT NULL, updated_at REAL NOT NULL,
+ PRIMARY KEY(device, occurrence)
+);
+CREATE TABLE IF NOT EXISTS la_token_updates (
+ device TEXT NOT NULL, occurrence TEXT NOT NULL, fire_at REAL NOT NULL,
+ event TEXT NOT NULL, expires_at REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(device, occurrence, fire_at)
+);
+CREATE INDEX IF NOT EXISTS la_token_due ON la_token_updates(state, fire_at, next_attempt);
 """
 
 
@@ -95,6 +107,7 @@ class Service:
         with self.lock:
             self.db.executescript(SCHEMA)
             self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(2,?)", (self.now(),))
+            self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(3,?)", (self.now(),))
             self.db.execute("UPDATE la_plan SET state='cancelled',detail='protocol v2 migration' WHERE state='pending'")
             self.db.execute("UPDATE la_devices SET enabled=0,start_token=''")
             self.db.execute("DELETE FROM la_activities")
@@ -102,6 +115,8 @@ class Service:
             self.db.execute("UPDATE la_start_jobs SET state='submissionUnknown' WHERE state='submitting'")
             self.db.execute("UPDATE la_start_jobs SET state='pending' WHERE state='claimed'")
             self.db.execute("UPDATE la_v2_broadcasts SET state='pending' WHERE state='sending'")
+            # Unlike a start, a token update only asks the widget to redraw: resending is harmless.
+            self.db.execute("UPDATE la_token_updates SET state='pending' WHERE state='sending'")
             self.db.commit()
 
     @property
@@ -245,21 +260,27 @@ class Service:
 
     def _materialize(self, db, device, plan, events):
         now = self.now()
+        # Token mode never touches a channel: each activity gets its own pushes.
+        tokens = plan.get('pushMode') == 'token'
         identity = (device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion'])
-        if db.execute("SELECT 1 FROM la_channels WHERE bundle=? AND environment=? AND school=? AND schedule=? AND version=? AND state='retiring'", identity).fetchone():
+        if not tokens and db.execute("SELECT 1 FROM la_channels WHERE bundle=? AND environment=? AND school=? AND schedule=? AND version=? AND state='retiring'", identity).fetchone():
             raise ProtocolError("version channels are being reclaimed; retry shortly", 503)
         for event in events:
             if event['fireAt'] > now + 2 * DAY or event['end'] <= now:
                 continue
             # Neither revision replacement nor token rotation can erase a submission.
-            key = self.key(device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion'], event['endPeriod'])
-            db.execute("INSERT OR IGNORE INTO la_channels(logical_key,bundle,environment,school,schedule,version,final_period) VALUES(?,?,?,?,?,?,?)", (key, device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion'], event['endPeriod']))
+            key = '' if tokens else self.key(device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion'], event['endPeriod'])
+            if not tokens:
+                db.execute("INSERT OR IGNORE INTO la_channels(logical_key,bundle,environment,school,schedule,version,final_period) VALUES(?,?,?,?,?,?,?)", (key, device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion'], event['endPeriod']))
             payload = {"aps": {"timestamp": int(now), "event": "start", "attributes-type": "ScheduleLiveActivityAttributes",
                 "attributes": {"semester": "", "week": 0, "dateKey": event['dateKey'], "protocolVersion": 2,
                     "scheduleScope": plan['scheduleScope'], "occurrenceId": event['occurrenceId'], "scheduleVersion": plan['scheduleVersion'],
                     "reservationStart": event['start'] - 978307200, "reservationEnd": event['end'] - 978307200, "reminderDate": event['fireAt'] - 978307200},
                 "content-state": public_state(event['dateKey'], event['startPeriod'], 'upcoming', event['fireAt']),
                 "stale-date": event['end'], "alert": {"title": "课程提醒", "body": "即将上课"}}}
+            if tokens:
+                payload['aps']['input-push-token'] = 1
+                payload['aps']['attributes']['pushMode'] = 'token'
             db.execute("INSERT INTO la_start_jobs(device,occurrence,revision,scope,channel_key,fire_at,expires_at,payload) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(device,occurrence) DO UPDATE SET revision=excluded.revision,scope=excluded.scope,channel_key=excluded.channel_key,fire_at=excluded.fire_at,expires_at=excluded.expires_at,payload=excluded.payload,state='pending' WHERE la_start_jobs.state IN ('pending','claimed','cancelled')",
                 (device['id'], event['occurrenceId'], plan['planRevision'], plan['scheduleScope'], key, event['fireAt'], event['end'], canonical(payload)))
             # A changed segment must not overlap a start already submitted for its predecessor.
@@ -267,7 +288,7 @@ class Service:
                 old = db.execute("SELECT state FROM la_start_jobs WHERE device=? AND occurrence=?", (device['id'], predecessor)).fetchone()
                 if old and old['state'] in ('submitting', 'submitted', 'submissionUnknown', 'localTaken'):
                     db.execute("UPDATE la_start_jobs SET state='superseded' WHERE device=? AND occurrence=? AND state='pending'", (device['id'], event['occurrenceId']))
-        if not any(event['end'] > now for event in events):
+        if tokens or not any(event['end'] > now for event in events):
             return
         db.execute("UPDATE la_schedule_versions SET broadcast_until=MAX(broadcast_until,?) WHERE bundle=? AND environment=? AND school=? AND schedule=? AND version=?",
                    (now + 8 * DAY, device['bundle'], device['environment'], plan['schoolID'], plan['scheduleId'], plan['scheduleVersion']))
@@ -294,7 +315,36 @@ class Service:
         with self.transaction() as db:
             db.execute("UPDATE la_v2_devices SET revoked=1,token='',snapshot=NULL WHERE id=?", (device,))
             db.execute("UPDATE la_start_jobs SET state='cancelled' WHERE device=? AND state IN ('pending','claimed')", (device,))
+            db.execute("DELETE FROM la_activity_tokens WHERE device=?", (device,))
+            db.execute("UPDATE la_token_updates SET state='cancelled' WHERE device=? AND state='pending'", (device,))
         return {"forgotten": True}
+
+    def register_activity(self, device, occurrence, value):
+        """Replace one activity's token and its unsent refreshes; sent ones stay as history."""
+        occurrence = identifier(occurrence)
+        now = self.now()
+        activity = validate_activity(value, now)
+        sealed = self.vault.seal(activity['token'])
+        stamps = activity['refreshAt'] + [activity['end']]
+        with self.transaction() as db:
+            if db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (device,)).fetchone()['revoked']:
+                raise ProtocolError("device revoked", 409)
+            db.execute("INSERT INTO la_activity_tokens VALUES(?,?,?,?,?,?) ON CONFLICT(device,occurrence) DO UPDATE SET token=excluded.token,day=excluded.day,end_at=excluded.end_at,updated_at=excluded.updated_at",
+                       (device, occurrence, sealed, activity['day'], activity['end'], now))
+            db.execute("DELETE FROM la_token_updates WHERE device=? AND occurrence=? AND state NOT IN ('sent','sending')", (device, occurrence))
+            for index, stamp in enumerate(stamps):
+                last = index == len(stamps) - 1
+                db.execute("INSERT OR IGNORE INTO la_token_updates(device,occurrence,fire_at,event,expires_at) VALUES(?,?,?,?,?)",
+                           (device, occurrence, stamp, 'end' if last else 'update', stamp + 60 if last else stamps[index + 1]))
+            pending = db.execute("SELECT COUNT(*) FROM la_token_updates WHERE device=? AND occurrence=? AND state='pending'", (device, occurrence)).fetchone()[0]
+        return {"occurrenceId": occurrence, "pending": pending}
+
+    def forget_activity(self, device, occurrence):
+        occurrence = identifier(occurrence)
+        with self.transaction() as db:
+            db.execute("DELETE FROM la_activity_tokens WHERE device=? AND occurrence=?", (device, occurrence))
+            db.execute("UPDATE la_token_updates SET state='cancelled' WHERE device=? AND occurrence=? AND state='pending'", (device, occurrence))
+        return {"occurrenceId": occurrence, "pending": 0}
 
     def materialize(self):
         with self.transaction() as db:
@@ -349,7 +399,8 @@ class Service:
             rows = self.db.execute("SELECT school,environment,version,final_period,state,error FROM la_channels ORDER BY school,environment,version,final_period").fetchall()
             starts = dict(self.db.execute("SELECT state,COUNT(*) FROM la_start_jobs GROUP BY state").fetchall())
             broadcasts = dict(self.db.execute("SELECT state,COUNT(*) FROM la_v2_broadcasts GROUP BY state").fetchall())
-        return {"protocolVersion": 2, "channels": [dict(row) for row in rows], "starts": starts, "broadcasts": broadcasts}
+            updates = dict(self.db.execute("SELECT state,COUNT(*) FROM la_token_updates GROUP BY state").fetchall())
+        return {"protocolVersion": 2, "channels": [dict(row) for row in rows], "starts": starts, "broadcasts": broadcasts, "tokenUpdates": updates}
 
     def drain_legacy(self):
         with self.lock:
@@ -385,13 +436,15 @@ class Service:
             candidates = self.db.execute("SELECT device,occurrence FROM la_start_jobs WHERE state='pending' AND fire_at<=? AND next_attempt<=? ORDER BY fire_at LIMIT 100", (now, now)).fetchall()
         for candidate in candidates:
             with self.transaction() as db:
-                row = db.execute("SELECT j.*,d.token,d.environment,d.bundle,d.mode,d.revoked,c.channel,c.state AS channel_state FROM la_start_jobs j JOIN la_v2_devices d ON j.device=d.id JOIN la_channels c ON j.channel_key=c.logical_key WHERE j.device=? AND j.occurrence=? AND j.state='pending'", tuple(candidate)).fetchone()
-                if row is None:
+                row = db.execute("SELECT j.*,d.token,d.environment,d.bundle,d.mode,d.revoked,c.channel,c.state AS channel_state FROM la_start_jobs j JOIN la_v2_devices d ON j.device=d.id LEFT JOIN la_channels c ON j.channel_key=c.logical_key WHERE j.device=? AND j.occurrence=? AND j.state='pending'", tuple(candidate)).fetchone()
+                # A channel job whose channel row is gone waits exactly as under the former inner join.
+                if row is None or (row['channel_key'] and row['channel_state'] is None):
                     continue
                 if row['expires_at'] <= now or row['revoked'] or row['mode'] != 'remote':
                     db.execute("UPDATE la_start_jobs SET state='expired' WHERE device=? AND occurrence=?", tuple(candidate))
                     continue
-                if row['bundle'] != self.client.bundle_id or not row['token'] or row['channel_state'] != 'ready':
+                # Token-mode starts carry `input-push-token` and reference no channel.
+                if row['bundle'] != self.client.bundle_id or not row['token'] or (row['channel_key'] and row['channel_state'] != 'ready'):
                     continue
                 try:
                     token = self.vault.open(row['token'])
@@ -401,8 +454,9 @@ class Service:
                 db.execute("UPDATE la_start_jobs SET state='submitting',attempts=attempts+1 WHERE device=? AND occurrence=?", tuple(candidate))
             payload = json.loads(row['payload'])
             payload['aps']['timestamp'] = int(now)
-            payload['aps']['input-push-channel'] = row['channel']
-            payload['aps']['attributes']['broadcastChannel'] = row['channel']
+            if row['channel_key']:
+                payload['aps']['input-push-channel'] = row['channel']
+                payload['aps']['attributes']['broadcastChannel'] = row['channel']
             try:
                 result = self.client.push(token, payload, environment=row['environment'], expiration=0, topic=row['bundle'] + '.push-type.liveactivity')
             except Exception:
@@ -461,10 +515,63 @@ class Service:
                     db.execute("UPDATE la_channels SET state='missing',channel='' WHERE logical_key=?", (row['channel_key'],))
                 db.execute("UPDATE la_v2_broadcasts SET state=?,next_attempt=? WHERE channel_key=? AND fire_at=?", ('sent' if result.get('ok') else 'pending', now + 5, row['channel_key'], row['fire_at']))
 
+    def dispatch_token_updates(self):
+        if not self.client:
+            return
+        now = self.now()
+        with self.transaction() as db:
+            db.execute("DELETE FROM la_token_updates WHERE expires_at<? OR (device,occurrence) IN (SELECT device,occurrence FROM la_activity_tokens WHERE end_at<?)", (now - DAY, now - DAY))
+            db.execute("DELETE FROM la_activity_tokens WHERE end_at<?", (now - DAY,))
+            db.execute("UPDATE la_token_updates SET state='expired' WHERE state='pending' AND fire_at<=? AND expires_at<=?", (now, now))
+            due = db.execute("SELECT * FROM la_token_updates WHERE state='pending' AND fire_at<=? ORDER BY fire_at LIMIT 200", (now,)).fetchall()
+            # Like the broadcasts: only the newest due refresh of an activity is worth sending.
+            latest = {}
+            for row in due:
+                activity = (row['device'], row['occurrence'])
+                if activity in latest:
+                    db.execute("UPDATE la_token_updates SET state='superseded' WHERE device=? AND occurrence=? AND fire_at=?", (*activity, latest[activity]['fire_at']))
+                latest[activity] = row
+            claimed = []
+            for (device, occurrence), row in latest.items():
+                if row['next_attempt'] > now:
+                    continue
+                owner = db.execute("SELECT d.revoked,d.environment,d.bundle,t.token,t.day FROM la_v2_devices d LEFT JOIN la_activity_tokens t ON t.device=d.id AND t.occurrence=? WHERE d.id=?", (occurrence, device)).fetchone()
+                if owner is None or owner['revoked'] or not owner['token']:
+                    db.execute("UPDATE la_token_updates SET state='cancelled' WHERE device=? AND occurrence=? AND fire_at=?", (device, occurrence, row['fire_at']))
+                    continue
+                if owner['bundle'] != self.client.bundle_id:
+                    continue
+                db.execute("UPDATE la_token_updates SET state='sending',attempts=attempts+1 WHERE device=? AND occurrence=? AND fire_at=?", (device, occurrence, row['fire_at']))
+                claimed.append((row, owner))
+        for row, owner in claimed:
+            activity = (row['device'], row['occurrence'], row['fire_at'])
+            stamp = int(row['fire_at'])
+            aps = {"timestamp": stamp, "event": row['event'], "content-state": {"broadcastDateKey": owner['day'],
+                   "broadcastTimestamp": stamp, "updatedAt": stamp, "startDate": stamp, "endDate": stamp}}
+            aps.update({"dismissal-date": stamp} if row['event'] == 'end' else {"stale-date": stamp + 60})
+            try:
+                result = self.client.push(self.vault.open(owner['token']), {"aps": aps}, environment=owner['environment'], push_type="liveactivity", priority=10,
+                    expiration=int(row['expires_at']), collapse_id=row['occurrence'][:64], topic=owner['bundle'] + '.push-type.liveactivity')
+            except Exception:
+                result = {"ok": False, "status": 0, "certainty": "unknown", "reason": "transport failure"}
+            status, reason = result.get('status', 0), str(result.get('reason') or '')
+            with self.transaction() as db:
+                if result.get('ok') and status == 200:
+                    db.execute("UPDATE la_token_updates SET state='sent',detail='' WHERE device=? AND occurrence=? AND fire_at=?", activity)
+                elif status == 410 or (status == 400 and reason in ('BadDeviceToken', 'DeviceTokenNotForTopic')):
+                    db.execute("DELETE FROM la_activity_tokens WHERE device=? AND occurrence=?", activity[:2])
+                    db.execute("UPDATE la_token_updates SET state='cancelled',detail=? WHERE device=? AND occurrence=? AND state IN ('pending','sending')", (reason[:200] or str(status), *activity[:2]))
+                elif result.get('certainty') in ('notSent', 'unknown') or status in (408, 429) or 500 <= status < 600:
+                    # An update is idempotent, so retrying is safe until the next refresh replaces it.
+                    db.execute("UPDATE la_token_updates SET state='pending',next_attempt=?,detail=? WHERE device=? AND occurrence=? AND fire_at=? AND state='sending'",
+                               (now + min(60, 5 * 2 ** row['attempts']), reason[:200], *activity))
+                else:
+                    db.execute("UPDATE la_token_updates SET state='failed',detail=? WHERE device=? AND occurrence=? AND fire_at=? AND state='sending'", (reason[:200] or str(status), *activity))
+
     def start(self):
         if self.workers:
             return
-        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1)]:
+        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1)]:
             def run(action=action, delay=delay):
                 while not self.stop_event.is_set():
                     try:
@@ -517,6 +624,10 @@ def handle(handler, service, method, path):
                 result = service.handoff(device)
             elif tail == 'foreground-recovery' and method == 'POST':
                 result = service.recovery(device, body())
+            elif len(parts) == 4 and parts[2] == 'activities' and method == 'PUT':
+                result = service.register_activity(device, parts[3], body())
+            elif len(parts) == 4 and parts[2] == 'activities' and method == 'DELETE':
+                result = service.forget_activity(device, parts[3])
             else:
                 raise ProtocolError('not found', 404)
         handler.send_json(200, result)

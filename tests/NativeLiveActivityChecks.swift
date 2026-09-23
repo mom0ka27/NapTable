@@ -43,6 +43,13 @@ struct NativeLiveActivityChecks {
         await settle()
         precondition(live.count == 2, "Two course instances, including course beyond tomorrow")
         precondition(live.allSatisfy { $0.attributes.broadcastChannel == "two" })
+        precondition(controller.pushMode == "channel" && live.allSatisfy { $0.pushType == .channel("two") && $0.attributes.pushMode == nil },
+                     "The reader's own table keeps the broadcast channel")
+        let channelPlan = LiveActivityPlan(planRevision: 1, scheduleScope: "scope", schoolID: "school", scheduleVersion: "version",
+            coverageStart: 0, coverageEndExclusive: 86400, leadMinutes: 30, items: [], busyIntervals: [])
+        let channelBody = try JSONSerialization.jsonObject(with: JSONEncoder().encode(channelPlan)) as! [String: Any]
+        precondition(Set(channelBody.keys) == ["protocolVersion", "planRevision", "scheduleScope", "schoolID", "scheduleId", "scheduleVersion",
+            "coverageStart", "coverageEndExclusive", "leadMinutes", "items", "busyIntervals"], "A channel plan body is unchanged: no pushMode key")
         precondition(controller.coverage.contains("2/2"))
         let ids = Set(live.map(\.id))
         controller.accept(snapshot); await settle()
@@ -171,17 +178,66 @@ struct NativeLiveActivityChecks {
         controller.setEnabled(false); await settle()
         controller.foreground(); await settle()
         precondition(live.isEmpty && !controller.isEnabled, "Foreground must never enable the user's switch")
+
+        // Token mode: the refresh instants are exactly the display changes.
+        let blank = shared.frames[0].state
+        let gapped = LiveActivityOccurrence(item: .init(occurrenceId: "gap", supersedes: [], dateKey: "2026-09-22", startPeriod: 1, endPeriod: 1),
+            sourceID: "A", start: 0, end: 40, reminder: 0, frames: [.init(from: 0, until: 10, state: blank), .init(from: 20, until: 40, state: blank)])
+        precondition(gapped.refreshAt() == [10, 20], "A gap refreshes where it opens and where it closes")
+        precondition(segmented.occurrences[0].refreshAt() == [start, start + 50 * 60, start + 60 * 60], "Per-period mode refreshes at each bell")
+        precondition(shared.refreshAt() == [shared.start, nine], "The reader's own class start splits the share's frame")
+        precondition(shared.refreshAt(after: shared.start + 60) == [shared.start, nine] && shared.refreshAt(after: shared.start + 61) == [nine],
+                     "Instants more than a minute old are dropped")
+        // A followed share reserves token activities and announces their tokens.
+        let follower = NativeLiveActivityController(now: { now }, privacyDefaults: defaults)
+        follower.setEnabled(true)
+        var announcements = 0
+        follower.activityTokensDidChange = { announcements += 1 }
+        let followed = fixture(source: "小明", scope: "share")
+        follower.accept(followed, own: mine)
+        follower.applyMapping(mapping, localHandoff: true, submitted: []); await settle()
+        precondition(follower.pushMode == "token" && live.count == 2)
+        precondition(live.allSatisfy { $0.pushType == .token && $0.attributes.pushMode == "token" && $0.attributes.broadcastChannel == nil },
+                     "Token mode reserves with .token and no channel")
+        precondition(follower.tokenRegistrations().registrations.isEmpty && follower.tokenRegistrations().live.count == 2 && announcements == 1)
+        let opening = follower.display!.occurrences[0]
+        let reserved = live.first { $0.attributes.occurrenceId == opening.item.occurrenceId }!
+        reserved.deliverPushToken(Data([0xab, 0xcd, 0x01])); await settle()
+        var registrations = follower.tokenRegistrations().registrations
+        precondition(announcements == 2 && registrations.count == 1 && registrations[0].token == "abcd01" && registrations[0].dateKey == "2026-09-22")
+        precondition(registrations[0].refreshAt == [opening.start, opening.start + 3600] && registrations[0].end == opening.end,
+                     "Refresh at class start and where the reader's own class joins")
+        let reservations = Set(live.map(\.id))
+        follower.accept(followed, own: mine); follower.foreground(); await settle()
+        precondition(announcements == 2 && Set(live.map(\.id)) == reservations, "An unchanged rebuild announces nothing")
+        let earlierCourse = NativeScheduleCourse(liveActivitySourceID: "M", name: "有机化学", weeks: "1周", weekList: [1], location: "1教105", startSlot: 1, endSlot: 1)
+        let earlier = NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [earlierCourse])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei")
+        follower.accept(followed, own: earlier); await settle()
+        registrations = follower.tokenRegistrations().registrations
+        precondition(announcements == 3 && registrations[0].refreshAt == [opening.start, opening.start + 50 * 60], "Editing the reader's own table moves the refresh")
+        reserved.begin()
+        follower.foreground(); await settle()
+        precondition(reserved.content.staleDate == Date(timeIntervalSince1970: opening.start), "A local update goes stale at the next display change, not the end")
+        // An older server refused token mode: channel for the rest of the session.
+        follower.disableTokenMode(); await settle()
+        precondition(follower.pushMode == "channel" && follower.tokenNotice == "服务端尚不支持共享课表的实时刷新")
+        let fallback = live.filter { $0.id != reserved.id }
+        precondition(live.contains { $0.id == reserved.id } && fallback.count == 1 && fallback[0].pushType == .channel("two") && fallback[0].attributes.pushMode == nil,
+                     "Pending reservations move to the channel; the active one finishes")
+        follower.setEnabled(false); await settle()
         print("Live Activity v2 Swift checks passed")
     }
     @MainActor static var live: [Activity<ScheduleLiveActivityAttributes>] {
         Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
     }
     static func settle() async { for _ in 0..<12 { await Task.yield() }; try? await Task.sleep(nanoseconds: 10_000_000) }
-    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false, source: String? = nil) -> NativeScheduleSnapshot {
+    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false, source: String? = nil, scope: String = "scope") -> NativeScheduleSnapshot {
         let a = NativeScheduleCourse(liveActivitySourceID: "A", name: name, weeks: "1周", weekList: [1], startSlot: 1, endSlot: conflict ? 3 : 2)
         let b = NativeScheduleCourse(liveActivitySourceID: "B", name: name, weeks: "1周", weekList: [1], startSlot: 2, endSlot: 2)
         let periods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "08:50"), NativeSchedulePeriod(number: 2, startTime: "09:00", endTime: "09:50"), NativeSchedulePeriod(number: 3, startTime: "10:00", endTime: "10:50")]
-        return NativeScheduleSnapshot(scheduleScope: "scope", periods: periods,
+        return NativeScheduleSnapshot(scheduleScope: scope, periods: periods,
             data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: conflict ? [a, b] : [a]), NativeScheduleCell(day: 5, bigSlot: 1, courses: conflict ? [a, b] : [a])]),
             calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]), sourceLabel: source, schoolID: "school", timeZone: "Asia/Taipei")
     }

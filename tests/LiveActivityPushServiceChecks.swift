@@ -86,10 +86,100 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         precondition(!controller.isEnabled)
         precondition(defaults.string(forKey: "naptable.liveActivity.deviceID") == nil)
         precondition(requests.dropFirst(beforeRevoke).allSatisfy { $0.httpMethod == "DELETE" }, "Withdrawal only sends cleanup requests, never course data")
+        try await tokenMode(group: group)
         print("Live Activity coordinator late-response / offline-revocation checks passed")
     }
-    static func response(_ request: URLRequest, _ value: [String: Any]) -> (Data, HTTPURLResponse) {
-        (try! JSONSerialization.data(withJSONObject: value), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
+    /// A followed share: each activity's token and refresh times go to the server, and nothing else.
+    @MainActor static func tokenMode(group: UserDefaults) async throws {
+        let suite = "naptable.tests.token.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        PrivacyConsent(defaults: defaults).acceptBasic(liveActivities: true)
+        group.set(true, forKey: NativeLiveActivityController.enabledKey)
+        let clock = ISO8601DateFormatter().date(from: "2026-09-22T00:00:00Z")!.addingTimeInterval(-1800)  // 07:30 Asia/Taipei
+        let controller = NativeLiveActivityController(now: { clock }, privacyDefaults: defaults)
+        var keys: [String: String] = [:]
+        var requests: [URLRequest] = []
+        var activityStatus = 200
+        let service = LiveActivityPushService(controller: controller, defaults: defaults,
+            credentials: .init(read: { keys[$0] }, write: { keys[$0] = $1 }, remove: { keys[$0] = nil }), baseURL: URL(string: "https://example.invalid")) { request in
+                requests.append(request)
+                let path = request.url!.path
+                if path.hasSuffix("/devices") { return response(request, ["launchMode": "remote"]) }
+                if path.hasSuffix("local-handoff") { return response(request, ["launchMode": "local", "history": []]) }
+                if path.contains("/activities/") {
+                    return activityStatus == 404 ? response(request, ["error": "not found"], status: 404) : response(request, ["pending": 2])
+                }
+                if path.hasSuffix("broadcast-config") {
+                    return response(request, ["schoolID": "school", "scheduleId": "default", "scheduleVersion": "v", "periods": [["number": 1, "start": "08:00", "end": "08:50"], ["number": 2, "start": "09:00", "end": "09:50"], ["number": 3, "start": "10:00", "end": "10:50"]], "timeZone": "Asia/Taipei", "channels": ["1": "one", "2": "two", "3": "three"], "status": "ready", "issuedAt": Date().timeIntervalSince1970, "createBefore": Date().timeIntervalSince1970 + 604800, "broadcastUntil": Date().timeIntervalSince1970 + 691200])
+                }
+                fatalError("unexpected request \(path)")
+            }
+        func activityCalls() -> [URLRequest] { requests.filter { $0.url!.path.contains("/activities/") } }
+        func body(_ request: URLRequest) -> [String: Any] { try! JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any] }
+        let share = timetable(scope: "share", source: "小明", first: 1, last: 2)
+        controller.accept(share, own: timetable(scope: "own", first: 2, last: 3))
+        service.activate()
+        for _ in 0..<3 { await settle() }
+        let reserved = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.attributes.scheduleScope == "share" && $0.activityState == .pending }
+        precondition(reserved.count == 1 && reserved[0].pushType == .token && activityCalls().isEmpty, "No upload before the system issues a token")
+        let occurrence = controller.display!.occurrences[0]
+        reserved[0].deliverPushToken(Data(repeating: 0xab, count: 16))
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == 1 && activityCalls()[0].httpMethod == "PUT" && activityCalls()[0].url!.path.hasSuffix("/activities/" + occurrence.item.occurrenceId))
+        let uploaded = body(activityCalls()[0])
+        precondition(Set(uploaded.keys) == ["token", "dateKey", "refreshAt", "end"] && uploaded["token"] as? String == String(repeating: "ab", count: 16))
+        precondition(uploaded["dateKey"] as? String == "2026-09-22" && uploaded["end"] as? Double == occurrence.end)
+        precondition(uploaded["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 3600], "Class start and the reader's own class start")
+        controller.accept(share, own: timetable(scope: "own", first: 2, last: 3)); controller.foreground()
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == 1, "An unchanged rebuild sends nothing")
+        controller.accept(share, own: timetable(scope: "own", first: 1, last: 1))
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == 2 && body(activityCalls()[1])["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 50 * 60],
+                     "The reader's own edit moves the companion boundary")
+        reserved[0].deliverPushToken(Data(repeating: 0xcd, count: 16))
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == 3 && body(activityCalls()[2])["token"] as? String == String(repeating: "cd", count: 16), "A rotated token is uploaded")
+        // No longer following: the activity ends and its refreshes are withdrawn.
+        controller.accept(timetable(scope: "own", first: 2, last: 3), own: nil)
+        for _ in 0..<3 { await settle() }
+        precondition(activityCalls().count == 4 && activityCalls()[3].httpMethod == "DELETE", "Unfollowing withdraws the token activity")
+        precondition(controller.pushMode == "channel")
+        // An older server does not know the endpoint: fall back to the channel for this session.
+        precondition(LiveActivityPushService.refusesTokenMode(status: 400, error: "expected complete v2 plan; personal display fields are forbidden"))
+        precondition(!LiveActivityPushService.refusesTokenMode(status: 400, error: "resolve overlapping courses before scheduling"))
+        activityStatus = 404
+        controller.accept(share, own: timetable(scope: "own", first: 2, last: 3))
+        for _ in 0..<3 { await settle() }
+        Activity<ScheduleLiveActivityAttributes>.activities.first { $0.attributes.scheduleScope == "share" && $0.activityState == .pending }!
+            .deliverPushToken(Data(repeating: 0xef, count: 16))
+        for _ in 0..<3 { await settle() }
+        let refused = activityCalls().count
+        precondition(controller.tokenModeUnsupported && controller.pushMode == "channel" && controller.tokenNotice != nil)
+        let pending = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.attributes.scheduleScope == "share" && $0.activityState == .pending }
+        precondition(pending.count == 1 && pending[0].pushType == .channel("two"), "Reservations move to the broadcast channel")
+        controller.foreground()
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == refused, "No retry loop against an older server")
+        // Tokens from a remote start (iOS 18) are observed as well.
+        let remote = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: .init(semester: "", dateKey: "2026-09-22", protocolVersion: 2, scheduleScope: "share",
+            occurrenceId: occurrence.item.occurrenceId, scheduleVersion: "v", pushMode: "token"), content: .init(state: occurrence.frames[0].state, staleDate: nil))
+        await settle()
+        precondition(remote.pushType == .token)
+        controller.setEnabled(false)
+        for _ in 0..<2 { await settle() }
+    }
+    static func timetable(scope: String, source: String? = nil, first: Int, last: Int) -> NativeScheduleSnapshot {
+        let course = NativeScheduleCourse(liveActivitySourceID: source == nil ? "M" : "A", name: source == nil ? "有机化学" : "高等数学", weeks: "1周", weekList: [1], startSlot: first, endSlot: last)
+        let periods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "08:50"), NativeSchedulePeriod(number: 2, startTime: "09:00", endTime: "09:50"), NativeSchedulePeriod(number: 3, startTime: "10:00", endTime: "10:50")]
+        return NativeScheduleSnapshot(scheduleScope: scope, periods: periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [course])]),
+            calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: [:]),
+            sourceLabel: source, schoolID: "school", timeZone: "Asia/Taipei")
+    }
+    static func response(_ request: URLRequest, _ value: [String: Any], status: Int = 200) -> (Data, HTTPURLResponse) {
+        (try! JSONSerialization.data(withJSONObject: value), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!)
     }
     static func settle() async { for _ in 0..<20 { await Task.yield() }; try? await Task.sleep(nanoseconds: 20_000_000) }
     static func snapshot(_ scope: String) -> NativeScheduleSnapshot {

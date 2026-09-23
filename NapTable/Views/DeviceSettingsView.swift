@@ -493,7 +493,8 @@ struct LiveActivitySettingsScreen: View {
                 Text(controller.coverage)
                 if controller.omitted > 0 { Text("\(controller.omitted) 项课程缺少可靠时间或来源身份，未安排。") }
                 if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
-                Text("iOS 26 及以上预约未来 168 小时，回到前台后补充；离线漏收广播可能延迟收起。iOS 18 使用远程启动，iOS 17 仅支持前台本地提醒。")
+                if let notice = controller.tokenNotice { Text(notice).foregroundStyle(.secondary) }
+                Text("iOS 26 及以上预约未来 168 小时，回到前台后补充；离线漏收广播可能延迟收起。iOS 18 使用远程启动，iOS 17 仅支持前台本地提醒。关心共享课表时，由服务端逐个推送刷新。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !controller.conflicts.isEmpty {

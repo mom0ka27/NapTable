@@ -325,8 +325,11 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
     public let reservationEnd: Date?
     public let broadcastChannel: String?
     public let reminderDate: Date?
+    /// `"token"` when the activity is refreshed by its own push token (a
+    /// followed share); `nil` means the school's broadcast channel.
+    public let pushMode: String?
 
-    public init(semester: String, dateKey: String, week: Int = 0, protocolVersion: Int? = nil, scheduleScope: String? = nil, occurrenceId: String? = nil, scheduleVersion: String? = nil, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil) {
+    public init(semester: String, dateKey: String, week: Int = 0, protocolVersion: Int? = nil, scheduleScope: String? = nil, occurrenceId: String? = nil, scheduleVersion: String? = nil, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil, pushMode: String? = nil) {
         self.protocolVersion = protocolVersion
         self.scheduleScope = scheduleScope
         self.occurrenceId = occurrenceId
@@ -338,6 +341,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         self.reservationEnd = reservationEnd
         self.broadcastChannel = broadcastChannel
         self.reminderDate = reminderDate
+        self.pushMode = pushMode
     }
 
     /// The activity should open the exact timetable context represented by the

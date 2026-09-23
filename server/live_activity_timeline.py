@@ -80,8 +80,11 @@ def timestamp(day, clock, timezone):
 def validate_plan(plan, schedule, now):
     allowed = {"protocolVersion", "planRevision", "scheduleScope", "schoolID", "scheduleId", "scheduleVersion",
                "coverageStart", "coverageEndExclusive", "leadMinutes", "items", "busyIntervals"}
-    if not isinstance(plan, dict) or set(plan) != allowed:
+    # `pushMode` is optional so a channel plan stays byte-identical to older clients.
+    if not isinstance(plan, dict) or set(plan) - {"pushMode"} != allowed:
         raise ProtocolError("expected complete v2 plan; personal display fields are forbidden")
+    if plan.get("pushMode", "channel") not in ("channel", "token"):
+        raise ProtocolError("pushMode must be channel or token")
     integer(plan["protocolVersion"], 2, 2)
     integer(plan["planRevision"], 1, 2**53 - 1)
     for key in ("scheduleScope", "schoolID", "scheduleId", "scheduleVersion"):
@@ -137,6 +140,34 @@ def validate_plan(plan, schedule, now):
             raise ProtocolError("activity exceeds eight hours")
         previous = event["end"]
     return events
+
+
+def validate_activity(value, now):
+    """Per-activity refresh times for token mode. Times only: no course field is accepted."""
+    if not isinstance(value, dict) or set(value) != {"token", "dateKey", "refreshAt", "end"}:
+        raise ProtocolError("expected token, dateKey, refreshAt and end only")
+    token = value["token"]
+    if not isinstance(token, str) or not 16 <= len(token) <= 512 or any(c not in "0123456789abcdefABCDEF" for c in token):
+        raise ProtocolError("invalid activity push token")
+    day = value["dateKey"]
+    try:
+        if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day:
+            raise ValueError()
+    except ValueError:
+        raise ProtocolError("invalid dateKey")
+    end, refresh = instant(value["end"]), value["refreshAt"]
+    if not now < end <= now + 8 * DAY:
+        raise ProtocolError("activity end outside accepted range")
+    if not isinstance(refresh, list) or len(refresh) > 64:
+        raise ProtocolError("expected at most 64 refresh instants")
+    previous = None
+    for stamp in refresh:
+        if not now - 60 <= instant(stamp) < end or (previous is not None and stamp <= previous):
+            raise ProtocolError("refreshAt must be increasing and inside the activity")
+        previous = stamp
+    if end - min(refresh + [now]) > 8 * 3600:
+        raise ProtocolError("activity exceeds eight hours")
+    return {"token": token, "day": day, "refreshAt": refresh, "end": end}
 
 
 def public_state(day, period, phase, stamp):

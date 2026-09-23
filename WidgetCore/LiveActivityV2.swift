@@ -22,6 +22,9 @@ nonisolated struct LiveActivityPlan: Codable, Equatable {
     var leadMinutes: Int
     var items: [Item]
     var busyIntervals: [BusyInterval]
+    /// Only sent as `"token"`; a channel plan omits the key so its body and
+    /// digest stay exactly what older builds uploaded.
+    var pushMode: String? = nil
 }
 
 nonisolated struct LiveActivityMapping: Codable, Equatable {
@@ -55,6 +58,29 @@ nonisolated struct LiveActivityOccurrence: Codable, Equatable {
         let instant = date.timeIntervalSince1970
         return frames.first { $0.from <= instant && instant < $0.until }?.state
     }
+
+    /// When the display changes after the activity first renders: every frame
+    /// start but the first (class start, per-period breaks, the reader's own
+    /// course joining or leaving), plus the end of a frame followed by a gap.
+    /// Token mode asks the server for a push at each of these. Instants more
+    /// than a minute before `now` are dropped, as the server refuses them.
+    func refreshAt(after now: Double = -.infinity) -> [Double] {
+        let gaps = zip(frames, frames.dropFirst()).filter { $0.until != $1.from }.map { $0.0.until }
+        return Set(frames.dropFirst().map(\.from) + gaps).filter { $0 >= now - 60 && $0 < end }.sorted()
+    }
+}
+
+/// One token-mode activity as the server should know it: its token and the
+/// instants to push at, never any course content.
+nonisolated struct LiveActivityTokenRegistration: Equatable {
+    var occurrenceId: String
+    var token: String
+    var dateKey: String
+    var refreshAt: [Double]
+    var end: Double
+    /// Built from the unfiltered refresh list, so boundaries passing by do not
+    /// make an unchanged registration look new.
+    var signature: String
 }
 
 nonisolated struct LiveActivityDisplaySnapshot: Codable, Equatable {

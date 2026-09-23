@@ -99,6 +99,8 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
 
+关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，iOS 26 本地预约设备此时同样需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：推送客户端每环境单连接串行发送，吞吐约为 1 / 往返时延；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
+
 ## 分享课表
 
 一个分享是「一份课程 + 发布时那个学校学期的完整时间配置」的快照。读的人只要分享码，不需要和分享者在同一所学校，也不需要本机有那所学校的配置——节次时间、第一周周一、总周数和调休都随分享一起下发。

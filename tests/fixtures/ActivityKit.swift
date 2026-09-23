@@ -38,7 +38,7 @@ public struct AlertConfiguration {
 
 public enum ActivityState { case pending, active, stale, ended, dismissed }
 public enum ActivityUIDismissalPolicy { case immediate }
-public enum PushType {
+public enum PushType: Equatable {
     case token
     case channel(String)
 }
@@ -53,6 +53,7 @@ public enum TestActivityKit {
     public static var failNextRequest = false
     public static var events: [String] = []
     fileprivate static var activities: [AnyObject] = []
+    fileprivate static var activityObservers: [(AnyObject) -> Void] = []
 }
 
 public struct ActivityAuthorizationInfo {
@@ -65,16 +66,53 @@ public final class Activity<Attributes: ActivityAttributes> {
     public let attributes: Attributes
     public private(set) var content: ActivityContent<Attributes.ContentState>
     public private(set) var activityState: ActivityState = .active
+    /// Test-only record of what `request` asked for; not part of ActivityKit.
+    public let pushType: PushType?
+    public private(set) var pushToken: Data?
+    private var tokenContinuations: [AsyncStream<Data>.Continuation] = []
 
     public static var pushToStartTokenUpdates: AsyncStream<Data> { AsyncStream { $0.finish() } }
+
+    /// Like ActivityKit, a new subscriber first receives the current token.
+    public var pushTokenUpdates: AsyncStream<Data> {
+        AsyncStream { continuation in
+            if let pushToken { continuation.yield(pushToken) }
+            if activityState == .ended || activityState == .dismissed { continuation.finish() } else { tokenContinuations.append(continuation) }
+        }
+    }
+
+    public static var activityUpdates: AsyncStream<Activity<Attributes>> {
+        AsyncStream { continuation in
+            TestActivityKit.activityObservers.append { if let activity = $0 as? Activity<Attributes> { continuation.yield(activity) } }
+        }
+    }
 
     public static var activities: [Activity<Attributes>] {
         TestActivityKit.activities.compactMap { $0 as? Activity<Attributes> }
     }
 
-    private init(attributes: Attributes, content: ActivityContent<Attributes.ContentState>) {
+    private init(attributes: Attributes, content: ActivityContent<Attributes.ContentState>, pushType: PushType?) {
         self.attributes = attributes
         self.content = content
+        self.pushType = pushType
+    }
+
+    /// Test hook: the system issuing (or rotating) this activity's push token.
+    public func deliverPushToken(_ token: Data) {
+        pushToken = token
+        for continuation in tokenContinuations { continuation.yield(token) }
+    }
+
+    /// Test hook: a scheduled reservation reaching its start time.
+    public func begin() { activityState = .active }
+
+    /// Test hook: the system creating an activity from a push-to-start (iOS 18).
+    @discardableResult
+    public static func remoteStart(attributes: Attributes, content: ActivityContent<Attributes.ContentState>) -> Activity<Attributes> {
+        let activity = Activity(attributes: attributes, content: content, pushType: .token)
+        TestActivityKit.activities.append(activity)
+        for observer in TestActivityKit.activityObservers { observer(activity) }
+        return activity
     }
 
     public static func request(
@@ -90,9 +128,10 @@ public final class Activity<Attributes: ActivityAttributes> {
             TestActivityKit.failNextRequest = false
             throw NSError(domain: "ActivityKit", code: 1)
         }
-        let activity = Activity(attributes: attributes, content: content)
+        let activity = Activity(attributes: attributes, content: content, pushType: pushType)
         TestActivityKit.activities.append(activity)
         TestActivityKit.events.append("request")
+        for observer in TestActivityKit.activityObservers { observer(activity) }
         return activity
     }
 
@@ -122,6 +161,8 @@ public final class Activity<Attributes: ActivityAttributes> {
         if let content { self.content = content }
         activityState = .ended
         TestActivityKit.events.append("end")
+        for continuation in tokenContinuations { continuation.finish() }
+        tokenContinuations = []
     }
 
     public func end(_ content: ActivityContent<Attributes.ContentState>?, dismissalPolicy: ActivityUIDismissalPolicy, timestamp: Date) async {

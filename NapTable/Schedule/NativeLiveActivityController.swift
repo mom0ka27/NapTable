@@ -41,8 +41,14 @@ final class NativeLiveActivityController: ObservableObject {
     @Published private(set) var coverage = "尚未安排"
     @Published private(set) var conflicts: [LiveActivityTimeline.Conflict] = []
     @Published private(set) var omitted = 0
+    /// Set for this session once the server turned token mode down (an older
+    /// deployment); followed shares then fall back to the broadcast channel.
+    @Published private(set) var tokenModeUnsupported = false
     var scheduleBackgroundWakeup: ((Date) -> Void)?
     var planDidChange: (() -> Void)?
+    /// A token-mode activity got a token, rotated it, changed its refresh times
+    /// or went away: the push service reconciles the server's registrations.
+    var activityTokensDidChange: (() -> Void)?
     private(set) var currentScheduleMetadata: NativeScheduleSnapshot?
     /// The reader's own timetable while `currentScheduleMetadata` is a
     /// followed share. Display only: it never changes the scope, the plan or
@@ -60,6 +66,10 @@ final class NativeLiveActivityController: ObservableObject {
     private let defaults: UserDefaults
     private var ledger: [String: LedgerEntry]
     private var removedThisSession: Set<String> = []
+    /// Activity ID → hex push token. Subscriptions live only as long as the process.
+    private var activityTokens: [String: String] = [:]
+    private var tokenObservers: [String: Task<Void, Never>] = [:]
+    private var announcedTokens: [String] = []
 
     init(now: @escaping () -> Date = { .now }, privacyDefaults: UserDefaults = .standard) {
         self.privacyDefaults = privacyDefaults
@@ -75,6 +85,16 @@ final class NativeLiveActivityController: ObservableObject {
     }
     var leadTime: TimeInterval { Double(leadMinutes * 60) }
     var perPeriod: Bool { defaults.bool(forKey: Self.perPeriodKey) }
+    /// `"token"` while following a share: the reader's own course boundaries are
+    /// not on the share's school channel, so each activity is pushed on its own.
+    /// Follows the scope (a share has its own), so the modes never mix in one scope.
+    var pushMode: String {
+        guard #available(iOS 18.0, *), currentScheduleMetadata?.sourceLabel != nil, !tokenModeUnsupported else { return "channel" }
+        return "token"
+    }
+    var tokenNotice: String? {
+        tokenModeUnsupported && currentScheduleMetadata?.sourceLabel != nil ? "服务端尚不支持共享课表的实时刷新" : nil
+    }
 
     func setEnabled(_ requested: Bool) {
         let value = requested && PrivacyPolicy.liveAllowed(privacyDefaults)
@@ -172,6 +192,66 @@ final class NativeLiveActivityController: ObservableObject {
         if changed { rebuild() }
     }
     func setServiceFailure(_ reason: String) { status = .unavailable(reason) }
+    /// An older server refused token mode: use the broadcast channel for the rest of this session.
+    func disableTokenMode() {
+        guard !tokenModeUnsupported else { return }
+        tokenModeUnsupported = true
+        rebuild()
+    }
+    /// Token-mode activities still worth refreshing and what the server should
+    /// hold for each. `live` also names those whose token this process has not
+    /// received yet, so a cold start does not mistake them for gone.
+    func tokenRegistrations() -> (registrations: [LiveActivityTokenRegistration], live: Set<String>) {
+        guard let display else { return ([], []) }
+        let current = now().timeIntervalSince1970
+        var registrations: [LiveActivityTokenRegistration] = []
+        var live: Set<String> = []
+        for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.attributes.pushMode == "token" &&
+            activity.activityState != .ended && activity.activityState != .dismissed && activity.attributes.scheduleScope == display.scope {
+            guard let occurrence = display.occurrences.first(where: { $0.item.occurrenceId == activity.attributes.occurrenceId && $0.item.dateKey == activity.attributes.dateKey }),
+                  occurrence.end > current, !live.contains(occurrence.item.occurrenceId) else { continue }
+            live.insert(occurrence.item.occurrenceId)
+            guard let token = activityTokens[activity.id] else { continue }
+            let signature = ([token, occurrence.item.dateKey] + (occurrence.refreshAt() + [occurrence.end]).map { String(format: "%.0f", $0) }).joined(separator: ",")
+            registrations.append(.init(occurrenceId: occurrence.item.occurrenceId, token: token, dateKey: occurrence.item.dateKey,
+                                       refreshAt: Array(occurrence.refreshAt(after: current).prefix(64)), end: occurrence.end, signature: signature))
+        }
+        return (registrations, live)
+    }
+    func observeTokens(of activity: Activity<ScheduleLiveActivityAttributes>) {
+        guard activity.attributes.pushMode == "token", tokenObservers[activity.id] == nil else { return }
+        let id = activity.id
+        tokenObservers[id] = Task { [weak self] in
+            for await data in activity.pushTokenUpdates {
+                guard let self else { return }
+                activityTokens[id] = data.map { String(format: "%02x", $0) }.joined()
+                announceTokens()
+            }
+            self?.tokenObservers[id] = nil
+        }
+    }
+    /// Tokens can rotate and subscriptions die with the process, so every pass
+    /// re-attaches to each token-mode activity still around.
+    private func observeTokenActivities() {
+        let current = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
+        let ids = Set(current.map(\.id))
+        activityTokens = activityTokens.filter { ids.contains($0.key) }
+        for activity in current { observeTokens(of: activity) }
+    }
+    private func announceTokens() {
+        let state = tokenRegistrations()
+        let key = state.registrations.map(\.signature).sorted() + state.live.sorted()
+        guard key != announcedTokens else { return }
+        announcedTokens = key
+        activityTokensDidChange?()
+    }
+    /// A token-mode activity whose token never reached the server gets no push;
+    /// going stale at its next display change makes the system redraw it once more.
+    private func staleDate(_ attributes: ScheduleLiveActivityAttributes, otherwise fallback: Date, in display: LiveActivityDisplaySnapshot?) -> Date {
+        guard attributes.pushMode == "token", let occurrence = display?.occurrences.first(where: { $0.item.occurrenceId == attributes.occurrenceId }) else { return fallback }
+        let current = now().timeIntervalSince1970
+        return Date(timeIntervalSince1970: occurrence.refreshAt().first { $0 > current } ?? occurrence.end)
+    }
     func foreground() {
         removedThisSession.removeAll()
         if !isPreviewActive { rebuild() }
@@ -195,10 +275,12 @@ final class NativeLiveActivityController: ObservableObject {
     }
     private func valid(_ generation: Int) -> Bool { generation == epoch && !Task.isCancelled && isEnabled && !isPreviewActive }
     private func attributes(_ occurrence: LiveActivityOccurrence, display: LiveActivityDisplaySnapshot) -> ScheduleLiveActivityAttributes {
-        .init(semester: currentScheduleMetadata?.data?.currentSemester ?? "", dateKey: occurrence.item.dateKey,
+        let token = pushMode == "token"
+        return .init(semester: currentScheduleMetadata?.data?.currentSemester ?? "", dateKey: occurrence.item.dateKey,
               protocolVersion: 2, scheduleScope: display.scope, occurrenceId: occurrence.item.occurrenceId, scheduleVersion: display.scheduleVersion,
               reservationStart: Date(timeIntervalSince1970: occurrence.start), reservationEnd: Date(timeIntervalSince1970: occurrence.end),
-              broadcastChannel: mapping?.channels[String(occurrence.item.endPeriod)], reminderDate: Date(timeIntervalSince1970: occurrence.reminder))
+              broadcastChannel: token ? nil : mapping?.channels[String(occurrence.item.endPeriod)], reminderDate: Date(timeIntervalSince1970: occurrence.reminder),
+              pushMode: token ? "token" : nil)
     }
     private func reconcile(generation: Int) async {
         guard valid(generation), let display else { return }
@@ -214,6 +296,8 @@ final class NativeLiveActivityController: ObservableObject {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
+        observeTokenActivities()
+        defer { announceTokens() }
         if #available(iOS 18.0, *) {
             guard let mapping else { status = .unavailable("等待学校作息映射；纯本地课表可使用前台预览。"); return }
             if #available(iOS 26.0, *) {
@@ -223,7 +307,7 @@ final class NativeLiveActivityController: ObservableObject {
                 coverage = "远程启动：服务端滚动安排未来 48 小时"
                 for activity in live where activity.attributes.scheduleScope == display.scope {
                     if let state = display.resolve(attributes: activity.attributes, at: now()) {
-                        await activity.update(ActivityContent(state: state, staleDate: state.endDate))
+                        await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, otherwise: state.endDate, in: display)))
                     }
                 }
                 status = live.isEmpty ? .waiting : .active
@@ -257,7 +341,7 @@ final class NativeLiveActivityController: ObservableObject {
                 ledger[id] = .init(activityID: activity.id, state: "scheduled", end: occurrence.end)
                 if activity.activityState == .active || activity.activityState == .stale,
                    let state = display.resolve(attributes: activity.attributes, at: now()) {
-                    await activity.update(ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)))
+                    await activity.update(ActivityContent(state: state, staleDate: staleDate(attributes, otherwise: Date(timeIntervalSince1970: occurrence.end), in: display)))
                 }
                 accepted += 1
                 continue
@@ -273,8 +357,10 @@ final class NativeLiveActivityController: ObservableObject {
             }
             guard !removedThisSession.contains(id), !submitted.contains(id),
                   occurrence.item.supersedes.allSatisfy({ !submitted.contains($0) }) else { continue }
+            // Token mode needs no channel: each activity is pushed on its own token.
+            let channel = attributes.pushMode == "token" ? nil : mapping.channels[String(occurrence.item.endPeriod)]
             guard current < mapping.createBefore, occurrence.reminder < mapping.createBefore,
-                  occurrence.end <= mapping.broadcastUntil, let channel = mapping.channels[String(occurrence.item.endPeriod)] else {
+                  occurrence.end <= mapping.broadcastUntil, attributes.pushMode == "token" || channel != nil else {
                 failure = "部分频道缺失或映射已过期，联网后补充。"
                 continue
             }
@@ -284,7 +370,7 @@ final class NativeLiveActivityController: ObservableObject {
             ledger[id] = .init(activityID: nil, state: "requesting", end: occurrence.end)
             saveLedger()
             func request() throws -> Activity<ScheduleLiveActivityAttributes> {
-                try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)), pushType: .channel(channel), style: .standard,
+                try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)), pushType: channel.map { PushType.channel($0) } ?? .token, style: .standard,
                     alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default), start: Date(timeIntervalSince1970: plannedStart))
             }
             do {
@@ -301,6 +387,7 @@ final class NativeLiveActivityController: ObservableObject {
                 }
                 ledger[id] = .init(activityID: activity.id, state: "scheduled", end: occurrence.end)
                 accepted += 1
+                observeTokens(of: activity)
             } catch {
                 if Self.isCapacityError(error) {
                     ledger[id]?.state = "waitingForCapacity"
@@ -337,7 +424,12 @@ final class NativeLiveActivityController: ObservableObject {
             if let id = activity.attributes.occurrenceId { ledger[id] = nil }
         }
         saveLedger()
-        retirementTask = Task { for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) } }
+        let tokens = activities.contains { $0.attributes.pushMode == "token" }
+        retirementTask = Task { [weak self] in
+            for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
+            // Lets the push service withdraw the ended activities' refreshes.
+            if tokens { self?.announceTokens() }
+        }
     }
     func startPreview() {
         guard isEnabled else { return }
@@ -365,11 +457,13 @@ final class NativeLiveActivityController: ObservableObject {
     func reconcileInBackground() async {
         guard !isPreviewActive else { return }
         let current = now()
+        observeTokenActivities()
+        let stored = display ?? LiveActivityDisplaySnapshot.load()
         for activity in Activity<ScheduleLiveActivityAttributes>.activities {
             if !isEnabled || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= current {
                 await activity.end(nil, dismissalPolicy: .immediate)
             } else if let state = LiveActivityDisplaySnapshot.resolveStored(attributes: activity.attributes, at: current) {
-                await activity.update(ActivityContent(state: state, staleDate: state.endDate))
+                await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, otherwise: state.endDate, in: stored)))
             }
         }
     }

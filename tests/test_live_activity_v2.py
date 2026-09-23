@@ -261,6 +261,192 @@ class V2Tests(unittest.TestCase):
             with self.assertRaises(Exception): vault.open(sealed[:-3] + 'abc')
 
 
+class TokenModeTests(unittest.TestCase):
+    """Followed shares: per-activity token pushes. Channel plans must stay exactly as before."""
+    setUp = V2Tests.setUp
+    job = V2Tests.job
+    token = 'ab' * 16
+    start, middle, end = 1790035200, 1790038200, 1790041800  # 08:00, 08:50, 09:50 Asia/Taipei
+
+    def activity(self, **changes):
+        return dict(dict(token=self.token, dateKey='2026-09-22', refreshAt=[self.start, self.middle], end=self.end), **changes)
+
+    def updates(self):
+        return [tuple(row) for row in self.db.execute('SELECT fire_at,event,state FROM la_token_updates ORDER BY fire_at')]
+
+    def test_push_mode_is_optional_and_validated(self):
+        schedule = normalize_schedule(self.periods, 'Asia/Taipei')
+        for mode in (None, 'channel', 'token'):
+            plan = dict(self.plan, **({} if mode is None else {'pushMode': mode}))
+            self.assertEqual(len(validate_plan(plan, schedule, self.clock)), 1)
+        for mode in ('broadcast', 1, None):
+            with self.assertRaises(ProtocolError) as error: validate_plan(dict(self.plan, pushMode=mode), schedule, self.clock)
+            self.assertEqual(error.exception.status, 400)
+
+    def test_channel_plan_materializes_exactly_as_before(self):
+        from server.live_activity_timeline import digest, public_state
+        self.service.replace_plan(self.id, self.plan)
+        row = self.db.execute('SELECT digest,snapshot FROM la_v2_devices WHERE id=?', (self.id,)).fetchone()
+        self.assertEqual(row['digest'], digest(self.plan))
+        self.assertNotIn('pushMode', json.loads(row['snapshot']))
+        job = self.job()
+        self.assertEqual(job['channel_key'], self.service.key(self.client.bundle_id, 'sandbox', 'school', 'default', self.config['scheduleVersion'], 2))
+        expected = {'aps': {'timestamp': self.clock, 'event': 'start', 'attributes-type': 'ScheduleLiveActivityAttributes',
+            'attributes': {'semester': '', 'week': 0, 'dateKey': '2026-09-22', 'protocolVersion': 2, 'scheduleScope': 'scope-1',
+                'occurrenceId': 'occurrence-1', 'scheduleVersion': self.config['scheduleVersion'], 'reservationStart': self.start - 978307200,
+                'reservationEnd': self.end - 978307200, 'reminderDate': self.clock - 978307200},
+            'content-state': public_state('2026-09-22', 1, 'upcoming', self.clock), 'stale-date': self.end,
+            'alert': {'title': '课程提醒', 'body': '即将上课'}}}
+        self.assertEqual(json.loads(job['payload']), expected)
+        self.clock = job['fire_at']; self.service.dispatch_starts()
+        sent = self.client.starts[0][1]['aps']
+        self.assertEqual(sent['input-push-channel'], self.config['channels']['2'])
+        self.assertEqual(sent['attributes']['broadcastChannel'], self.config['channels']['2'])
+        self.assertNotIn('input-push-token', sent); self.assertNotIn('pushMode', sent['attributes'])
+        # An explicit "channel" materializes the same job; only the digest reflects the extra key.
+        self.id = self.service.register(dict(self.registration, installationId='installation-2'), 'other-secret')['deviceID']
+        self.service.replace_plan(self.id, dict(self.plan, pushMode='channel'))
+        self.assertEqual((self.job()['channel_key'], json.loads(self.job()['payload'])), (job['channel_key'], expected))
+        self.assertNotEqual(digest(dict(self.plan, pushMode='token')), digest(self.plan))
+
+    def test_token_start_uses_input_push_token_without_channels(self):
+        self.clock += 3600 * 24 - 7200  # next day 05:30; mapping promise must not grow
+        self.plan.update(coverageStart=self.clock, pushMode='token')
+        self.plan['items'][0]['dateKey'] = '2026-09-23'
+        promised = self.db.execute('SELECT broadcast_until FROM la_schedule_versions').fetchone()[0]
+        self.db.execute("UPDATE la_channels SET state='missing',channel=''"); self.db.commit()
+        self.service.replace_plan(self.id, self.plan)
+        self.assertEqual(self.db.execute('SELECT broadcast_until FROM la_schedule_versions').fetchone()[0], promised)
+        self.assertEqual(self.job()['channel_key'], '')
+        self.clock = self.job()['fire_at']; self.service.dispatch_starts()
+        token, payload, _ = self.client.starts[0]
+        self.assertEqual(token, 'ab12')
+        self.assertEqual(payload['aps']['input-push-token'], 1)
+        self.assertNotIn('input-push-channel', payload['aps'])
+        self.assertNotIn('broadcastChannel', payload['aps']['attributes'])
+        self.assertEqual(payload['aps']['attributes']['pushMode'], 'token')
+        self.assertEqual(self.job()['state'], 'submitted')
+
+    def test_activity_registration_validation(self):
+        result = self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.assertEqual(result, {'occurrenceId': 'occurrence-1', 'pending': 3})
+        self.assertEqual(self.updates(), [(self.start, 'update', 'pending'), (self.middle, 'update', 'pending'), (self.end, 'end', 'pending')])
+        self.assertEqual([row[0] for row in self.db.execute('SELECT expires_at FROM la_token_updates ORDER BY fire_at')], [self.middle, self.end, self.end + 60])
+        stored = self.db.execute('SELECT token FROM la_activity_tokens').fetchone()[0]
+        self.assertNotIn(self.token, stored)
+        for bad in (self.activity(courseName='x'), {'token': self.token}, self.activity(token='xyz' * 8), self.activity(token='ab'),
+                    self.activity(token='a' * 513), self.activity(refreshAt=[self.middle, self.start]), self.activity(refreshAt=[self.start, self.start]),
+                    self.activity(refreshAt=list(range(self.clock, self.clock + 65))), self.activity(refreshAt=[self.clock - 61]),
+                    self.activity(refreshAt=[self.end]), self.activity(end=self.clock), self.activity(end=self.clock + 8 * 86400 + 1, refreshAt=[]),
+                    self.activity(end=self.clock + 8 * 3600 + 1, refreshAt=[]), self.activity(dateKey='2026-9-22'), self.activity(refreshAt=[{'courseName': 'x'}])):
+            with self.assertRaises(ProtocolError) as error: self.service.register_activity(self.id, 'occurrence-1', bad)
+            self.assertEqual(error.exception.status, 400)
+        self.assertEqual(len(self.service.register_activity(self.id, 'occurrence-1', self.activity(refreshAt=[self.clock - 60]))), 2)
+        self.service.handoff(self.id)
+        self.assertEqual(self.service.register_activity(self.id, 'occurrence-1', self.activity())['pending'], 3, 'local mode keeps token refreshes')
+        self.service.forget(self.id)
+        with self.assertRaises(ProtocolError) as error: self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.assertEqual(error.exception.status, 409)
+
+    def test_replacement_only_touches_unsent_refreshes(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.clock = self.start; self.service.dispatch_token_updates()
+        self.service.register_activity(self.id, 'occurrence-1', self.activity(token='cd' * 16, refreshAt=[self.start, self.start + 1800]))
+        self.assertEqual(self.updates(), [(self.start, 'update', 'sent'), (self.start + 1800, 'update', 'pending'), (self.end, 'end', 'pending')])
+        self.clock = self.start + 1800; self.service.dispatch_token_updates()
+        self.assertEqual(self.client.starts[-1][0], 'cd' * 16)
+
+    def test_dispatch_sends_newest_due_refresh_only(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.clock = self.start - 1; self.service.dispatch_token_updates()
+        self.assertEqual(self.client.starts, [])
+        self.clock = self.start; self.service.dispatch_token_updates()
+        token, payload, options = self.client.starts[0]
+        self.assertEqual(token, self.token)
+        self.assertEqual(payload, {'aps': {'timestamp': self.start, 'event': 'update', 'stale-date': self.start + 60, 'content-state': {
+            'broadcastDateKey': '2026-09-22', 'broadcastTimestamp': self.start, 'updatedAt': self.start, 'startDate': self.start, 'endDate': self.start}}})
+        self.assertEqual(options, {'environment': 'sandbox', 'push_type': 'liveactivity', 'priority': 10, 'expiration': self.middle,
+                                   'collapse_id': 'occurrence-1', 'topic': self.client.bundle_id + '.push-type.liveactivity'})
+        self.service.dispatch_token_updates()
+        self.assertEqual(len(self.client.starts), 1, 'a sent refresh is never repeated')
+        # Offline past both the second refresh and the end: only the end goes out.
+        self.clock = self.end + 30; self.service.dispatch_token_updates()
+        self.assertEqual(len(self.client.starts), 2)
+        aps = self.client.starts[1][1]['aps']
+        self.assertEqual((aps['event'], aps['dismissal-date']), ('end', self.end)); self.assertNotIn('stale-date', aps)
+        self.assertEqual(self.updates(), [(self.start, 'update', 'sent'), (self.middle, 'update', 'expired'), (self.end, 'end', 'sent')])
+        # Two unexpired due refreshes (a retry left behind by a newer one): the older is superseded.
+        self.service.register_activity(self.id, 'occurrence-2', self.activity(end=self.end + 3600, refreshAt=[self.end + 60, self.end + 120]))
+        self.db.execute("UPDATE la_token_updates SET expires_at=? WHERE occurrence='occurrence-2'", (self.end + 7200,)); self.db.commit()
+        self.clock = self.end + 150; self.service.dispatch_token_updates()
+        self.assertEqual(self.client.starts[-1][1]['aps']['timestamp'], self.end + 120)
+        self.assertEqual(self.updates()[3:5], [(self.end + 60, 'update', 'superseded'), (self.end + 120, 'update', 'sent')])
+
+    def test_expired_refreshes_are_not_sent(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.clock = self.end + 61; self.service.dispatch_token_updates()
+        self.assertEqual(self.client.starts, [])
+        self.assertEqual({state for _, _, state in self.updates()}, {'expired'})
+
+    def test_invalid_token_cancels_the_activity(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.client.result = {'ok': False, 'status': 410, 'reason': 'Unregistered', 'certainty': 'rejected'}
+        self.clock = self.start; self.service.dispatch_token_updates()
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM la_activity_tokens').fetchone()[0], 0)
+        self.assertEqual({state for _, _, state in self.updates()}, {'cancelled'})
+        self.client.result = {'ok': True, 'status': 200}
+        self.service.register_activity(self.id, 'occurrence-2', self.activity())
+        self.clock = self.middle; self.service.dispatch_token_updates()
+        self.assertEqual([options['collapse_id'] for _, _, options in self.client.starts], ['occurrence-1', 'occurrence-2'])
+        self.client.result = {'ok': False, 'status': 400, 'reason': 'BadDeviceToken', 'certainty': 'rejected'}
+        self.clock = self.end; self.service.dispatch_token_updates()
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM la_activity_tokens').fetchone()[0], 0)
+
+    def test_throttled_refresh_retries_until_it_expires(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.clock = self.start
+        for result in ({'ok': False, 'status': 429, 'certainty': 'rejected'}, {'ok': False, 'status': 503, 'certainty': 'rejected'}, {'ok': False, 'status': 0, 'certainty': 'unknown'}):
+            self.client.result = result
+            self.service.dispatch_token_updates()
+            self.assertEqual(self.updates()[0][2], 'pending')
+            self.clock += 4; self.service.dispatch_token_updates()  # still backing off
+            self.clock += 60
+        self.assertEqual(len(self.client.starts), 3)
+        self.client.result = {'ok': True, 'status': 200}
+        self.service.dispatch_token_updates()
+        self.assertEqual(self.updates()[0][2], 'sent')
+        self.client.result = {'ok': False, 'status': 500, 'certainty': 'rejected'}
+        self.clock = self.middle; self.service.dispatch_token_updates()
+        self.clock = self.end - 1; self.service.dispatch_token_updates()
+        self.clock = self.end + 61; self.service.dispatch_token_updates()
+        self.assertEqual(self.updates()[1:], [(self.middle, 'update', 'expired'), (self.end, 'end', 'expired')])
+
+    def test_delete_and_forget_stop_refreshes(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.service.register_activity(self.id, 'occurrence-2', self.activity())
+        self.assertEqual(self.service.forget_activity(self.id, 'occurrence-1'), {'occurrenceId': 'occurrence-1', 'pending': 0})
+        self.service.forget_activity(self.id, 'occurrence-1')
+        self.clock = self.start; self.service.dispatch_token_updates()
+        self.assertEqual([options['collapse_id'] for _, _, options in self.client.starts], ['occurrence-2'])
+        self.service.forget(self.id)
+        self.clock = self.middle; self.service.dispatch_token_updates()
+        self.assertEqual(len(self.client.starts), 1)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM la_activity_tokens').fetchone()[0], 0)
+
+    def test_token_never_reaches_health_details_or_logs(self):
+        import contextlib, io
+        self.service.register_activity(self.id, 'occurrence-1', self.activity())
+        self.client.result = {'ok': False, 'status': 403, 'reason': 'InvalidProviderToken', 'certainty': 'rejected'}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.clock = self.start; self.service.dispatch_token_updates()
+        health = self.service.health()
+        self.assertEqual(health['tokenUpdates'], {'failed': 1, 'pending': 2})
+        dump = json.dumps(health) + output.getvalue() + json.dumps([dict(row) for row in self.db.execute('SELECT * FROM la_token_updates')])
+        self.assertNotIn(self.token, dump)
+        self.assertNotIn('courseName', json.dumps(self.client.starts))
+
+
 if __name__ == '__main__': unittest.main()
 
 class HTTPV2Tests(unittest.TestCase):
@@ -294,6 +480,15 @@ class HTTPV2Tests(unittest.TestCase):
         self.assertEqual(request('PUT', api + '/devices/' + self.id + '/plan', self.plan)[0], 200)
         self.assertEqual(request('POST', api + '/devices/' + self.id + '/local-handoff', {})[1]['launchMode'], 'local')
         self.assertEqual(request('PUT', api + '/devices/' + self.id + '/plan', self.plan)[0], 409)
+        activity = api + '/devices/' + self.id + '/activities/occurrence-1'
+        body = dict(token='ab' * 16, dateKey='2026-09-22', refreshAt=[1790035200], end=1790041800)
+        self.assertEqual(request('PUT', activity, body, 'wrong')[0], 403)
+        self.assertEqual(request('PUT', activity, dict(body, teacher='x'))[0], 400)
+        self.assertEqual(request('PUT', activity, body), (200, {'occurrenceId': 'occurrence-1', 'pending': 2}))
+        self.assertEqual(request('DELETE', activity)[0], 200)
+        self.assertEqual(request('DELETE', activity)[0], 200)
+        self.assertEqual(request('PUT', api + '/devices/' + self.id + '/activities/bad%20id', body)[0], 400)
         self.assertEqual(request('DELETE', api + '/devices/' + self.id)[0], 200)
         self.assertEqual(request('DELETE', api + '/devices/' + self.id)[0], 200)
+        self.assertEqual(request('PUT', activity, body)[0], 409)
 
