@@ -52,13 +52,13 @@ class V2Tests(unittest.TestCase):
         self.db.execute('INSERT INTO school_configs VALUES(?,?)', ('school', json.dumps(self.periods)))
         self.db.execute("INSERT INTO school_terms VALUES('school','Asia/Taipei',1)")
         self.db.commit()
-        self.query = {'schoolID': 'school', 'scheduleId': 'default', 'bundleID': self.client.bundle_id, 'environment': 'sandbox'}
-        self.config = self.service.config(self.query)
-        self.service.maintain_channels()
-        self.config = self.service.config(self.query)
         self.registration = {'installationId': 'installation-1', 'bundleID': self.client.bundle_id, 'environment': 'sandbox', 'startToken': 'ab12'}
         self.device = self.service.register(self.registration, 'persisted-secret')
         self.id = self.device['deviceID']
+        self.query = {'schoolID': 'school', 'scheduleId': 'default', 'bundleID': self.client.bundle_id, 'environment': 'sandbox', 'deviceID': self.id}
+        self.config = self.service.config(self.query, 'persisted-secret')
+        self.service.maintain_channels()
+        self.config = self.service.config(self.query, 'persisted-secret')
         self.plan = dict(protocolVersion=2, planRevision=1, scheduleScope='scope-1', schoolID='school', scheduleId='default', scheduleVersion=self.config['scheduleVersion'], coverageStart=self.clock, coverageEndExclusive=self.clock + 180 * 86400, leadMinutes=30,
             items=[dict(occurrenceId='occurrence-1', supersedes=[], dateKey='2026-09-22', startPeriod=1, endPeriod=2)], busyIntervals=[])
 
@@ -69,11 +69,11 @@ class V2Tests(unittest.TestCase):
         self.assertEqual(len(self.client.channels), 4)
         self.assertEqual(self.config['broadcastUntil'] - self.clock, 8 * 86400)
         self.clock += 86400
-        self.assertEqual(self.service.config(self.query)['channels'], self.config['channels'])
+        self.assertEqual(self.service.config(self.query, 'persisted-secret')['channels'], self.config['channels'])
         changed = copy.deepcopy(self.periods)
         changed[0]['start'] = '07:55'
         self.db.execute('UPDATE school_configs SET periods_json=?', (json.dumps(changed),)); self.db.commit()
-        new = self.service.config(self.query)
+        new = self.service.config(self.query, 'persisted-secret')
         self.assertNotEqual(new['scheduleVersion'], self.config['scheduleVersion'])
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM la_schedule_versions').fetchone()[0], 2)
         self.service.maintain_channels()
@@ -110,7 +110,7 @@ class V2Tests(unittest.TestCase):
         token, payload, options = self.client.starts[0]
         self.assertEqual(token, 'ab12')
         self.assertEqual(payload['aps']['input-push-channel'], self.config['channels']['2'])
-        self.assertEqual(options['expiration'], 0)
+        self.assertEqual(options['expiration'], int(self.job()['expires_at']), 'An offline phone still gets it until the course ends')
         self.assertNotIn('courseName', json.dumps(payload))
         self.assertEqual(self.job()['state'], 'submitted')
 
@@ -198,7 +198,7 @@ class V2Tests(unittest.TestCase):
         self.db.executescript("CREATE TABLE global_calendar(id INTEGER, adjustments_json TEXT); INSERT INTO global_calendar VALUES(1,'[{\"date\":\"2026-09-22\",\"kind\":\"off\"}]');")
         schedule = normalize_schedule(self.periods, 'Asia/Taipei')
         self.clock = boundaries(schedule, '2026-09-22', 2)[-1][0]
-        self.service.dispatch_broadcasts()
+        self.service.plan_broadcasts(); self.service.dispatch_broadcasts()
         received = {channel: payload['aps']['event'] for channel, payload, _ in self.client.broadcasts}
         self.assertEqual(received[self.config['channels']['2']], 'end')
         self.assertEqual(received[self.config['channels']['4']], 'update')
@@ -212,7 +212,7 @@ class V2Tests(unittest.TestCase):
         payload = {'aps': {'timestamp': stamp, 'event': 'end', 'content-state': public_state('2026-09-22', 1, 'ended', stamp)}}
         self.db.execute("INSERT INTO la_v2_broadcasts(channel_key,day,fire_at,payload) VALUES(?,?,?,?)", (key, '2026-09-22', stamp, canonical(payload)))
         self.db.commit()
-        self.service.dispatch_broadcasts()
+        self.service.plan_broadcasts(); self.service.dispatch_broadcasts()
         self.assertFalse(any(p['aps']['content-state']['broadcastDateKey'] == '2026-09-22' for _, p, _ in self.client.broadcasts))
 
     def test_channel_reclamation_obeys_mapping_promise(self):
@@ -220,7 +220,7 @@ class V2Tests(unittest.TestCase):
         self.clock += 8 * 86400 + 1
         self.service.maintain_channels()
         self.assertEqual(len(self.client.deleted), 4)
-        self.assertEqual(self.service.config(self.query)['status'], 'missingChannels')
+        self.assertEqual(self.service.config(self.query, 'persisted-secret')['status'], 'missingChannels')
 
     def test_scope_switch_cancels_only_unsubmitted(self):
         self.service.replace_plan(self.id, self.plan)
@@ -239,9 +239,19 @@ class V2Tests(unittest.TestCase):
         events = validate_plan(self.plan, normalize_schedule(self.periods, 'Asia/Taipei'), self.clock)
         self.assertEqual(events[0]['fireAt'], self.clock + 600)
 
+    def test_mapping_requires_a_registered_installation(self):
+        before = self.db.execute('SELECT broadcast_until FROM la_schedule_versions').fetchone()[0]
+        self.clock += 3600
+        for query, secret in ((dict(self.query, deviceID='stranger'), 'persisted-secret'), (self.query, 'wrong'), (self.query, '')):
+            with self.assertRaises(ProtocolError) as error: self.service.config(query, secret)
+            self.assertEqual(error.exception.status, 403)
+        self.assertEqual(self.db.execute('SELECT broadcast_until FROM la_schedule_versions').fetchone()[0], before, 'A refused request extends nothing')
+        self.service.forget(self.id)
+        with self.assertRaises(ProtocolError): self.service.config(self.query, 'persisted-secret')
+
     def test_app_environment_timezone_validation(self):
         for query in (dict(self.query, bundleID='other'), dict(self.query, environment='wrong')):
-            with self.assertRaises(ProtocolError): self.service.config(query)
+            with self.assertRaises(ProtocolError): self.service.config(query, 'persisted-secret')
         with self.assertRaises(ProtocolError): normalize_schedule(self.periods, 'Not/AZone')
 
     def test_superseding_submitted_occurrence_cannot_create_duplicate(self):
@@ -492,6 +502,10 @@ class HTTPV2Tests(unittest.TestCase):
             finally: connection.close()
         # Name server distinctly from the imported http module.
         api = '/v2/live-activity'
+        from urllib.parse import urlencode
+        mapping = api + '/broadcast-config?' + urlencode(self.query)
+        self.assertEqual(request('GET', mapping)[0], 200)
+        self.assertEqual(request('GET', mapping, secret='')[0], 403, 'Anonymous callers cannot extend broadcasts')
         self.assertEqual(request('POST', api + '/devices', self.registration, 'wrong')[0], 403)
         self.assertEqual(request('POST', api + '/devices', [1, 2])[0], 400)
         self.assertEqual(request('POST', '/v1/live-activity/devices', {})[0], 426)

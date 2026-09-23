@@ -20,7 +20,7 @@
 | 方法 | 路径 | 内容 |
 |---|---|---|
 | POST | `/devices` | `installationId`（与可选 `deviceID` 相同）、`bundleID`、`environment`、可选 `startToken`；已有 ID 必须验证 secret，不改变 local 模式 |
-| GET | `/broadcast-config` | 查询 `bundleID`、`environment`、`schoolID`、`scheduleId=default`；返回版本、periods、IANA 时区、最终节次 channels、status、issuedAt、createBefore、broadcastUntil |
+| GET | `/broadcast-config` | 查询 `bundleID`、`environment`、`schoolID`、`scheduleId=default`、`deviceID`，并带 `X-Device-Secret`：签发映射会延长广播承诺并创建频道，只对已注册、未撤销且 App/环境一致的安装开放，否则 403；返回版本、periods、IANA 时区、最终节次 channels、status、issuedAt、createBefore、broadcastUntil |
 | PUT | `/devices/{id}/plan` | 原子完整快照，见下文；同 revision 同内容幂等，旧 revision 或同 revision 不同内容 409 |
 | GET | `/devices/{id}` | 模式/版本、接受的覆盖范围、pendingCount、提交历史及错误 |
 | POST | `/devices/{id}/local-handoff` | 幂等切换 local，终止未提交任务，返回 submitting/submitted/unknown 历史 |
@@ -58,7 +58,7 @@ SQLite 短 `BEGIN IMMEDIATE` 事务共同保护计划替换、撤销、交接和
 
 start 的提交意图在网络前落盘。明确拒绝的 408/429/5xx 在期限内退避；传输或响应不明进入 `submissionUnknown`，不自动重发。重启将遗留 submitting 转为 unknown。计划重传、token 轮换、关闭及交接均不能清除提交历史。APNs 缺少明确 HTTP 状态不视为 200。
 
-频道键包含 Bundle ID、环境、学校、作息、不可变版本、最终节次；版本由规范 periods/timeZone 的 SHA-256 生成。映射允许 7 天内创建，原子承诺至少 8 天广播。公共广播不依赖个人计划或全局节假日；第 p 节结束频道只在该节最终边界 end。边界同刻去重，end 优先，60 秒过期，`apns-expiration=0` / No Message Storage；已尝试较新边界后不补发旧边界。回收前事务标记 retiring，映射签发及物化遇到回收必须重试，避免删除已承诺频道。
+频道键包含 Bundle ID、环境、学校、作息、不可变版本、最终节次；版本由规范 periods/timeZone 的 SHA-256 生成。映射允许 7 天内创建，原子承诺至少 8 天广播。公共广播不依赖个人计划或全局节假日；第 p 节结束频道只在该节最终边界 end。边界每分钟物化今明两天，每秒只做到期派发；同刻去重，end 优先，60 秒过期，`apns-expiration=0` / No Message Storage；已尝试较新边界后不补发旧边界。回收前事务标记 retiring，映射签发及物化遇到回收必须重试，避免删除已承诺频道。
 
 ## 运行和切换
 

@@ -3,7 +3,7 @@
 The cryptography is pinned to the RFC 6979 known answer vector, and the frame
 layer runs against a fake APNs that speaks real HTTP/2 over a plain socket.
 """
-import base64, json, socket, struct, threading, unittest
+import base64, json, socket, struct, threading, time, unittest
 from unittest.mock import patch
 
 from server import apns
@@ -130,8 +130,9 @@ class _PlainContext:
 class FakeAPNs(threading.Thread):
     """Speaks just enough HTTP/2 to answer one request per connection."""
 
-    def __init__(self, status=200, body=b"", send_settings=True):
+    def __init__(self, status=200, body=b"", send_settings=True, goaway=False):
         super().__init__(daemon=True)
+        self.goaway = goaway
         self.status = status
         self.body = body
         self.send_settings = send_settings
@@ -195,6 +196,10 @@ class FakeAPNs(threading.Thread):
                 kind, flags, _, _ = self._frame(sock)
                 settings_acked = kind == apns._SETTINGS and bool(flags & 0x1)
             self.requests.append({"headers": headers, "body": body})
+            if self.goaway:
+                # Shutting down: last processed stream 0, so this one never ran.
+                sock.sendall(apns._frame(apns._GOAWAY, 0, 0, struct.pack(">II", 0, 0)))
+                return
             block = bytes([0x48, len(str(self.status))]) + str(self.status).encode()
             end = 0x4 | (0x1 if not self.body else 0)
             sock.sendall(apns._frame(apns._HEADERS, end, stream, block))
@@ -317,6 +322,40 @@ class HTTP2Tests(unittest.TestCase):
         result = client.push("a1", {"aps": {"blob": "x" * 5000}})
         self.assertEqual(result, {"ok": False, "status": 0, "reason": "PayloadTooLarge"})
         self.assertEqual(server.requests, [])
+
+    def test_a_connection_apns_closed_while_idle_is_replaced_before_sending(self):
+        # The fake server closes after every response, like APNs dropping an idle connection.
+        server = FakeAPNs(status=200)
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        self.addCleanup(client.close)
+        self.assertTrue(client.push("a1", {"aps": {}})["ok"])
+        time.sleep(0.05)
+        second = client.push("a2", {"aps": {}})
+        self.assertEqual(second["certainty"], "accepted", second)
+        self.assertEqual(len(server.requests), 2)
+
+    def test_long_idle_connection_is_replaced_without_trying_it(self):
+        clock = [0.0]
+        connection = apns.HTTP2Connection("127.0.0.1", clock=lambda: clock[0])
+        connection.sock = object()  # never touched: age alone decides
+        clock[0] = apns.IDLE_RECONNECT + 1
+        self.assertTrue(connection._stale())
+
+    def test_goaway_before_the_stream_is_not_sent(self):
+        server = FakeAPNs(goaway=True)
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        self.addCleanup(client.close)
+        result = client.push("a1", {"aps": {"event": "start"}})
+        self.assertEqual(result["certainty"], "notSent", result)
+
+    def test_broadcasts_do_not_share_the_device_push_connection(self):
+        client = apns.APNsClient(apns.ES256Key(VECTOR_KEY), "k", "t", "bundle")
+        self.assertIsNot(client._connection("production"), client._connection("production", purpose="broadcast"))
+        self.assertIsNot(client._request_locks["production"], client._broadcast_locks["production"])
 
     def test_provider_token_is_reused_until_it_ages_out(self):
         clock = [1_700_000_000.0]

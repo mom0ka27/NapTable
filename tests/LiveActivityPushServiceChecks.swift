@@ -130,6 +130,9 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         for _ in 0..<3 { await settle() }
         precondition(calls("local-handoff").isEmpty && calls("remote-resume").isEmpty, "A fresh device stays remote while following")
         precondition(calls("/plan").count == 1 && body(calls("/plan")[0])["pushMode"] as? String == "token", "The share's plan goes up in token mode")
+        let mapping = requests.first { $0.url!.path.hasSuffix("broadcast-config") }!
+        precondition(URLComponents(url: mapping.url!, resolvingAgainstBaseURL: true)!.queryItems!.contains(URLQueryItem(name: "deviceID", value: defaults.string(forKey: "naptable.liveActivity.deviceID")))
+                     && mapping.value(forHTTPHeaderField: "X-Device-Secret") != nil, "The mapping is requested as the registered installation")
         precondition(pending("share").isEmpty && activityCalls().isEmpty, "No local reservation, so nothing to upload yet")
         let occurrence = controller.display!.occurrences[0]
         // The system starts the activity from the push and wakes the app for its token.

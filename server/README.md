@@ -97,9 +97,9 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 新接口前缀 `/v2/live-activity`。旧接口返回 426 提示升级，保留认证撤销及旧日期频道的短期排空。关闭功能采用墓碑并保留提交历史；APNs 响应丢失不会自动重发 start。部署前必须备份数据库，回退不得直接恢复旧 pending 队列。
 
-APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
+APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
 
-关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：推送客户端每环境单连接串行发送，吞吐约为 1 / 往返时延；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
+关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：逐设备推送（start 与令牌 update）每环境共用一条连接串行发送，吞吐约为 1 / 往返时延；公共广播走独立连接，不会被逐设备推送挡住；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
 ## 分享课表
 

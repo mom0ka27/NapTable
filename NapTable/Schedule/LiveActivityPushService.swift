@@ -269,7 +269,7 @@ final class LiveActivityPushService: ObservableObject {
         guard current(captured, scope: scope) else { dirty = true; return }
         if cachedSchool != school || cachedMapping?.periods != snapshot.periods.map({ LiveActivityMapping.Period(number: $0.number, start: $0.startTime, end: $0.endTime) }) || cachedMapping?.timeZone != snapshot.timeZone || Date().timeIntervalSince(mappingFetchedAt) > 3600 {
             var components = URLComponents()
-            components.queryItems = [URLQueryItem(name: "schoolID", value: school), URLQueryItem(name: "scheduleId", value: "default"), URLQueryItem(name: "bundleID", value: Bundle.main.bundleIdentifier ?? ""), URLQueryItem(name: "environment", value: Self.environment)]
+            components.queryItems = [URLQueryItem(name: "schoolID", value: school), URLQueryItem(name: "scheduleId", value: "default"), URLQueryItem(name: "bundleID", value: Bundle.main.bundleIdentifier ?? ""), URLQueryItem(name: "environment", value: Self.environment), URLQueryItem(name: "deviceID", value: device)]
             do {
                 let response = try await request("/broadcast-config?" + (components.percentEncodedQuery ?? ""), method: "GET")
                 cachedMapping = try JSONDecoder().decode(LiveActivityMapping.self, from: JSONSerialization.data(withJSONObject: response))

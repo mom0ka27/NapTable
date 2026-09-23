@@ -208,13 +208,18 @@ class Service:
     def key(bundle, environment, school, schedule, version, period):
         return f"{bundle}:{environment}:{school}:{schedule}:{version}:end-period-{period}"
 
-    def config(self, query):
+    def config(self, query, secret):
         bundle, environment = query.get('bundleID'), query.get('environment')
         school, schedule = identifier(query.get('schoolID')), identifier(query.get('scheduleId', 'default'))
         if schedule != 'default':
             raise ProtocolError("unsupported scheduleId")
         if not self.client or bundle != self.client.bundle_id or environment not in ('production', 'sandbox'):
             raise ProtocolError("APNs unavailable or App/environment mismatch", 503)
+        # Issuing a mapping extends a broadcast promise and provisions channels,
+        # so only a registered installation of this App may ask for one.
+        device = self.authenticate(identifier(query.get('deviceID')), secret)
+        if device['revoked'] or (device['bundle'], device['environment']) != (bundle, environment):
+            raise ProtocolError("device cannot request this mapping", 403)
         with self.transaction() as db:
             row = db.execute("SELECT s.periods_json,t.timezone FROM school_configs s JOIN school_terms t ON t.school_id=s.id WHERE s.id=? AND t.is_current=1 LIMIT 1", (school,)).fetchone()
             if row is None:
@@ -470,7 +475,8 @@ class Service:
                 payload['aps']['input-push-channel'] = row['channel']
                 payload['aps']['attributes']['broadcastChannel'] = row['channel']
             try:
-                result = self.client.push(token, payload, environment=row['environment'], expiration=0, topic=row['bundle'] + '.push-type.liveactivity')
+                # APNs keeps it for a phone that is offline at the reminder, until the course ends.
+                result = self.client.push(token, payload, environment=row['environment'], expiration=int(row['expires_at']), topic=row['bundle'] + '.push-type.liveactivity')
             except Exception:
                 result = {"ok": False, "status": 0, "certainty": "unknown", "reason": "transport failure"}
             status = result.get('status', 0)
@@ -488,7 +494,9 @@ class Service:
                 db.execute("UPDATE la_start_jobs SET state=?,next_attempt=?,detail=? WHERE device=? AND occurrence=? AND state='submitting'",
                     (state, now + min(300, 5 * 2 ** min(row['attempts'], 6)), result.get('reason', '')[:200], row['device'], row['occurrence']))
 
-    def dispatch_broadcasts(self):
+    def plan_broadcasts(self):
+        """Queue today's and tomorrow's boundaries. Once a minute is enough: the
+        dispatcher only needs a boundary queued before it falls due."""
         if not self.client:
             return
         now = self.now()
@@ -501,6 +509,12 @@ class Service:
                     for stamp, payload in boundaries(schedule, day.isoformat(), row['final_period']):
                         if now - 60 <= stamp <= row['broadcast_until']:
                             db.execute("INSERT OR IGNORE INTO la_v2_broadcasts(channel_key,day,fire_at,payload) VALUES(?,?,?,?)", (row['logical_key'], day.isoformat(), stamp, canonical(payload)))
+
+    def dispatch_broadcasts(self):
+        if not self.client:
+            return
+        now = self.now()
+        with self.transaction() as db:
             db.execute("UPDATE la_v2_broadcasts SET state='expired' WHERE state='pending' AND fire_at<?", (now - 60,))
             rows = db.execute("SELECT b.*,c.channel,c.environment,c.bundle,v.definition FROM la_v2_broadcasts b JOIN la_channels c ON b.channel_key=c.logical_key JOIN la_schedule_versions v ON c.bundle=v.bundle AND c.environment=v.environment AND c.school=v.school AND c.schedule=v.schedule AND c.version=v.version WHERE b.state='pending' AND b.fire_at<=? AND b.next_attempt<=? AND c.bundle=? ORDER BY b.fire_at DESC LIMIT 200", (now, now, self.client.bundle_id)).fetchall()
         for row in rows:
@@ -583,7 +597,7 @@ class Service:
     def start(self):
         if self.workers:
             return
-        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1)]:
+        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('broadcast-plan', self.plan_broadcasts, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1)]:
             def run(action=action, delay=delay):
                 while not self.stop_event.is_set():
                     try:
@@ -618,7 +632,7 @@ def handle(handler, service, method, path):
             result = service.register(body(), handler.headers.get('X-Device-Secret', ''))
         elif rest == '/broadcast-config' and method == 'GET':
             query = parse_qs(handler.path.partition('?')[2])
-            result = service.config({key: values[-1] for key, values in query.items()})
+            result = service.config({key: values[-1] for key, values in query.items()}, handler.headers.get('X-Device-Secret', ''))
         else:
             parts = rest.strip('/').split('/')
             if len(parts) < 2 or parts[0] != 'devices':

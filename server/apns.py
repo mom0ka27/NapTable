@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import select
 import socket
 import ssl
 import struct
@@ -107,7 +108,8 @@ class APNsError(Exception):
 
 
 class APNsNotSentError(APNsError):
-    """Failure before any request bytes were offered to the socket."""
+    """APNs cannot have acted on the request: nothing, or no complete stream,
+    was sent, or the server said it stopped before this stream."""
 
 
 def _der_read(data, offset):
@@ -391,6 +393,10 @@ _DATA, _HEADERS, _RST_STREAM, _SETTINGS, _PING, _GOAWAY, _WINDOW_UPDATE = 0, 1, 
 _FLAG_ACK = 0x01
 _FLAG_END_STREAM = 0x01
 _FLAG_END_HEADERS = 0x04
+_REFUSED_STREAM = 0x7
+# APNs closes connections it considers idle. Past this age a connection is
+# replaced before use rather than trusted with a request it may never answer.
+IDLE_RECONNECT = 10 * 60
 
 
 def _frame(kind, flags, stream, payload=b""):
@@ -400,11 +406,13 @@ def _frame(kind, flags, stream, payload=b""):
 class HTTP2Connection:
     """One TLS + h2 connection, used for sequential request/response pairs."""
 
-    def __init__(self, host, port=443, timeout=10.0, context=None):
+    def __init__(self, host, port=443, timeout=10.0, context=None, clock=time.monotonic):
         self.host = host
         self.port = port
         self.timeout = timeout
         self._context = context
+        self._clock = clock
+        self._last_used = 0.0
         self.sock = None
         self._next_stream = 1
         self._send_window = 65535
@@ -430,6 +438,7 @@ class HTTP2Connection:
         self._send_window = 65535
         self._max_frame = 16384
         self._unacked = 0
+        self._last_used = self._clock()
         # `SETTINGS_ENABLE_PUSH = 0`: this client never accepts server pushes.
         self.sock.sendall(_PREFACE + _frame(_SETTINGS, 0, 0, struct.pack(">HI", 0x2, 0)))
 
@@ -463,12 +472,52 @@ class HTTP2Connection:
         stream = int.from_bytes(header[5:9], "big") & 0x7FFFFFFF
         return kind, flags, stream, self._read_exactly(length) if length else b""
 
+    def _control(self, kind, flags, stream, data):
+        """Answer the connection-level frames; True when the frame was one."""
+        if kind == _SETTINGS and not flags & _FLAG_ACK:
+            self._apply_settings(data)
+            self.sock.sendall(_frame(_SETTINGS, _FLAG_ACK, 0))
+        elif kind == _PING and not flags & _FLAG_ACK:
+            self.sock.sendall(_frame(_PING, _FLAG_ACK, 0, data))
+        elif kind == _WINDOW_UPDATE and stream == 0:
+            self._send_window += int.from_bytes(data[:4], "big") & 0x7FFFFFFF
+        else:
+            return kind in (_SETTINGS, _PING, _WINDOW_UPDATE)
+        return True
+
+    def _stale(self):
+        """Whether the idle connection is already dead.
+
+        Reads what APNs sent while nothing was in flight. A GOAWAY or an EOF
+        there means a request written now would be lost with no answer, which
+        for a start is indistinguishable from a lost response -- so the
+        connection is replaced while nothing has been sent yet.
+        """
+        if self._clock() - self._last_used > IDLE_RECONNECT:
+            return True
+        self.sock.settimeout(min(self.timeout, 0.5))
+        try:
+            while getattr(self.sock, "pending", lambda: 0)() or select.select([self.sock], [], [], 0)[0]:
+                kind, flags, stream, data = self._read_frame()
+                if kind == _GOAWAY:
+                    return True
+                self._control(kind, flags, stream, data)
+        except (APNsError, OSError, ValueError, ssl.SSLError):
+            return True
+        finally:
+            if self.sock is not None:
+                self.sock.settimeout(self.timeout)
+        return False
+
     def request(self, method, path, headers, body=b""):
         """Send one request and return `(status, body)`.
 
         `status` is None when the response headers could not be decoded; the
         caller must treat that response as unknown, never as a success.
+        Raises `APNsNotSentError` only when APNs cannot have processed it.
         """
+        if self.sock is not None and self._stale():
+            self.close()
         if self.sock is None:
             try:
                 self.connect()
@@ -488,28 +537,36 @@ class HTTP2Connection:
             raise APNsNotSentError("header block larger than the negotiated frame size")
         packet = _frame(_HEADERS, _FLAG_END_HEADERS, stream, block)
         packet += _frame(_DATA, _FLAG_END_STREAM, stream, body)
-        self.sock.sendall(packet)
+        try:
+            self.sock.sendall(packet)
+        except (OSError, ssl.SSLError) as error:
+            # The END_STREAM flag is in the last bytes: an incomplete write
+            # leaves a stream APNs never acts on.
+            self.close()
+            raise APNsNotSentError(f"request not fully written: {error}") from error
         self._send_window -= len(body)
 
         status = None
         payload = bytearray()
         while True:
             kind, flags, frame_stream, data = self._read_frame()
-            if kind == _SETTINGS and not flags & _FLAG_ACK:
-                self._apply_settings(data)
-                self.sock.sendall(_frame(_SETTINGS, _FLAG_ACK, 0))
-            elif kind == _PING and not flags & _FLAG_ACK:
-                self.sock.sendall(_frame(_PING, _FLAG_ACK, 0, data))
-            elif kind == _WINDOW_UPDATE and frame_stream == 0:
-                self._send_window += int.from_bytes(data[:4], "big") & 0x7FFFFFFF
-            elif kind == _GOAWAY:
+            if self._control(kind, flags, frame_stream, data):
+                continue
+            if kind == _GOAWAY:
+                last = int.from_bytes(data[:4], "big") & 0x7FFFFFFF
                 self.close()
                 if status is None:
+                    # Streams above the last processed one were never acted on.
+                    if last < stream:
+                        raise APNsNotSentError(f"server sent GOAWAY before stream {stream}")
                     raise APNsError("server sent GOAWAY before responding")
                 break
             elif kind == _RST_STREAM and frame_stream == stream:
+                code = int.from_bytes(data[:4], "big")
                 self.close()
-                raise APNsError(f"stream reset with code {int.from_bytes(data[:4], 'big')}")
+                if code == _REFUSED_STREAM:
+                    raise APNsNotSentError("stream refused before processing")
+                raise APNsError(f"stream reset with code {code}")
             elif frame_stream == stream and kind == _HEADERS:
                 status = status_from_header_block(data)
                 if flags & _FLAG_END_STREAM:
@@ -522,6 +579,7 @@ class HTTP2Connection:
         if self._unacked >= 16384 and self.sock is not None:
             self.sock.sendall(_frame(_WINDOW_UPDATE, 0, 0, struct.pack(">I", self._unacked)))
             self._unacked = 0
+        self._last_used = self._clock()
         return status, bytes(payload)
 
     def _apply_settings(self, data):
@@ -566,6 +624,9 @@ class APNsClient:
         self._lock = threading.Lock()
         self._connections = {}
         self._request_locks = {env: threading.RLock() for env in ("production", "sandbox")}
+        # Broadcasts get their own connection so a burst of device pushes at a
+        # bell cannot hold them past their one-minute window.
+        self._broadcast_locks = {env: threading.RLock() for env in ("production", "sandbox")}
         self._channel_locks = {env: threading.RLock() for env in ("production", "sandbox")}
         self._token = None
         self._token_issued = 0.0
@@ -630,7 +691,7 @@ class APNsClient:
 
     def broadcast(self, channel_id, payload, environment="production", priority=10,
                   expiration=0, collapse_id=None, topic=None):
-        with self._request_locks[environment]:
+        with self._broadcast_locks[environment]:
             """Broadcast one Live Activity update to a channel.
 
             Broadcast requests use APNs' broadcast endpoint rather than the device
@@ -655,7 +716,7 @@ class APNsClient:
                 headers.append(("apns-collapse-id", collapse_id[:64]))
             path = "/4/broadcasts/apps/" + (topic or self.bundle_id)
             for attempt in (0, 1):
-                connection = self._connection(environment, reset=attempt == 1)
+                connection = self._connection(environment, reset=attempt == 1, purpose="broadcast")
                 try:
                     status, response = connection.request("POST", path, headers, body)
                     break
@@ -737,16 +798,17 @@ class APNsClient:
         if not channel_id: raise APNsError("missing channel ID")
         self._channel_call("DELETE", "channels", environment=environment, channel_id=channel_id)
 
-    def _connection(self, environment, reset=False):
+    def _connection(self, environment, reset=False, purpose="device"):
         host = self.hosts.get(environment) or self.hosts["production"]
+        key = (purpose, host)
         with self._lock:
-            connection = self._connections.get(host)
+            connection = self._connections.get(key)
             if reset and connection is not None:
                 connection.close()
                 connection = None
             if connection is None or connection.closed:
                 connection = HTTP2Connection(host, self.port, self.timeout)
-                self._connections[host] = connection
+                self._connections[key] = connection
             return connection
 
     def _channel_connection(self, environment, reset=False):
