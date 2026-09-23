@@ -1,163 +1,157 @@
 import SwiftUI
 
-/// The import hub. Mirrors the Flutter app's `ImportView`: the configuration-driven
-/// WebView importers and manual entry.
+/// School selection and import routes share one flow for first use and later additions.
 struct ImportView: View {
+    var requiresImport = false
+    var onFinish: (() -> Void)? = nil
+    @State private var importError: String?
+
     @EnvironmentObject private var store: AppStore
-    /// The ported schedule store. Manual entry uses the same editor as a tap on
-    /// an empty grid slot, so both paths create courses the same way.
     @EnvironmentObject private var scheduleStore: NativeScheduleStore
     @Environment(\.dismiss) private var dismiss
-    @State private var mode: AppStore.ImportMode = .replaceCurrent
-    @State private var manualPresented = false
+    @State private var path: [String] = []
+    @State private var search = ""
     @State private var webSchool: SchoolConfig?
-    /// Set after an import lands. It is shown inline instead of in another
-    /// sheet: presenting a sheet while this one is dismissing is what made the
-    /// screen flash and lose the result.
     @State private var imported: ImportedSchedule?
+    @State private var tableName = ""
+    @State private var semesterStart = WeekCalculator.monday(of: Date())
+
+    init(requiresImport: Bool = false, initialSchool: String? = nil, onFinish: (() -> Void)? = nil) {
+        self.requiresImport = requiresImport
+        self.onFinish = onFinish
+        _path = State(initialValue: initialSchool.map { [$0] } ?? [])
+    }
+
+    private var schools: [String] {
+        Array(Set(SchoolCatalog.all.map(\.schoolName))).sorted().filter {
+            search.isEmpty || $0.localizedCaseInsensitiveContains(search)
+        }
+    }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button {
-                        manualPresented = true
-                    } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("手动添加课程")
-                                Text("不依赖学校系统，自己填写课程时间")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: "square.and.pencil")
-                        }
-                    }
-                } header: {
-                    Text("快捷导入")
-                }
-
-                Section {
-                    ForEach(SchoolCatalog.all) { school in
-                        Button {
-                            webSchool = school
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(school.title)
-                                Text(school.summary)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .disabled(!school.hasExtractor)
-                    }
-                } header: {
-                    Text("网页导入（在应用内登录学校系统）")
-                } footer: {
-                    Text("推荐优先用这一条：它打开学校的真实登录页，统一身份认证、验证码、会话全部由学校页面处理，"
-                         + "应用只读取课表页面，不保存账号密码。")
-                }
-
-                Section {
-                    Picker("导入方式", selection: $mode) {
-                        ForEach(AppStore.ImportMode.allCases) { item in
-                            Text(item.title).tag(item)
-                        }
-                    }
-                } header: {
-                    Text("导入到")
-                } footer: {
-                    Text(mode == .replaceCurrent
-                         ? "清空当前课表后再写入导入结果。"
-                         : (mode == .newTable
-                            ? "每次导入都会新建一张课表。"
-                            : "保留当前课表，把导入的课程追加进去。"))
-                }
-
+        NavigationStack(path: $path) {
+            Group {
                 if let imported {
-                    Section("导入结果") {
-                        Label("导入成功", systemImage: "checkmark.seal.fill")
-                            .foregroundStyle(Color.accentColor)
-                        LabeledContent("课表", value: imported.name)
-                        LabeledContent("课程条数", value: "\(imported.courses.count)")
-                        LabeledContent("覆盖周次", value: weekSummary(of: imported))
-                        Button {
-                            self.imported = nil
-                        } label: {
-                            Label("继续导入", systemImage: "arrow.clockwise")
+                    List {
+                        Section {
+                            Label("课表已添加", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(Color.accentColor)
+                            LabeledContent("课表", value: imported.name)
+                            LabeledContent("课程", value: "\(imported.courses.count) 门")
                         }
-                    }
+                        if imported.termID == nil {
+                            Section("学期开始日期") {
+                                DatePicker("第一周星期一", selection: $semesterStart, displayedComponents: .date)
+                            }
+                        }
 
-                    if imported.termID == nil { Section("校正周次") {
-                        Text("设置学期第一周的星期一，应用就能自动算出当前是第几周。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        DatePicker(
-                            "第一周星期一",
-                            selection: Binding(
-                                get: { WeekCalculator.parseDay(store.semesterStartMonday) ?? WeekCalculator.monday(of: Date()) },
-                                set: { store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: $0))) }
-                            ),
-                            displayedComponents: .date
-                        )
-                        Button("使用今天所在的星期一") {
-                            store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: Date())))
+                    }
+                } else {
+                    List {
+                        Section {
+                            Text("选择学校，再选择适合你的导入方式。")
+                                .foregroundStyle(.secondary)
                         }
-                        .font(.caption)
-                    } } else {
-                        Section("学校配置") {
-                            LabeledContent("学校", value: imported.schoolID ?? "")
-                            LabeledContent("学期", value: imported.termID ?? "")
-                            Text("开学日期与节次已自动使用对应学校的服务端配置。")
-                                .font(.caption).foregroundStyle(.secondary)
+                        Section("学校") {
+                            ForEach(schools, id: \.self) { name in
+                                NavigationLink(value: name) {
+                                    Label(name, systemImage: "building.columns")
+                                }
+                            }
+                            if schools.isEmpty {
+                                Text(requiresImport ? "未找到学校，请修改搜索条件。" : "未找到学校，可以手动创建课表。")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !requiresImport {
+                            Section { NavigationLink("其他学校 / 手动创建", value: "manual") }
                         }
                     }
-                }
-
-                if !store.tables.isEmpty {
-                    Section("当前课表") {
-                        LabeledContent("名称", value: store.selectedTable?.name ?? "-")
-                        LabeledContent("课程条数", value: "\(store.currentCourses.count)")
-                        LabeledContent("学期开始", value: store.semesterStartMondayDisplay)
-                    }
+                    .searchable(text: $search, prompt: "搜索学校")
                 }
             }
-            .navigationTitle("导入课表")
+            .navigationDestination(for: String.self) { name in
+                if name == "manual" { manualForm(school: nil) }
+                else { routes(for: name) }
+            }
+            .navigationTitle(imported == nil ? "选择学校" : "导入完成")
             .appInlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button(imported == nil ? "取消" : "完成") {
+                        if let imported, imported.termID == nil {
+                            store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: semesterStart)))
+                        }
+                        if imported != nil { onFinish?() }
+                        dismiss()
+                    }
                 }
             }
-            .sheet(isPresented: $manualPresented) {
-                NativeCourseEditorSheet(
-                    selection: nil,
-                    store: scheduleStore,
-                    defaultDay: 1,
-                    defaultWeek: store.displayWeek,
-                    defaultStartSlot: 1
-                )
-                .appSheetDetents([.large])
-                .appDragIndicatorVisible()
-            }
+            .alert("未能完成首次导入", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
+                Button("知道了", role: .cancel) { importError = nil }
+            } message: { Text(importError ?? "") }
             .sheet(item: $webSchool) { school in
-                WebImporterView(school: school, initialMode: mode) { schedule, selectedMode in
-                    store.install(payload: schedule, mode: selectedMode)
+                WebImporterView(school: school, initialMode: .newTable, requiresCourses: requiresImport) { schedule, mode in
+                    guard !requiresImport || !schedule.courses.isEmpty else {
+                        importError = "没有读取到课程，请确认学期和导入入口后重试。"
+                        return
+                    }
+                    store.install(payload: schedule, mode: mode)
+                    semesterStart = WeekCalculator.parseDay(store.semesterStartMonday) ?? WeekCalculator.monday(of: Date())
+                    path = []
                     imported = schedule
                 }
             }
         }
     }
 
+    private func routes(for name: String) -> some View {
+        List {
+            Section("从学校系统导入") {
+                ForEach(SchoolCatalog.all.filter { $0.schoolName == name && $0.hasExtractor }) { route in
+                    Button {
+                        webSchool = route
+                    } label: {
+                        Label(route.title.replacingOccurrences(of: name, with: ""), systemImage: "arrow.down.doc")
+                    }
+                }
+            }
+            if !requiresImport {
+                Section { NavigationLink("手动创建课表") { manualForm(school: name) } }
+            }
+        }
+        .navigationTitle(name)
+        .appInlineNavigationTitle()
+    }
+
+    private func manualForm(school: String?) -> some View {
+        Form {
+            Section("课表信息") {
+                TextField("课表名称", text: $tableName)
+                DatePicker("第一周星期一", selection: $semesterStart, displayedComponents: .date)
+            }
+            Section {
+                Button("创建课表") {
+                    store.addTable(name: tableName, semesterStartMonday: WeekCalculator.format(WeekCalculator.monday(of: semesterStart)))
+                    dismiss()
+                }
+                .disabled(tableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } footer: {
+                Text("创建后，长按课表空白处添加课程。")
+            }
+        }
+        .navigationTitle("手动创建")
+        .appInlineNavigationTitle()
+        .onAppear {
+            if tableName.isEmpty { tableName = school.map { "\($0)课表" } ?? "我的课表" }
+        }
+    }
 }
 
-extension ImportView {
-    /// "第 3-17 周" style summary of the imported week span.
-    func weekSummary(of schedule: ImportedSchedule) -> String {
-        let weeks = schedule.courses.flatMap(\.weeks)
-        guard let first = weeks.min(), let last = weeks.max() else { return "-" }
-        return "第 \(first)-\(last) 周"
+extension SchoolConfig {
+    var schoolName: String {
+        ["南京大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
+            .first { title.hasPrefix($0) } ?? title
     }
 }
 
@@ -167,6 +161,7 @@ extension ImportView {
 struct ImportedScheduleForm: View {
     let schedule: ImportedSchedule
     @Binding var mode: AppStore.ImportMode
+    @State private var availableModes: [AppStore.ImportMode] = []
 
     @EnvironmentObject private var store: AppStore
 
@@ -177,35 +172,36 @@ struct ImportedScheduleForm: View {
                     .foregroundStyle(Color.accentColor)
                 LabeledContent("课表名称", value: schedule.name)
                 LabeledContent("课程条数", value: "\(schedule.courses.count)")
-                if let term = schedule.termID {
-                    LabeledContent("自动匹配学期", value: term)
-                }
                 if let start = schedule.semesterStartMonday, !start.isEmpty {
                     LabeledContent("学期开始", value: start)
                 }
             }
             Section("导入到") {
-                ForEach(AppStore.ImportMode.allCases) { item in
-                    Button {
-                        mode = item
-                    } label: {
-                        HStack {
-                            Text(item.title).foregroundStyle(.primary)
-                            Spacer()
-                            if mode == item {
-                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                if availableModes == [.newTable] {
+                    LabeledContent("导入方式", value: AppStore.ImportMode.newTable.title)
+                } else {
+                    ForEach(availableModes) { item in
+                        Button {
+                            mode = item
+                        } label: {
+                            HStack {
+                                Text(item.title).foregroundStyle(.primary)
+                                Spacer()
+                                if mode == item {
+                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                                }
                             }
+                            // With `.buttonStyle(.plain)` the label's `Spacer()` is
+                            // not hit-testable, so only the text reacted and tapping
+                            // the rest of the row did nothing. This makes the whole
+                            // row a tap target.
+                            .contentShape(Rectangle())
                         }
-                        // With `.buttonStyle(.plain)` the label's `Spacer()` is
-                        // not hit-testable, so only the text reacted and tapping
-                        // the rest of the row did nothing. This makes the whole
-                        // row a tap target.
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .disabled(item == .appendToCurrent && !canAppend)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(item == .appendToCurrent && !canAppend)
                 }
-                if !canAppend {
+                if availableModes.contains(.appendToCurrent) && !canAppend {
                     Text("当前课表的学校或学期配置不同，请新建或覆盖课表。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -217,7 +213,14 @@ struct ImportedScheduleForm: View {
             }
         }
         .onAppear {
-            if mode == .appendToCurrent && !canAppend { mode = .newTable }
+            // Keep the choices stable while installation updates the store and
+            // this confirmation sheet is animating out.
+            if availableModes.isEmpty {
+                availableModes = store.tables.isEmpty ? [.newTable] : AppStore.ImportMode.allCases
+            }
+            if !availableModes.contains(mode) || (mode == .appendToCurrent && !canAppend) {
+                mode = .newTable
+            }
         }
     }
 

@@ -15,6 +15,7 @@ import AppKit
 /// `ImportPipeline`. Credentials never pass through the app.
 struct WebImporterView: View {
     let school: SchoolConfig
+    let requiresCourses: Bool
     /// Called with the parsed schedule and the chosen destination once the user
     /// confirms.
     let onFinish: (ImportedSchedule, AppStore.ImportMode) -> Void
@@ -38,9 +39,11 @@ struct WebImporterView: View {
     init(
         school: SchoolConfig,
         initialMode: AppStore.ImportMode = .replaceCurrent,
+        requiresCourses: Bool = false,
         onFinish: @escaping (ImportedSchedule, AppStore.ImportMode) -> Void
     ) {
         self.school = school
+        self.requiresCourses = requiresCourses
         self.onFinish = onFinish
         _mode = State(initialValue: initialMode)
     }
@@ -59,6 +62,13 @@ struct WebImporterView: View {
                 // The pipeline validates the matching term before confirmation.
                 _ = try? await ScheduleSharingService.shared.loadSchools()
             }
+            .safeAreaInset(edge: .bottom) {
+                if requiresCourses && parsed?.courses.isEmpty == true {
+                    Text("未读取到课程，请返回并确认学期或更换导入入口。首次使用需导入有课程的课表。")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .padding().frame(maxWidth: .infinity).background(.regularMaterial)
+                }
+            }
             .navigationTitle(parsed == nil ? school.pageTitle : "确认导入")
             .appInlineNavigationTitle()
             .toolbar {
@@ -73,6 +83,7 @@ struct WebImporterView: View {
                             onFinish(parsed, mode)
                             dismiss()
                         }
+                        .disabled(requiresCourses && parsed.courses.isEmpty)
                     } else {
                         Button("重新解析") { retry() }
                             .disabled(state == .importing)

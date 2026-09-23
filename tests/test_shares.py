@@ -108,6 +108,62 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
             "courses": courses if courses is not None else [{"name": "高等数学", "week_time": 1, "start_time": 1, "time_count": 2}],
         }, expect=201)
 
+    def replace(self, previous, courses, expect=201, **extra):
+        return self.req("POST", f"/v1/shares/{previous['id']}/replace", {
+            "owner": "张三", "schoolID": "nju", "termID": "2026-fall-template",
+            "courses": courses, **extra,
+        }, {"X-Write-Token": previous["writeToken"]}, expect=expect)
+
+    def test_replacement_revokes_old_code_and_meta(self):
+        old = self.create()
+        unrelated = self.create(owner="另一个人")
+        new = self.replace(old, [{"name": "物理"}])
+        self.assertNotEqual(new["id"], old["id"])
+        self.req("GET", f"/v1/shares/{old['id']}", expect=404)
+        self.req("GET", f"/v1/shares/{old['id']}/meta", expect=404)
+        self.req("GET", f"/v1/shares/{new['id']}")
+        self.req("GET", f"/v1/shares/{unrelated['id']}")
+        self.replace(old, [{"name": "化学"}], expect=403)
+
+    def test_unchanged_content_cannot_rotate_even_with_new_ids_and_order(self):
+        rows = [{"name": "数学", "id": 1, "tableId": 2, "courseKey": 8, "weeks": [1, 2]},
+                {"name": "物理", "id": 2}]
+        old = self.create(courses=rows)
+        changed_ids = [{"name": "物理", "id": 100},
+                       {"name": "数学", "id": 90, "tableId": 5, "courseKey": 12, "weeks": [2, 1]}]
+        result = self.replace(old, changed_ids, expect=400)
+        self.assertIn("没有变更", result["error"])
+        self.req("GET", f"/v1/shares/{old['id']}")
+        self.assertEqual(Handler.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
+
+    def test_failed_replacement_preserves_old_share(self):
+        old = self.create()
+        self.replace(old, [{"name": ""}], expect=400)
+        self.req("POST", f"/v1/shares/{old['id']}/replace", {
+            "schoolID": "nju", "termID": "2026-fall-template", "courses": [{"name": "物理"}],
+        }, {"X-Write-Token": "wrong"}, expect=403)
+        self.replace(old, [{"name": "物理"}], expect=403,
+                     previousShares=[{"code": old["id"], "token": "wrong"}])
+        self.req("GET", f"/v1/shares/{old['id']}")
+        self.assertEqual(Handler.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
+
+    def test_replacement_revokes_all_authenticated_legacy_codes(self):
+        first, latest = self.create(), self.create()
+        new = self.replace(latest, [{"name": "物理"}],
+                           previousShares=[{"code": first["id"], "token": first["writeToken"]}])
+        for old in (first, latest): self.req("GET", f"/v1/shares/{old['id']}", expect=404)
+        self.req("GET", f"/v1/shares/{new['id']}")
+
+    def test_calendar_change_alone_allows_replacement(self):
+        old = self.create()
+        with Handler.store.lock:
+            Handler.store.db.execute("UPDATE school_terms SET week_count=week_count+1 WHERE school_id='nju'")
+            Handler.store.db.commit()
+        new = self.replace(old, old["courses"])
+        self.assertEqual(new["scheduleScope"], old["scheduleScope"])
+        self.assertNotEqual(new["id"], old["id"])
+        self.req("GET", f"/v1/shares/{old['id']}", expect=404)
+
     # -- the point of the feature -----------------------------------------
 
     def test_a_share_carries_its_own_school_schedule(self):

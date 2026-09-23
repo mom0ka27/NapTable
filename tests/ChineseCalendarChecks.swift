@@ -78,20 +78,20 @@ struct ChineseCalendarChecks {
             "窗口外不返回假期"
         )
 
-        // 倒计时文案：三天以上才报数字，一两天用「明天 / 后天」，连休带上天数
+        // 倒计时文案：假期到来前统一报剩余天数，连休带上天数
         func countdown(_ date: String) -> ChineseHolidayCountdown {
             ChineseCalendarInfo.countdown(from: ChineseCalendarInfo.date(fromDate: date)!, withinDays: 120)!
         }
         let far = countdown("2026-09-17")
-        expect(far.phrase == "距中秋节 8 天", "远处的假期报天数：\(far.phrase)")
+        expect(far.phrase == "距中秋节还有 8 天", "远处的假期报天数：\(far.phrase)")
         expect(far.amount == "8" && far.trailing == "天", "天数要能单独取出来上色")
         expect(far.dateLabel == "9.25 周五", "单日假期带星期：\(far.dateLabel)")
         let tomorrowHoliday = countdown("2026-09-24")
-        expect(tomorrowHoliday.phrase == "明天就是中秋节" && tomorrowHoliday.amount == nil,
-               "一天用明天：\(tomorrowHoliday.phrase)")
-        expect(countdown("2026-09-23").phrase == "后天就是中秋节", "两天用后天")
+        expect(tomorrowHoliday.phrase == "距中秋节还有 1 天" && tomorrowHoliday.amount == "1",
+               "一天也报天数：\(tomorrowHoliday.phrase)")
+        expect(countdown("2026-09-23").phrase == "距中秋节还有 2 天", "两天也报天数")
         let national = countdown("2026-09-26")
-        expect(national.window.name == "国庆节" && national.phrase == "距国庆节 5 天", "中秋过后接国庆：\(national.phrase)")
+        expect(national.window.name == "国庆节" && national.phrase == "距国庆节还有 5 天", "中秋过后接国庆：\(national.phrase)")
         expect(national.dateLabel == "10.1 - 10.3 · 休 3 天", "连休报区间和天数：\(national.dateLabel)")
         expect(national.window.dayCount == 3, "国庆放三天")
         let springFestivalWindow = ChineseCalendarInfo.holidays(inYear: 2026).first { $0.name == "春节" }!

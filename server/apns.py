@@ -103,7 +103,11 @@ def _to_affine(point):
 
 
 class APNsError(Exception):
-    """Configuration or transport problem that stops a push from being sent."""
+    """Configuration or transport error; the request may already be submitted."""
+
+
+class APNsNotSentError(APNsError):
+    """Failure before any request bytes were offered to the socket."""
 
 
 def _der_read(data, offset):
@@ -463,14 +467,17 @@ class HTTP2Connection:
         """Send one request and return `(status, body)`.
 
         `status` is None when the response headers could not be decoded; the
-        caller falls back to the body, which APNs only sends on failures.
+        caller must treat that response as unknown, never as a success.
         """
         if self.sock is None:
-            self.connect()
+            try:
+                self.connect()
+            except (APNsError, OSError, ssl.SSLError) as error:
+                raise APNsNotSentError(str(error)) from error
         if len(body) > self._max_frame:
-            raise APNsError("request body larger than the negotiated frame size")
+            raise APNsNotSentError("request body larger than the negotiated frame size")
         if len(body) > self._send_window:
-            raise APNsError("flow control window exhausted")
+            raise APNsNotSentError("flow control window exhausted")
         stream = self._next_stream
         self._next_stream += 2
         block = encode_headers(
@@ -478,7 +485,7 @@ class HTTP2Connection:
             + list(headers)
         )
         if len(block) > self._max_frame:
-            raise APNsError("header block larger than the negotiated frame size")
+            raise APNsNotSentError("header block larger than the negotiated frame size")
         packet = _frame(_HEADERS, _FLAG_END_HEADERS, stream, block)
         packet += _frame(_DATA, _FLAG_END_STREAM, stream, body)
         self.sock.sendall(packet)
@@ -558,6 +565,8 @@ class APNsClient:
         self.now = now
         self._lock = threading.Lock()
         self._connections = {}
+        self._request_locks = {env: threading.RLock() for env in ("production", "sandbox")}
+        self._channel_locks = {env: threading.RLock() for env in ("production", "sandbox")}
         self._token = None
         self._token_issued = 0.0
 
@@ -598,18 +607,17 @@ class APNsClient:
         if collapse_id:
             headers.append(("apns-collapse-id", collapse_id[:64]))
         path = "/3/device/" + device_token
-        # A pooled connection can have been closed by APNs while it sat idle,
-        # which surfaces as an error on the first write. Retry once on a fresh
-        # connection; a second failure is real.
-        for attempt in (0, 1):
-            connection = self._connection(environment, reset=attempt == 1)
+        # A failed write may already have reached APNs. Never replay a start.
+        with self._request_locks[environment]:
+            try:
+                connection = self._connection(environment)
+            except (APNsError, OSError, ssl.SSLError) as error:
+                return {"ok": False, "status": 0, "reason": str(error), "certainty": "notSent"}
             try:
                 status, response = connection.request("POST", path, headers, body)
-                break
             except (APNsError, OSError, ssl.SSLError) as error:
                 connection.close()
-                if attempt:
-                    return {"ok": False, "status": 0, "reason": f"TransportError: {error}"}
+                return {"ok": False, "status": 0, "reason": f"TransportError: {error}", "certainty": "notSent" if isinstance(error, APNsNotSentError) else "unknown"}
         reason = ""
         if response:
             try:
@@ -617,80 +625,83 @@ class APNsClient:
             except (ValueError, UnicodeDecodeError):
                 reason = response[:200].decode("utf-8", "replace")
         if status is None:
-            # APNs returns a body only on failure, so an empty one means 200.
-            status = 200 if not response else 400
-        return {"ok": status == 200, "status": status, "reason": reason}
+            return {"ok": False, "status": 0, "reason": "MissingHTTPStatus", "certainty": "unknown"}
+        return {"ok": status == 200, "status": status, "reason": reason, "certainty": "accepted" if status == 200 else "rejected"}
 
     def broadcast(self, channel_id, payload, environment="production", priority=10,
                   expiration=0, collapse_id=None, topic=None):
-        """Broadcast one Live Activity update to a channel.
+        with self._request_locks[environment]:
+            """Broadcast one Live Activity update to a channel.
 
-        Broadcast requests use APNs' broadcast endpoint rather than the device
-        endpoint. The payload must be identical for every activity subscribed
-        to the channel; callers should put only a compact boundary signal in
-        ``content-state`` and let the widget resolve local timetable data.
-        """
-        channel_id = str(channel_id or "").strip()
-        if not channel_id:
-            return {"ok": False, "status": 0, "reason": "MissingChannelID"}
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-        if len(body) > MAX_PAYLOAD:
-            return {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
-        headers = [
-            ("authorization", "bearer " + self.authorization()),
-            ("apns-channel-id", channel_id),
-            ("apns-push-type", "liveactivity"),
-            ("apns-priority", str(priority)),
-            ("apns-expiration", str(int(expiration))),
-        ]
-        if collapse_id:
-            headers.append(("apns-collapse-id", collapse_id[:64]))
-        path = "/4/broadcasts/apps/" + (topic or self.bundle_id)
-        for attempt in (0, 1):
-            connection = self._connection(environment, reset=attempt == 1)
-            try:
-                status, response = connection.request("POST", path, headers, body)
-                break
-            except (APNsError, OSError, ssl.SSLError) as error:
-                connection.close()
-                if attempt:
-                    return {"ok": False, "status": 0, "reason": f"TransportError: {error}"}
-        reason = ""
-        if response:
-            try:
-                reason = json.loads(response.decode("utf-8")).get("reason", "")
-            except (ValueError, UnicodeDecodeError):
-                reason = response[:200].decode("utf-8", "replace")
-        if status is None:
-            status = 200 if not response else 400
-        return {"ok": status == 200, "status": status, "reason": reason}
-
-    def _channel_call(self, method, suffix, environment="production", body=None, channel_id=None):
-        """Call Apple's Broadcast Channel Management API."""
-        payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
-        headers = [
-            ("authorization", "bearer " + self.authorization()),
-            ("content-type", "application/json"),
-        ]
-        if channel_id: headers.append(("apns-channel-id", channel_id))
-        path = f"/1/apps/{self.bundle_id}/{suffix.lstrip('/')}"
-        for attempt in (0, 1):
-            connection = self._channel_connection(environment, reset=attempt == 1)
-            try:
-                status, response = connection.request(method, path, headers, payload)
-                break
-            except (APNsError, OSError, ssl.SSLError) as error:
-                connection.close()
-                if attempt: raise APNsError(f"channel transport error: {error}") from error
-        if status not in (200, 201, 204):
+            Broadcast requests use APNs' broadcast endpoint rather than the device
+            endpoint. The payload must be identical for every activity subscribed
+            to the channel; callers should put only a compact boundary signal in
+            ``content-state`` and let the widget resolve local timetable data.
+            """
+            channel_id = str(channel_id or "").strip()
+            if not channel_id:
+                return {"ok": False, "status": 0, "reason": "MissingChannelID"}
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+            if len(body) > MAX_PAYLOAD:
+                return {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
+            headers = [
+                ("authorization", "bearer " + self.authorization()),
+                ("apns-channel-id", channel_id),
+                ("apns-push-type", "liveactivity"),
+                ("apns-priority", str(priority)),
+                ("apns-expiration", str(int(expiration))),
+            ]
+            if collapse_id:
+                headers.append(("apns-collapse-id", collapse_id[:64]))
+            path = "/4/broadcasts/apps/" + (topic or self.bundle_id)
+            for attempt in (0, 1):
+                connection = self._connection(environment, reset=attempt == 1)
+                try:
+                    status, response = connection.request("POST", path, headers, body)
+                    break
+                except (APNsError, OSError, ssl.SSLError) as error:
+                    connection.close()
+                    if attempt:
+                        return {"ok": False, "status": 0, "reason": f"TransportError: {error}"}
             reason = ""
             if response:
-                try: reason = json.loads(response.decode()).get("reason", "")
-                except (ValueError, UnicodeDecodeError): reason = response[:200].decode("utf-8", "replace")
-            raise APNsError(f"channel API returned {status or 0} {reason}".strip())
-        if not response: return None
-        try: return json.loads(response.decode())
-        except (ValueError, UnicodeDecodeError) as error: raise APNsError("invalid channel API response") from error
+                try:
+                    reason = json.loads(response.decode("utf-8")).get("reason", "")
+                except (ValueError, UnicodeDecodeError):
+                    reason = response[:200].decode("utf-8", "replace")
+            if status is None:
+                return {"ok": False, "status": 0, "reason": "MissingHTTPStatus", "certainty": "unknown"}
+            return {"ok": status == 200, "status": status, "reason": reason, "certainty": "accepted" if status == 200 else "rejected"}
+
+    def _channel_call(self, method, suffix, environment="production", body=None, channel_id=None):
+        with self._channel_locks[environment]:
+            """Call Apple's Broadcast Channel Management API."""
+            payload = b"" if body is None else json.dumps(body, separators=(",", ":")).encode()
+            headers = [
+                ("authorization", "bearer " + self.authorization()),
+                ("content-type", "application/json"),
+            ]
+            if channel_id: headers.append(("apns-channel-id", channel_id))
+            path = f"/1/apps/{self.bundle_id}/{suffix.lstrip('/')}"
+            for attempt in ((0, 1) if method == "GET" else (0,)):
+                connection = self._channel_connection(environment, reset=attempt == 1)
+                try:
+                    status, response = connection.request(method, path, headers, payload)
+                    break
+                except (APNsError, OSError, ssl.SSLError) as error:
+                    connection.close()
+                    if attempt or method != "GET": raise APNsError(f"channel transport error: {error}") from error
+            if method == "DELETE" and status in (404, 410):
+                return None
+            if status not in (200, 201, 204):
+                reason = ""
+                if response:
+                    try: reason = json.loads(response.decode()).get("reason", "")
+                    except (ValueError, UnicodeDecodeError): reason = response[:200].decode("utf-8", "replace")
+                raise APNsError(f"channel API returned {status or 0} {reason}".strip())
+            if not response: return None
+            try: return json.loads(response.decode())
+            except (ValueError, UnicodeDecodeError) as error: raise APNsError("invalid channel API response") from error
 
     def list_channels(self, environment="production"):
         value = self._channel_call("GET", "all-channels", environment=environment) or {}
@@ -699,21 +710,27 @@ class APNsClient:
         return [str(channel).strip() for channel in channels if str(channel).strip()]
 
     def create_channel(self, environment="production"):
-        """Create one Live Activity channel and return its APNs channel ID.
+        with self._channel_locks[environment]:
+            """Create one Live Activity channel and return its APNs channel ID.
 
-        APNs returns the ID in a response header. The minimal HTTP/2 layer only
-        decodes status headers, so a before/after list diff obtains the same ID
-        without embedding a full HPACK Huffman decoder.
-        """
-        before = set(self.list_channels(environment))
-        self._channel_call("POST", "channels", environment=environment, body={
-            "message-storage-policy": 1,
-            "push-type": "LiveActivity",
-        })
-        after = set(self.list_channels(environment))
-        created = sorted(after - before)
-        if len(created) != 1: raise APNsError("APNs did not return one new channel")
-        return created[0]
+            APNs returns the ID in a response header. The minimal HTTP/2 layer only
+            decodes status headers, so a before/after list diff obtains the same ID
+            without embedding a full HPACK Huffman decoder.
+            """
+            before = set(self.list_channels(environment))
+            failure = None
+            try:
+                self._channel_call("POST", "channels", environment=environment, body={
+                    "message-storage-policy": 1,
+                    "push-type": "LiveActivity",
+                })
+            except APNsError as error:
+                # Lost create responses are reconciled by listing, never POST replay.
+                failure = error
+            after = set(self.list_channels(environment))
+            created = sorted(after - before)
+            if len(created) != 1: raise APNsError("APNs did not return one new channel") from failure
+            return created[0]
 
     def delete_channel(self, channel_id, environment="production"):
         channel_id = str(channel_id or "").strip()

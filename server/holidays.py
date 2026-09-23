@@ -8,12 +8,14 @@ classes on every client.
 """
 from __future__ import annotations
 import json
+import re
 from datetime import date, timedelta
 from urllib.request import Request, urlopen
 
-# holiday-cn is regenerated from the gov.cn announcements and keeps one file per
-# year; the second entry is a CDN mirror of the same repository.
+# Match CPU-Web’s public holiday providers. holiday-cn is generated from
+# State Council announcements; its CDN mirror is the final fallback.
 SOURCES = (
+    "https://api.jiejiariapi.com/v1/holidays/{year}",
     "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json",
     "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json",
 )
@@ -42,32 +44,46 @@ def fetch_year(year, opener=_open):
             if len(raw) > MAX_BYTES:
                 raise HolidayError("响应过大")
             value = json.loads(raw.decode("utf-8"))
-        except HolidayError:
-            raise
+            if not isinstance(value, dict):
+                raise ValueError("数据格式异常")
+            if "jiejiariapi.com" in url:
+                days = list(value.values())
+                if any(not isinstance(row, dict) or row.get("date") != key for key, row in value.items()):
+                    raise ValueError("日期键不匹配")
+            else:
+                if value.get("year") != year:
+                    raise ValueError("年份不匹配")
+                days = value.get("days")
+            cleaned = _clean(days, year)
+            return {"year": year, "papers": value.get("papers") or [], "days": cleaned, "source": url}
         except Exception as error:
             errors.append(f"{url}: {error}")
-            continue
-        days = value.get("days")
-        if not isinstance(days, list):
-            errors.append(f"{url}: 缺少 days 字段")
-            continue
-        return {"year": year, "papers": value.get("papers") or [], "days": _clean(days), "source": url}
     raise HolidayError(f"{year} 年安排获取失败：" + "；".join(errors))
 
 
-def _clean(days):
-    rows = []
+def _clean(days, year=None):
+    if not isinstance(days, list) or not days:
+        raise ValueError("数据尚未发布或缺少 days 字段")
+    rows, seen = [], set()
     for item in days:
         if not isinstance(item, dict):
+            raise ValueError("日期数据格式异常")
+        value = item.get("date", "")
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("日期格式异常")
+        day = date.fromisoformat(value)
+        if (year is not None and day.year != year) or value in seen:
+            raise ValueError("年份不匹配或日期重复")
+        if type(item.get("isOffDay")) is not bool or not isinstance(item.get("name"), str) or not item["name"].strip():
+            raise ValueError("假期名称或放假标记异常")
+        seen.add(value)
+        # The API includes observances such as 小年; only official worked
+        # weekends are makeup candidates, as in CPU-Web.
+        if not item["isOffDay"] and (day.weekday() < 5 or item["name"] not in
+                {"元旦", "春节", "清明节", "劳动节", "端午节", "中秋节", "国庆节"}):
             continue
-        try:
-            day = date.fromisoformat(str(item.get("date", "")))
-        except ValueError:
-            continue
-        rows.append({"date": day.isoformat(), "name": str(item.get("name") or "")[:40],
-                     "isOffDay": bool(item.get("isOffDay"))})
-    rows.sort(key=lambda row: row["date"])
-    return rows
+        rows.append({"date": value, "name": item["name"][:40], "isOffDay": item["isOffDay"]})
+    return sorted(rows, key=lambda row: row["date"])
 
 
 def plan(days, existing=None):

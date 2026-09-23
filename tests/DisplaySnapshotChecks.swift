@@ -32,13 +32,16 @@ struct DisplaySnapshotChecks {
         let fresh = makePreferences("fresh")
         expect(fresh.showWeekend && fresh.showLocation && fresh.showTeacher && fresh.showWeeks,
                "新装默认全部显示")
-        expect(fresh.rowHeight == NativeSchedulePreferences.defaultRowHeight,
-               "默认行高是 \(NativeSchedulePreferences.defaultRowHeight)，实际 \(fresh.rowHeight)")
         expect(fresh.visibleDays == Array(1...7), "默认排满七天")
+        expect(fresh.visibleDays(adjustedDays: [6]) == Array(1...7), "显示周末时仍保留七天")
 
         // 隐藏周末只剩周一到周五
         fresh.showWeekend = false
         expect(fresh.visibleDays == [1, 2, 3, 4, 5], "隐藏周末后 \(fresh.visibleDays)")
+        expect(fresh.visibleDays(adjustedDays: []) == [1, 2, 3, 4, 5], "普通周末隐藏")
+        expect(fresh.visibleDays(adjustedDays: [6]) == [1, 2, 3, 4, 5, 6], "仅周六调休时保留周六")
+        expect(fresh.visibleDays(adjustedDays: [7]) == [1, 2, 3, 4, 5, 7], "仅周日调休时保留周日")
+        expect(fresh.visibleDays(adjustedDays: [6, 7]) == Array(1...7), "周末两天调休都保留")
 
         // 导出 → JSON → 恢复，逐项还原
         let source = makePreferences("source")
@@ -49,7 +52,6 @@ struct DisplaySnapshotChecks {
         source.showDateHeader = false
         source.defaultView = "day"
         source.density = "compact"
-        source.rowHeight = 52
         source.backgroundOpacity = 0.33
         let backgroundBytes = Data("背景图占位字节".utf8)
         try! source.setBackgroundData(backgroundBytes)
@@ -63,7 +65,7 @@ struct DisplaySnapshotChecks {
         expect(!target.showLocation && !target.showTeacher && !target.showWeeks, "卡片开关已还原")
         expect(!target.showWeekend && !target.showDateHeader, "周末与日期栏开关已还原")
         expect(target.defaultView == "day" && target.density == "compact", "视图与密度已还原")
-        expect(target.rowHeight == 52, "行高已还原，实际 \(target.rowHeight)")
+        expect(target.makeSnapshot().rowHeight == 44, "备份行高固定为 44")
         expect(abs(target.backgroundOpacity - 0.33) < 0.0001, "背景不透明度已还原")
         expect(target.backgroundImage != nil || !target.backgroundPath.isEmpty, "背景图已写回本机")
 
@@ -84,8 +86,7 @@ struct DisplaySnapshotChecks {
         clamped.apply(hostile)
         expect(clamped.defaultView == "week", "未知视图回落到周课表")
         expect(clamped.density == "comfortable", "未知密度回落到舒适")
-        expect(clamped.rowHeight == NativeSchedulePreferences.rowHeightRange.upperBound,
-               "行高被夹到上限，实际 \(clamped.rowHeight)")
+        expect(clamped.makeSnapshot().rowHeight == 44, "旧备份行高不会改变固定布局")
         expect(clamped.backgroundOpacity == 0.5, "不透明度被夹到上限")
 
         // 备份里没有背景图时，保留本机现有的那张

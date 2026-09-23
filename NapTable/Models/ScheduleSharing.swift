@@ -12,6 +12,8 @@ nonisolated struct ShareCredential: Codable, Equatable, Identifiable {
     var token: String
     var label: String
     var updatedAt: String
+    var tableID: Int? = nil
+    var fingerprint: String? = nil
 
     var id: String { code }
 }
@@ -22,6 +24,8 @@ nonisolated struct ShareCredential: Codable, Equatable, Identifiable {
 /// so it carries the term facts that change what a reader renders.
 nonisolated struct ShareMeta: Codable, Equatable {
     var code: String
+    var scheduleScope: String? = nil
+    var timeZone: String? = nil
     var owner: String
     var schoolID: String
     var schoolName: String
@@ -36,6 +40,7 @@ nonisolated struct ShareMeta: Codable, Equatable {
     var updatedAt: String
 
     private enum CodingKeys: String, CodingKey {
+        case scheduleScope, timeZone
         case code = "id", owner, schoolID, schoolName, name, termID, termVersion, courseCount
         case semesterStartMonday = "semester_start_monday"
         case weekCount = "term_week_count"
@@ -56,11 +61,12 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
     /// 对方学校这个学期的调休。没有就是空表，不会借用本机的。
     var adjustments: [CalendarAdjustment]
     var fetchedAt: Date
+    var remark: String? = nil
 
-    var name: String { meta.name.isEmpty ? meta.schoolName : meta.name }
+    // Older servers include the publisher in meta.name; never use it as a display label.
+    var name: String { remark?.trimmedNonEmpty ?? meta.schoolName.trimmedNonEmpty ?? "共享课表" }
 
-    /// The same payload an import would install, so "加入我的课表" and "设为提示
-    /// 来源" cannot disagree about the sharer's schedule.
+    /// A complete import payload retaining the sharer's school calendar.
     var importedSchedule: ImportedSchedule {
         ImportedSchedule(
             name: name,
@@ -71,7 +77,7 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
             termID: meta.termID,
             termVersion: meta.termVersion,
             termWeekCount: meta.weekCount,
-            termTimezone: nil,
+            termTimezone: meta.timeZone,
             calendarAdjustments: adjustments.isEmpty ? nil : adjustments
         )
     }
@@ -84,6 +90,47 @@ extension ScheduleSharingService {
     /// updating over that build keeps following the same source.
     static let followedCodeKey = "naptable.followedShareCode"
     static let followedLabelKey = "naptable.followedShareLabel"
+
+    private static let importedKey = "naptable.importedShares"
+
+    var sharedSchedules: [FollowedSchedule] {
+        if let data = UserDefaults.standard.data(forKey: Self.importedKey),
+           let saved = try? JSONDecoder().decode([FollowedSchedule].self, from: data) {
+            return saved
+        }
+        return followedSchedule.map { [$0] } ?? []
+    }
+
+    /// Caring selects the Live Activity source, including previously saved follows.
+    var sharedNotificationsEnabled: Bool { followedCode != nil }
+
+    func saveShared(_ schedule: FollowedSchedule, remark: String) throws {
+        try validateImportCode(schedule.meta.code)
+        guard let remark = remark.trimmedNonEmpty else {
+            throw ScheduleServiceError.server("请填写备注，方便识别共享课表")
+        }
+        var saved = schedule
+        saved.remark = remark
+        var list = sharedSchedules.filter { $0.meta.code != saved.meta.code }
+        list.append(saved)
+        UserDefaults.standard.set(try JSONEncoder().encode(list), forKey: Self.importedKey)
+        if followedCode == saved.meta.code { persist(saved, notify: false) }
+        sourceChanged()
+    }
+
+    func removeShared(_ code: String) {
+        let list = sharedSchedules.filter { $0.meta.code != code }
+        if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: Self.importedKey)
+        }
+        if followedCode == code { unfollow(notify: false) }
+        sourceChanged()
+    }
+
+    private func sourceChanged() {
+        objectWillChange.send()
+        NotificationCenter.default.post(name: .naptableFollowedSourceChanged, object: nil)
+    }
 
     // MARK: - My shares
 
@@ -107,6 +154,12 @@ extension ScheduleSharingService {
         store(list)
     }
 
+    func replaceRemembered(_ previous: [ShareCredential], with credential: ShareCredential) {
+        var list = myShares.filter { !previous.map(\.code).contains($0.code) && $0.code != credential.code }
+        list.append(credential)
+        store(list)
+    }
+
     private func store(_ list: [ShareCredential]) {
         guard let data = try? JSONEncoder().encode(list) else { return }
         UserDefaults.standard.set(data, forKey: Self.credentialsKey)
@@ -124,7 +177,7 @@ extension ScheduleSharingService {
                                      headers: ["X-Write-Token": credential.token])
         let result = try JSONDecoder().decode(SharedScheduleEnvelope.self, from: data)
         remember(ShareCredential(code: credential.code, token: credential.token,
-                                 label: result.name ?? credential.label, updatedAt: result.updatedAt))
+                                 label: result.schoolName, updatedAt: result.updatedAt))
         return result
     }
 
@@ -137,7 +190,7 @@ extension ScheduleSharingService {
                                      headers: ["X-Write-Token": credential.token])
         let result = try JSONDecoder().decode(SharedScheduleEnvelope.self, from: data)
         remember(ShareCredential(code: credential.code, token: credential.token,
-                                 label: result.name ?? credential.label, updatedAt: result.updatedAt))
+                                 label: result.schoolName, updatedAt: result.updatedAt))
         return result
     }
 
@@ -160,26 +213,47 @@ extension ScheduleSharingService {
 
     /// Download a share without committing to it, for the preview card.
     func previewShare(_ code: String) async throws -> FollowedSchedule {
-        try await fetchFollowed(code)
+        try validateImportCode(code)
+        return try await fetchFollowed(code)
     }
 
-    /// Make a share the source the widgets and the Live Activity render.
+    /// 分享归属以本机保存的管理凭证判断，不能用公开的发布者名称判断。
+    private func validateImportCode(_ code: String) throws {
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !myShares.contains(where: {
+            $0.code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalized
+        }) else {
+            throw ScheduleServiceError.server("不能导入自己分享的课表，请直接查看自己的课表")
+        }
+    }
+
+    /// Restore a followed source whose cached payload is missing.
     @discardableResult
     func follow(_ code: String) async throws -> FollowedSchedule {
-        let followed = try await fetchFollowed(code)
+        var followed = try await fetchFollowed(code)
+        guard followedCode == code else { return followed }
+        followed.remark = sharedSchedules.first { $0.meta.code == code }?.remark
         persist(followed)
         return followed
     }
 
     func follow(_ followed: FollowedSchedule) {
-        persist(followed)
+        guard followedSchedule != followed else { return }
+        persist(followed, notify: false)
+        caringSelectionChanged()
     }
 
-    func unfollow() {
+    func unfollow(notify: Bool = true) {
         groupDefaults?.removeObject(forKey: Self.followedKey)
         UserDefaults.standard.removeObject(forKey: Self.followedCodeKey)
         UserDefaults.standard.removeObject(forKey: Self.followedLabelKey)
-        NotificationCenter.default.post(name: .naptableFollowedSourceChanged, object: nil)
+        UserDefaults.standard.removeObject(forKey: "naptable.sharedNotifications")
+        if notify { caringSelectionChanged() }
+    }
+
+    private func caringSelectionChanged() {
+        objectWillChange.send()
+        NotificationCenter.default.post(name: .naptableCaringSelectionChanged, object: nil)
     }
 
     /// Re-download only when the share actually moved. The meta document is a
@@ -195,8 +269,11 @@ extension ScheduleSharingService {
         // `updatedAt` is bumped by every server-side write, and the full share
         // document carries no `adjustmentCount`, so comparing whole metas
         // would re-download on every poll.
-        guard meta.updatedAt != cached.meta.updatedAt else { return }
-        if let refreshed = try? await fetchFollowed(code) { persist(refreshed) }
+        guard meta.updatedAt != cached.meta.updatedAt || meta.scheduleScope != cached.meta.scheduleScope || meta.timeZone != cached.meta.timeZone else { return }
+        if var refreshed = try? await fetchFollowed(code), followedCode == code {
+            refreshed.remark = cached.remark
+            try? saveShared(refreshed, remark: cached.name)
+        }
     }
 
     private func fetchFollowed(_ code: String) async throws -> FollowedSchedule {
@@ -207,24 +284,38 @@ extension ScheduleSharingService {
         guard let classTimes = schedule.classTimeList, !classTimes.isEmpty else {
             throw ScheduleServiceError.server("该分享没有节次时间，无法作为提示来源")
         }
+        // Preserve publisher row IDs independently of the import editor, which
+        // intentionally reassigns IDs when installing into a local table.
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let rows = object?["courses"] as? [[String: Any]] ?? []
+        var courses = schedule.courses
+        if rows.count == courses.count {
+            let ids = rows.map { ($0["id"] as? NSNumber)?.intValue ?? 0 }
+            let unique = Set(ids).count == ids.count
+            for index in courses.indices { courses[index].id = unique && ids[index] > 0 ? ids[index] : 0 }
+        }
         return FollowedSchedule(
             meta: meta,
-            courses: schedule.courses,
+            courses: courses,
             classTimes: classTimes,
             adjustments: schedule.calendarAdjustments ?? [],
             fetchedAt: Date()
         )
     }
 
-    private func persist(_ followed: FollowedSchedule) {
+    private func persist(_ followed: FollowedSchedule, notify: Bool = true) {
         if let data = try? JSONEncoder().encode(followed) {
             groupDefaults?.set(data, forKey: Self.followedKey)
         }
         UserDefaults.standard.set(followed.meta.code, forKey: Self.followedCodeKey)
         UserDefaults.standard.set(followed.name, forKey: Self.followedLabelKey)
-        objectWillChange.send()
-        NotificationCenter.default.post(name: .naptableFollowedSourceChanged, object: nil)
+        if notify { sourceChanged() }
     }
 
     private var groupDefaults: UserDefaults? { UserDefaults(suiteName: NextWidgetConfiguration.appGroup) }
+}
+
+extension Notification.Name {
+    static let naptableCaringSelectionChanged = Notification.Name("naptable.caringSelectionChanged")
+    static let naptableFollowedSourceChanged = Notification.Name("naptable.followedSourceChanged")
 }

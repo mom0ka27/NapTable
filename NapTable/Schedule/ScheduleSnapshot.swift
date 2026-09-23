@@ -10,6 +10,7 @@ import Foundation
 /// `completeSemester` is always true here: NapTable holds the whole table, never
 /// a single week fetched from 教务, so a week filter is a view concern only.
 public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
+    public let scheduleScope: String?
     public let version: Int
     public let completeSemester: Bool
     /// True when a newer selection superseded this request before it could
@@ -30,6 +31,7 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
     public let error: String?
 
     public init(
+        scheduleScope: String? = nil,
         version: Int = 1,
         completeSemester: Bool = false,
         cancelled: Bool = false,
@@ -45,6 +47,7 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         timeZone: String? = nil,
         error: String? = nil
     ) {
+        self.scheduleScope = scheduleScope
         self.version = version
         self.completeSemester = completeSemester
         self.cancelled = cancelled

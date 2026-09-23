@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
+    @ObservedObject private var sharingService = ScheduleSharingService.shared
     @Binding var showImport: Bool
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
@@ -19,8 +20,6 @@ struct SettingsView: View {
     #endif
     @State private var tableBeingRenamed: CourseTable?
     @State private var renameText = ""
-    @State private var tableBeingAdded = false
-    @State private var newTableName = ""
     @State private var confirmDeleteTable: CourseTable?
     @State private var confirmClearCourses = false
     @State private var confirmEraseAll = false
@@ -33,7 +32,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 appearanceGroup
-                termGroup
+                if store.selectedTable != nil { termGroup }
                 NativeDeviceSettingsContent(
                     scheduleStore: scheduleStore,
                     widgetSettings: widgetSettings
@@ -56,8 +55,6 @@ struct SettingsView: View {
                 store: store,
                 tableBeingRenamed: $tableBeingRenamed,
                 renameText: $renameText,
-                tableBeingAdded: $tableBeingAdded,
-                newTableName: $newTableName,
                 confirmDeleteTable: $confirmDeleteTable,
                 confirmClearCourses: $confirmClearCourses,
                 confirmEraseAll: $confirmEraseAll,
@@ -120,8 +117,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("学期与节次")
-        } footer: {
-            Text("决定今天是第几周、每节课几点上。")
         }
     }
 
@@ -129,38 +124,21 @@ struct SettingsView: View {
         Section {
             SettingsDestinationRow(
                 title: "我的课表",
-                detail: "\(store.tables.count) 张 · 当前「\(store.selectedTable?.name ?? "未选择")」",
+                detail: "自己的 \(store.tables.count) 张 · 共享 \(sharingService.sharedSchedules.count) 张",
                 systemImage: "square.stack"
             ) {
-                Form { tablesSection }
-                    .navigationTitle("我的课表")
-                    .appInlineNavigationTitle()
-            }
-
-            SettingsDestinationRow(
-                title: "学校与服务",
-                detail: schoolSummary,
-                systemImage: "building.columns"
-            ) {
-                SchoolConfigView()
-            }
-
-            SettingsDestinationRow(
-                title: "课表分享",
-                detail: "用分享码给别人看，或看别人的课表",
-                systemImage: "person.2"
-            ) {
-                ShareScheduleView()
+                MySchedulesView(showImport: $showImport) { tablesSection }
             }
         } header: {
             Text("课表")
-        } footer: {
-            Text("分享和学校配置需要连上课表服务。")
         }
     }
 
     private var dataGroup: some View {
         Section {
+            NavigationLink { PrivacySettingsView() } label: {
+                Label("隐私与数据", systemImage: "hand.raised")
+            }
             SettingsDestinationRow(
                 title: "数据与备份",
                 detail: "\(store.courses.count) 门课程 · 全部存在本机",
@@ -194,13 +172,6 @@ struct SettingsView: View {
 
     private var weekSummary: String {
         store.liveWeek > 0 ? "第 \(store.liveWeek) 周 / 共 \(store.maxWeeks) 周" : "还没设置学期开始日期"
-    }
-
-    private var schoolSummary: String {
-        guard let table = store.selectedTable, let school = table.schoolID else {
-            return "还没绑定学校，节次和周次按本地设置"
-        }
-        return school + (table.termID.map { " · \($0)" } ?? "")
     }
 
     private var semesterSection: some View {
@@ -301,6 +272,10 @@ struct SettingsView: View {
 
     private var tablesSection: some View {
         Section {
+            if store.tables.isEmpty {
+                Label("还没有课表，从学校导入一张吧", systemImage: "calendar")
+                    .foregroundStyle(.secondary)
+            }
             ForEach(store.tables) { table in
                 Button {
                     store.selectTable(table.id)
@@ -317,26 +292,23 @@ struct SettingsView: View {
                             Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                         }
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button("重命名") { renameText = table.name; tableBeingRenamed = table }
+                    Button("删除", role: .destructive) { confirmDeleteTable = table }
+                }
                 .swipeActions(edge: .trailing) {
-                    if store.tables.count > 1 {
-                        Button("删除", role: .destructive) { confirmDeleteTable = table }
-                    }
+                    Button("删除", role: .destructive) { confirmDeleteTable = table }
                     Button("重命名") {
                         renameText = table.name
                         tableBeingRenamed = table
                     }
                 }
             }
-            Button {
-                newTableName = "课表 \(store.tables.count + 1)"
-                tableBeingAdded = true
-            } label: {
-                Label("新建课表", systemImage: "plus")
-            }
         } header: {
-            Text("课表列表")
+            Text("自己的课表")
         } footer: {
             Text("点一下切换，左滑可重命名或删除。")
         }
@@ -371,8 +343,7 @@ struct SettingsView: View {
         } header: {
             Text("导入与备份")
         } footer: {
-            Text("数据只存在本机，不会上传。备份含课表、课程、显示设置和背景图。\n"
-                 + "恢复时课表是追加，显示设置会被覆盖。")
+            Text("恢复备份会追加课表，并覆盖显示设置。")
         }
 
         Section {
@@ -424,8 +395,6 @@ struct SettingsView: View {
             )
         } header: {
             Text("开源鸣谢")
-        } footer: {
-            Text("两个开源项目，点按打开仓库。感谢原作者。")
         }
     }
 
@@ -495,8 +464,6 @@ private struct SettingsDialogs: ViewModifier {
     let store: AppStore
     @Binding var tableBeingRenamed: CourseTable?
     @Binding var renameText: String
-    @Binding var tableBeingAdded: Bool
-    @Binding var newTableName: String
     @Binding var confirmDeleteTable: CourseTable?
     @Binding var confirmClearCourses: Bool
     @Binding var confirmEraseAll: Bool
@@ -517,17 +484,6 @@ private struct SettingsDialogs: ViewModifier {
                     if let table = tableBeingRenamed { store.renameTable(table.id, to: renameText) }
                     tableBeingRenamed = nil
                 }
-            }
-            .alert("新建课表", isPresented: $tableBeingAdded) {
-                TextField("名称", text: $newTableName)
-                Button("取消", role: .cancel) { tableBeingAdded = false }
-                Button("创建") {
-                    store.addTable(name: newTableName)
-                    newTableName = ""
-                    tableBeingAdded = false
-                }
-            } message: {
-                Text("新课表是空的，创建后可以导入或手动添加课程。")
             }
             .confirmationDialog(
                 "删除课表「\(confirmDeleteTable?.name ?? "")」？",
@@ -563,7 +519,7 @@ private struct SettingsDialogs: ViewModifier {
                 Button("全部清除", role: .destructive) { store.eraseEverything() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("所有课表、课程和设置都会被删除，App 回到初次安装的状态，无法撤销。")
+                Text("所有课表和课程都会被删除，无法撤销。")
             }
             .fileExporter(
                 isPresented: $exporting,

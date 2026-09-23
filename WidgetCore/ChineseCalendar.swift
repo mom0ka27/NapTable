@@ -85,18 +85,16 @@ nonisolated struct ChineseHolidayCountdown: Equatable, Sendable {
     /// 距离假期第一天还有几天；0 表示今天就在假期里。
     let daysAway: Int
 
-    /// 「距中秋节」「明天就是中秋节」。
+    /// 「距中秋节还有」「今天是中秋节」。
     var leading: String {
         switch daysAway {
         case 0: return "今天是\(window.name)"
-        case 1: return "明天就是\(window.name)"
-        case 2: return "后天就是\(window.name)"
-        default: return "距\(window.name)"
+        default: return "距\(window.name)还有"
         }
     }
 
-    /// 天数，只有三天以上才单独拿出来显示。
-    var amount: String? { daysAway > 2 ? String(daysAway) : nil }
+    /// 假期到来前统一显示剩余天数。
+    var amount: String? { daysAway > 0 ? String(daysAway) : nil }
 
     var trailing: String { amount == nil ? "" : "天" }
 

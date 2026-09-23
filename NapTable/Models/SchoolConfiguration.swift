@@ -1,3 +1,4 @@
+import CryptoKit
 import Combine
 import Foundation
 
@@ -28,14 +29,14 @@ struct AnyCodable: Codable {
 enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String), missingBaseURL; var errorDescription: String? { switch self { case .invalidResponse: return "服务返回格式错误"; case .server(let v): return v; case .missingBaseURL: return "未配置 NapTable 服务地址" } } }
 
 private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -> [ServiceSchoolConfiguration] {
-    // The shared server also hosts CPU's timetable and APNs records. NapTable
-    // remains a separate product and must not present or import that school.
-    schools.filter { $0.id.caseInsensitiveCompare("cpu") != .orderedSame }
+    // Only Nanjing University is currently visible in the client.
+    schools.filter { $0.id.caseInsensitiveCompare("nju") == .orderedSame }
 }
 
 @MainActor final class ScheduleSharingService: ObservableObject {
     static let shared = ScheduleSharingService(); @Published private(set) var schools: [ServiceSchoolConfiguration] = []
     @Published private(set) var usingCachedSchools = false
+    private var generatingShare = false
     private let defaults = UserDefaults.standard
     /// The production service. Device credentials and schedule data only ever
     /// travel over HTTPS to this host, so the address is fixed in the app
@@ -67,15 +68,81 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         guard let schools = try? await loadSchools() else { return }
         store.refreshServiceConfiguration(schools)
     }
-    func share(courses: [Course], schoolID: String, termID: String, owner: String="我") async throws -> SharedScheduleEnvelope {
-        guard schoolID.caseInsensitiveCompare("cpu") != .orderedSame else {
-            throw ScheduleServiceError.server("NapTable 不支持中国药科大学课表")
+    func shareFingerprint(courses: [Course], table: CourseTable) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let rows = try courses.map { course -> String in
+            var value = course
+            value.id = 0; value.tableId = 0; value.courseKey = nil
+            value.weeks = Array(Set(value.weeks)).sorted()
+            return String(decoding: try encoder.encode(value), as: UTF8.self)
+        }.sorted()
+        // Include the actual calendar, not version counters or update timestamps.
+        let calendar: [String: Any] = ["school": table.schoolID ?? "", "term": table.termID ?? "",
+            "start": table.semesterStartMonday, "weeks": table.termWeekCount ?? 0,
+            "timezone": table.termTimezone ?? "",
+            "periods": try JSONSerialization.jsonObject(with: encoder.encode(table.effectiveClassTimeList)),
+            "adjustments": try JSONSerialization.jsonObject(with: encoder.encode(table.calendarAdjustments ?? [])),
+            "courses": rows]
+        let data = try JSONSerialization.data(withJSONObject: calendar, options: [.sortedKeys])
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func canShare(courses: [Course], table: CourseTable) -> Bool {
+        guard table.schoolID != nil, table.termID != nil,
+              let fingerprint = try? shareFingerprint(courses: courses, table: table) else { return false }
+        return myShares.last(where: { $0.tableID == table.id })?.fingerprint != fingerprint
+    }
+
+    func share(courses: [Course], table: CourseTable, owner: String = "我") async throws -> SharedScheduleEnvelope {
+        guard !generatingShare else { throw ScheduleServiceError.server("正在生成分享码，请稍候") }
+        generatingShare = true
+        defer { generatingShare = false }
+        guard let schoolID = table.schoolID, let termID = table.termID,
+              schoolID.caseInsensitiveCompare("cpu") != .orderedSame else {
+            throw ScheduleServiceError.server("请先从对应学校导入课表")
         }
-        let rows = try courses.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) as! [String:Any] }
-        let schoolName = schools.first(where: { $0.id == schoolID })?.name ?? schoolID
-        let body:[String:Any] = ["owner":owner,"schoolID":schoolID,"termID":termID,"schoolName":schoolName,"courses":rows]
-        let result = try JSONDecoder().decode(SharedScheduleEnvelope.self, from: try await request(path:"/v1/shares",method:"POST",body:body))
-        remember(ShareCredential(code: result.id, token: result.writeToken ?? "", label: result.name ?? result.schoolName, updatedAt: result.updatedAt))
+        let fingerprint = try shareFingerprint(courses: courses, table: table)
+        var obsolete = myShares.filter { $0.tableID == table.id }
+        var previous = obsolete.last
+        // Older builds did not retain the local table association. Recover it
+        // from the uploaded rows without mixing two tables from the same school.
+        if previous == nil {
+            for credential in myShares.reversed() where credential.tableID == nil {
+                let data: Data
+                do { data = try await request(path: "/v1/shares/\(credential.code)", method: "GET") }
+                catch ScheduleServiceError.server(let reason) where reason == "share not found" { continue }
+                guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      value["schoolID"] as? String == schoolID, value["termID"] as? String == termID,
+                      let rows = value["courses"] as? [[String: Any]],
+                      !rows.isEmpty, rows.allSatisfy({ $0["tableId"] as? Int == table.id }) else { continue }
+                obsolete.append(credential)
+                if previous == nil { previous = credential }
+            }
+        }
+        guard previous?.fingerprint != fingerprint else {
+            throw ScheduleServiceError.server("课表没有变更，请继续使用现有分享码")
+        }
+        let rows = try courses.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        let body: [String: Any] = ["owner": owner, "schoolID": schoolID, "termID": termID, "courses": rows,
+            "previousShares": obsolete.filter { $0.code != previous?.code }.map { ["code": $0.code, "token": $0.token] }]
+        let path = previous.map { "/v1/shares/\($0.code)/replace" } ?? "/v1/shares"
+        let headers = previous.map { ["X-Write-Token": $0.token] } ?? [:]
+        let data: Data
+        do { data = try await request(path: path, method: "POST", body: body, headers: headers) }
+        catch ScheduleServiceError.server(let reason) where reason == "课表没有变更，请继续使用现有分享码" {
+            // Bind legacy credentials after the server verifies equality too.
+            for var credential in obsolete {
+                credential.tableID = table.id
+                credential.fingerprint = fingerprint
+                remember(credential)
+            }
+            throw ScheduleServiceError.server(reason)
+        }
+        let result = try JSONDecoder().decode(SharedScheduleEnvelope.self, from: data)
+        guard let token = result.writeToken, !token.isEmpty else { throw ScheduleServiceError.invalidResponse }
+        replaceRemembered(obsolete, with: ShareCredential(code: result.id, token: token,
+            label: table.name, updatedAt: result.updatedAt, tableID: table.id, fingerprint: fingerprint))
         return result
     }
     func lookup(_ code:String) async throws -> ImportedSchedule { try CoursePayloadCodec.decode(data: try await request(path:"/v1/shares/\(code.trimmingCharacters(in:.whitespacesAndNewlines).uppercased())",method:"GET")) }

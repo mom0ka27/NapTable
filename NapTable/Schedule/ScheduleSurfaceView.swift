@@ -15,6 +15,7 @@ import SwiftUI
 struct NativeScheduleView: View {
     @ObservedObject private var store: NativeScheduleStore
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
+    private let onAddTable: () -> Void
     private let onWidgets: () -> Void
     private let onLogin: () -> Void
     private let showsWatch: Bool
@@ -45,15 +46,18 @@ struct NativeScheduleView: View {
     // 月视图的两个位置：正在显示的月份和选中的那一天，都是 `yyyy-MM-dd`。
     @State private var monthAnchor = ""
     @State private var selectedMonthDate = ""
+    @State private var pendingMonthDay: String?
 
     init(
         store: NativeScheduleStore,
         onLogin: @escaping () -> Void = {},
         onWidgets: @escaping () -> Void = {},
+        onAddTable: @escaping () -> Void = {},
         showsWatch: Bool = false,
         onWatch: @escaping () -> Void = {}
     ) {
         _store = ObservedObject(wrappedValue: store)
+        self.onAddTable = onAddTable
         self.onWidgets = onWidgets
         self.onLogin = onLogin
         self.showsWatch = showsWatch
@@ -174,7 +178,12 @@ struct NativeScheduleView: View {
         }
         .onChange(of: store.selectedWeek) { _, _ in
             guard !weekPaging, !dayPaging else { return }
+            finishMonthDaySelectionIfReady()
+            if pendingMonthDay == nil, !visibleDays.contains(selectedDay) { selectedDay = visibleDays.last ?? 1 }
             resetPagerSelections()
+        }
+        .onChange(of: store.calendar) { _, _ in
+            finishMonthDaySelectionIfReady()
         }
         .onChange(of: preferences.showWeekend) { _, _ in
             // Hiding the weekend while 周六/周日 is selected would leave the day
@@ -194,7 +203,13 @@ struct NativeScheduleView: View {
             dayPaging = false
         }
         .sheet(item: $selectedCourse) { selection in
-            NativeCourseEditorSheet(selection: selection, store: store)
+            Group {
+                if store.isReadOnly {
+                    SharedCourseDetailView(course: selection.course)
+                } else {
+                    NativeCourseEditorSheet(selection: selection, store: store)
+                }
+            }
                 .appSheetDetents([.large])
                 .appDragIndicatorVisible()
         }
@@ -342,8 +357,7 @@ struct NativeScheduleView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 10) {
                 semesterMenu(result)
-
-                Spacer(minLength: 8)
+                    .frame(maxWidth: .infinity)
 
                 if isLoading {
                     ProgressView()
@@ -483,6 +497,7 @@ struct NativeScheduleView: View {
         Menu {
             ForEach(result.semesters, id: \.value) { semester in
                 Button {
+                    guard semester.value != store.selectedSemester else { return }
                     Task { await store.selectSemester(semester.value) }
                 } label: {
                     if semester.value == store.selectedSemester {
@@ -492,19 +507,28 @@ struct NativeScheduleView: View {
                     }
                 }
             }
+            Divider()
+            Button("添加课表", systemImage: "plus", action: onAddTable)
         } label: {
-            Text(semesterTitle(result))
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .foregroundStyle(.primary)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 34)
-                // A plain capsule: the glass material is reserved for the small
-                // round controls beside it.
-                .background(Color.appSecondaryGroupedBackground)
-                .clipShape(Capsule())
+            HStack(spacing: 6) {
+                Text(semesterTitle(result))
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12)
+            // Reserve the available header width regardless of the selected name.
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(Color.appSecondaryGroupedBackground, in: Capsule())
         }
+        // A source change may also animate the free-time entry below the header.
+        // Keep the menu's anchor and label out of that layout animation.
+        .transaction { $0.animation = nil }
         .accessibilityLabel("选择课表")
     }
 
@@ -524,6 +548,7 @@ struct NativeScheduleView: View {
                         startSlot: 1
                     )
                 }
+                .disabled(store.isReadOnly)
                 if !weeklyFreeCourses().isEmpty {
                     Button("自由时间", systemImage: "clock.badge.checkmark") {
                         freeCoursesPresented = true
@@ -591,7 +616,13 @@ struct NativeScheduleView: View {
                 let isToday = dayIsToday(day, week: week, result: result)
                 let hasCourses = !blocks(for: day, week: week, result: result).isEmpty
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) { selectedDay = day }
+                    withAnimation(.snappy(duration: 0.2)) {
+                        selectedDay = day
+                        if let date = rawDayDate(day, week: week, result: result) {
+                            selectedMonthDate = date
+                            monthAnchor = date
+                        }
+                    }
                 } label: {
                     VStack(spacing: 5) {
                         Text(dayShortLabel(day))
@@ -641,16 +672,17 @@ struct NativeScheduleView: View {
         return VStack(alignment: .leading, spacing: 8) {
             GeometryReader { proxy in
                 let contentWidth = proxy.size.width - 2 * Self.contentInset
-                let dayCount = CGFloat(visibleDays.count)
-                let columnWidth = max(
-                    24,
-                    (contentWidth - Self.slotAxisWidth - (dayCount - 1) * Self.columnGap) / dayCount
-                )
                 weekPager(result: result, width: proxy.size.width, rowHeight: rowHeight) { week in
+                    let days = visibleDays(week: week, result: result)
+                    let dayCount = CGFloat(days.count)
+                    let columnWidth = max(
+                        24,
+                        (contentWidth - Self.slotAxisWidth - (dayCount - 1) * Self.columnGap) / dayCount
+                    )
                     scheduleRows(
                         result: result,
                         week: week,
-                        days: visibleDays,
+                        days: days,
                         columnWidth: columnWidth,
                         compactCards: preferences.density == "compact",
                         rowHeight: rowHeight,
@@ -702,7 +734,7 @@ struct NativeScheduleView: View {
             blocks: { day, week in blocks(for: day, week: week, result: result) },
             adjustments: store.calendar?.adjustments ?? [:],
             onSelect: { date in
-                selectedMonthDate = date
+                selectMonthDate(date, result: result)
             },
             onOpenDay: { date in
                 openDayView(date)
@@ -753,15 +785,35 @@ struct NativeScheduleView: View {
 
     /// 月视图打开某一天：切到日视图，必要时先把周次切过去。
     private func openDayView(_ date: String) {
-        guard let slot = monthDateIndex[date] else { return }
-        selectedMonthDate = date
-        selectedDay = slot.day
-        didInitializeDay = true
+        guard monthDateIndex[date] != nil, let result = store.result else { return }
+        selectMonthDate(date, result: result)
         viewMode = .day
-        let week = String(slot.week)
-        if week != store.selectedWeek {
-            Task { await store.selectWeek(week) }
+    }
+
+    private func selectMonthDate(_ date: String, result: NativeScheduleResult) {
+        selectedMonthDate = date
+        pendingMonthDay = nil
+        guard let slot = monthDateIndex[date] else { return }
+        let days = visibleDays(week: slot.week, result: result)
+        guard days.contains(slot.day) else { return }
+        didInitializeDay = true
+        if store.selectedWeek == String(slot.week) {
+            selectedDay = slot.day
+            resetPagerSelections()
+        } else {
+            pendingMonthDay = date
+            selectedDay = slot.day
+            store.commitWeekSelection(String(slot.week))
         }
+    }
+
+    private func finishMonthDaySelectionIfReady() {
+        guard let date = pendingMonthDay,
+              let slot = monthDateIndex[date], String(slot.week) == store.selectedWeek,
+              let week = store.calendar?.weeks.first(where: { $0.week == slot.week }),
+              week.days.indices.contains(slot.day - 1), week.days[slot.day - 1] == date else { return }
+        selectedDay = slot.day
+        pendingMonthDay = nil
     }
 
     private func jumpToCurrentMonth() {
@@ -770,6 +822,7 @@ struct NativeScheduleView: View {
             selectedMonthDate = today
             monthAnchor = today
         }
+        if let result = store.result { selectMonthDate(today, result: result) }
     }
 
     /// 进入月视图时，先跟随当前浏览到的那一天；它不在学期里就退回今天。
@@ -791,28 +844,40 @@ struct NativeScheduleView: View {
     private func isViewingCurrentPosition(_ result: NativeScheduleResult) -> Bool {
         switch viewMode {
         case .day: return isViewingCurrentDay(result)
-        case .week: return isViewingCurrentWeek(result)
+        case .week: return isViewingCurrentWeek(result) && isSelectionToday
         case .month:
             guard let today = Self.todayDate else { return true }
             return selectedMonthDate == today && monthAnchor.prefix(7) == today.prefix(7)
         }
     }
 
-    /// The weekday columns the grid draws. Hiding the weekend widens the five
-    /// remaining columns instead of leaving a gap.
-    private var visibleDays: [Int] { preferences.visibleDays }
+    private var isSelectionToday: Bool {
+        guard let today = Self.todayDate else { return true }
+        return selectedMonthDate == today && monthAnchor.prefix(7) == today.prefix(7)
+            && selectedDay == Self.chinaWeekday
+    }
+
+    /// 每周独立判断调休日，翻页时不会漏掉相邻周的周末安排。
+    private var visibleDays: [Int] {
+        guard let result = store.result else { return preferences.visibleDays }
+        return visibleDays(week: weekNumber(store.selectedWeek), result: result)
+    }
+
+    private func visibleDays(week: Int?, result: NativeScheduleResult) -> [Int] {
+        let adjustedDays = Set((6...7).filter {
+            adjustment(day: $0, week: week, result: result) != nil
+        })
+        return preferences.visibleDays(adjustedDays: adjustedDays)
+    }
 
     private var weekGridRowHeight: CGFloat {
-        CGFloat(preferences.rowHeight)
+        preferences.density == "compact" ? 40 : NativeScheduleDayColumn.slotHeight
     }
 
     /// The day layout carries an extra weekday picker above the grid, so it
     /// keeps the same 3pt deficit it had when both heights were constants.
     private var dayGridRowHeight: CGFloat {
-        max(
-            CGFloat(NativeSchedulePreferences.rowHeightRange.lowerBound),
-            CGFloat(preferences.rowHeight) - 3
-        )
+        preferences.density == "compact" ? 37 : NativeScheduleDayColumn.daySlotHeight
     }
 
     /// Daily mode uses the same native page controller as the weekly pager. A
@@ -925,6 +990,7 @@ struct NativeScheduleView: View {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, token == weekTransitionToken else { return }
             store.commitWeekSelection(target)
+            if !visibleDays.contains(selectedDay) { selectedDay = visibleDays.last ?? 1 }
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -954,6 +1020,10 @@ struct NativeScheduleView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 selectedDay = target.day
+                if let date = rawDayDate(target.day, week: target.week.flatMap(Int.init), result: result) {
+                    selectedMonthDate = date
+                    monthAnchor = date
+                }
                 dayPageSelection = 1
                 dayPaging = false
             }
@@ -1046,17 +1116,14 @@ struct NativeScheduleView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
-    /// 当前视图里被调休影响的日子。月视图每格自己有角标，就不再重复提示。
+    /// 日视图显示当天的调休详情；周、月视图只保留日期角标。
     private func visibleAdjustments(_ result: NativeScheduleResult) -> [ResolvedCalendarAdjustment] {
         guard let calendar = store.calendar, !calendar.adjustments.isEmpty else { return [] }
         let week = weekNumber(store.selectedWeek)
         switch viewMode {
-        case .week:
-            guard let item = calendar.weeks.first(where: { $0.week == week }) else { return [] }
-            return item.days.compactMap { calendar.adjustments[$0] }
         case .day:
             return [adjustment(day: selectedDay, week: week, result: result)].compactMap { $0 }
-        case .month:
+        case .week, .month:
             return []
         }
     }
@@ -1234,7 +1301,7 @@ struct NativeScheduleView: View {
             .navigationTitle("选择周次")
             .appInlineNavigationTitle()
             .toolbar {
-                if let result = store.result, !isViewingCurrentWeek(result) {
+                if let result = store.result, !isViewingCurrentPosition(result) {
                     ToolbarItem(placement: .appLeading) {
                         Button("回到本周") {
                             weekPickerPresented = false
@@ -1379,6 +1446,7 @@ struct NativeScheduleView: View {
     }
 
     private func presentAddCourse(day: Int, week: Int?, startSlot: Int) {
+        guard !store.isReadOnly else { return }
         addCourseContext = AddCourseContext(
             day: min(max(day, 1), 7),
             week: week ?? Int(store.selectedWeek) ?? 1,
@@ -1449,7 +1517,8 @@ struct NativeScheduleView: View {
         }
         let weekOffset = offset > 0 ? 1 : -1
         guard let targetWeek = adjacentWeekValue(weekOffset, result: result) else { return nil }
-        return NativeScheduleDayPage(week: targetWeek, day: offset > 0 ? (days.first ?? 1) : (days.last ?? 7))
+        let targetDays = visibleDays(week: weekNumber(targetWeek), result: result)
+        return NativeScheduleDayPage(week: targetWeek, day: offset > 0 ? (targetDays.first ?? 1) : (targetDays.last ?? 5))
     }
 
     private func adjacentWeekValue(_ offset: Int, result: NativeScheduleResult) -> String? {
@@ -1462,6 +1531,16 @@ struct NativeScheduleView: View {
     }
 
     private func jumpToCurrentWeek(_ result: NativeScheduleResult) {
+        if let today = Self.todayDate {
+            selectedMonthDate = today
+            monthAnchor = today
+        }
+        pendingMonthDay = nil
+        selectedDay = store.calendar?.weeks.first(where: { $0.week == store.calendar?.currentWeek })
+            .flatMap { week in Self.todayDate.flatMap(week.days.firstIndex(of:)).map { $0 + 1 } }
+            ?? Self.chinaWeekday
+        didInitializeDay = true
+        resetPagerSelections()
         guard !isViewingCurrentWeek(result) else { return }
         guard let calendar = store.calendar,
               calendar.currentWeek > 0,
@@ -1488,6 +1567,11 @@ struct NativeScheduleView: View {
     /// weekday untouched, so the button became a no-op whenever another day
     /// in the same week was open.
     private func jumpToCurrentDay(_ result: NativeScheduleResult) {
+        pendingMonthDay = nil
+        if let today = Self.todayDate {
+            selectedMonthDate = today
+            monthAnchor = today
+        }
         guard let calendar = store.calendar,
               calendar.currentWeek > 0,
               let semester = calendar.currentSemester.nilIfEmpty,
@@ -1826,10 +1910,7 @@ private struct NativeScheduleDayPage: Equatable {
 
 
 private struct NativeScheduleDayColumn: View {
-    // Web's compact mobile grid uses 44px rows, which is also
-    // `NativeSchedulePreferences.defaultRowHeight`. These two are only the
-    // fallback for call sites that do not thread a height through; the real
-    // grids read the preference so the user can trade rows for legibility.
+    // Fixed heights match CpuTime: compact uses 40/37, comfortable 44/41.
     static let slotHeight: CGFloat = 44
     // The day layout has an extra seven-day picker above the grid, so its rows
     // stay 3pt shorter to keep the eleventh slot clear of the native tab bar.
@@ -1842,7 +1923,7 @@ private struct NativeScheduleDayColumn: View {
     let day: Int
     let dateText: String?
     let isToday: Bool
-    /// 这一天的调休。有值时日期下面多一个「休」/「班」角标。
+    /// 这一天的调休。有值时日期旁边多一个「休」/「班」角标。
     let adjustment: ResolvedCalendarAdjustment?
     let columnWidth: CGFloat
     let rowHeight: CGFloat
@@ -1868,16 +1949,20 @@ private struct NativeScheduleDayColumn: View {
                 VStack(spacing: 2) {
                     Text(dayLabel)
                         .font(.caption.weight(.semibold))
-                    HStack(spacing: 3) {
+                    HStack(spacing: 1) {
                         Text(dateText ?? "--")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                         if let adjustment {
                             Text(adjustment.badge)
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(.white)
-                                .padding(.horizontal, 3)
-                                .padding(.vertical, 1)
+                                .fixedSize()
+                                .frame(width: 11, height: 11, alignment: .center)
+                                // 小字号汉字做光学居中，仅移动文字，不移动底色。
+                                .offset(x: 0.15)
                                 .background(
                                     (adjustment.kind == .off ? Color.pink : Color.orange).opacity(0.85),
                                     in: RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -2818,4 +2903,26 @@ private enum NativeScheduleICSExporter {
 
 #Preview {
     Text("NativeScheduleView requires a NativeScheduleStore")
+}
+
+private struct SharedCourseDetailView: View {
+    let course: NativeScheduleCourse
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                LabeledContent("课程", value: course.name)
+                LabeledContent("老师", value: course.teacher ?? "—")
+                LabeledContent("地点", value: course.location ?? "—")
+                LabeledContent("周次", value: course.weeks)
+                LabeledContent("备注", value: course.slotNote ?? "—")
+                Text("共享课表只读").foregroundStyle(.secondary)
+            }
+            .navigationTitle("课程详情")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
+        }
+    }
 }

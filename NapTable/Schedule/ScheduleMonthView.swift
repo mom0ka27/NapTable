@@ -97,18 +97,21 @@ struct NativeScheduleMonthView: View {
             .frame(maxWidth: .infinity)
             .frame(height: 50)
             .overlay(alignment: .topTrailing) {
-                if let adjustment = day.adjustment, day.inMonth {
+                if let adjustment = day.adjustment {
                     Text(adjustment.badge)
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 2.5)
-                        .padding(.vertical, 0.5)
+                        .fixedSize()
+                        .frame(width: 13, height: 13, alignment: .center)
+                        // 小字号汉字做光学居中，仅移动文字，不移动底色。
+                        .offset(x: 0.15)
                         .background(
                             (adjustment.kind == .off ? Color.pink : Color.orange).opacity(0.9),
                             in: RoundedRectangle(cornerRadius: 3, style: .continuous)
                         )
                         .padding(.top, 1)
                         .padding(.trailing, 1)
+                        .opacity(day.inMonth ? 1 : 0.45)
                 }
             }
             .background {

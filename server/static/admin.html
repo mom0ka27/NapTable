@@ -6,18 +6,18 @@
   <meta name="color-scheme" content="light">
   <title>NapTable 管理台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/admin.css">
+  <link rel="stylesheet" href="/static/admin.css?v=20260923-ui2">
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#" aria-label="NapTable 管理台首页">
-        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
-        <span><strong>NapTable</strong><small>Server Console</small></span>
+    <aside id="sidebar" class="sidebar">
+      <a class="brand" href="/admin" aria-label="NapTable 管理台首页">
+        <span class="brand-mark" aria-hidden="true"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg></span>
+        <span><strong>NapTable</strong><small>管理控制台</small></span>
       </a>
 
       <nav class="main-nav" aria-label="主导航">
-        <p class="nav-label">工作区</p>
+        <p class="nav-label">WORKSPACE <span>工作区</span></p>
         <button class="nav-item active" type="button" data-view="schools">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg>
           <span>学校配置</span>
@@ -45,13 +45,13 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
           </button>
         </div>
-        <p class="build-label">服务端权威配置</p>
+        <p class="build-label">NAPTABLE CONSOLE</p>
       </div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
-        <button id="menuButton" class="icon-button mobile-menu" type="button" aria-label="打开导航" title="打开导航">
+        <button id="menuButton" aria-controls="sidebar" aria-expanded="false" class="icon-button mobile-menu" type="button" aria-label="打开导航" title="打开导航">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <div class="page-heading">
@@ -59,6 +59,7 @@
           <h1 id="pageTitle">学校配置</h1>
           <p id="pageSubtitle">维护客户端使用的学校、学期与教学时间。</p>
         </div>
+        <div id="consoleDate" class="console-date"></div>
         <div id="connectionStatus" class="connection-pill"><span></span>未连接</div>
       </header>
 
@@ -69,36 +70,39 @@
           <span class="auth-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           </span>
-          <p class="section-kicker">身份验证</p>
-          <h2>连接 NapTable 服务</h2>
-          <p>输入服务启动时设置的管理员令牌，连接后即可管理学校与推送配置。登录状态保存在仅限本站的会话 Cookie 中，12 小时内刷新页面无需重新输入；点击侧边栏的断开连接即可退出。</p>
+          <p class="section-kicker">YOUR CAMPUS, IN SYNC</p>
+          <h2>有条不紊，<br>从这里开始。</h2>
+          <p>学校、教学日历与通知服务，在一个工作区中轻松管理。</p>
+        <div class="auth-features"><span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg>学校配置</span><span><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg>教学日历</span><span><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg>使用洞察</span></div>
         </div>
         <form id="authForm" class="auth-form">
+          <div class="auth-form-heading"><span class="section-kicker">管理员登录</span><h3>欢迎回来</h3><p>验证身份，进入你的工作区。</p></div>
           <label for="adminToken">管理员令牌</label>
           <div class="password-field">
-            <input id="adminToken" type="password" autocomplete="off" placeholder="NAPTABLE_ADMIN_TOKEN" required>
+            <input id="adminToken" type="password" autocomplete="off" placeholder="输入管理员令牌" required>
             <button id="toggleTokenButton" class="field-icon" type="button" title="显示令牌" aria-label="显示令牌">
               <svg class="eye-open" aria-hidden="true" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
               <svg class="eye-closed" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.7 10.7 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2 3"/><path d="M6.6 6.6C3.6 8.5 2 12 2 12s3.5 8 10 8a9.8 9.8 0 0 0 4.1-.9"/></svg>
             </button>
           </div>
           <button id="connectButton" class="button primary full" type="submit">
-            <span>连接服务</span>
+            <span>进入管理台</span>
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
           </button>
+        <p class="auth-footnote"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg>登录会话有效期 12 小时，可随时断开连接。</p>
         </form>
       </section>
 
       <section id="schoolsView" class="content-view" hidden>
         <div class="metric-strip" aria-label="配置概览">
-          <div><span>学校</span><strong id="schoolCount">0</strong><small>所已配置</small></div>
-          <div><span>学期</span><strong id="termCount">0</strong><small>个模板</small></div>
-          <div><span>节次</span><strong id="periodCount">0</strong><small>条时间记录</small></div>
-          <div class="metric-status"><span>配置状态</span><strong><i></i>服务正常</strong><small>数据已从服务器载入</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>已配置学校</span><strong id="schoolCount">0</strong><small>教学配置的起点</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg></span><span>学期模板</span><strong id="termCount">0</strong><small>统一管理学期安排</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>教学节次</span><strong id="periodCount">0</strong><small>学校共用的时间表</small></div>
+          <div class="metric-card metric-status"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>配置连接</span><strong><i></i>已同步</strong><small>本次配置已载入</small></div>
         </div>
 
         <div class="section-toolbar">
-          <div><h2>学校与学期</h2><p>选择学校后维护元数据和学期模板。</p></div>
+          <div><h2>学校与学期</h2><p>让每一所学校，都有准确的时间表。</p></div>
           <button id="newSchoolButton" class="button primary" type="button">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             新增学校
@@ -107,6 +111,7 @@
 
         <section class="management-panel">
           <aside class="school-browser">
+            <div class="browser-heading"><h3>学校目录</h3><span id="schoolListCount" class="count-badge">0</span></div>
             <div class="search-field">
               <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
               <input id="schoolSearch" type="search" placeholder="搜索学校" aria-label="搜索学校">
@@ -132,7 +137,7 @@
 
               <details class="metadata-section">
                 <summary>
-                  <span><strong>学校信息</strong><small>名称、稳定 ID 与内部备注</small></span>
+                  <span><strong>学校信息与节次</strong><small>展开编辑名称、备注和上课时间</small></span>
                   <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
                 </summary>
                 <div class="form-grid school-fields">
@@ -147,7 +152,7 @@
                   </div>
                   <div class="table-head period-head"><span>节次</span><span>开始时间</span><span>结束时间</span><span></span></div>
                   <div id="schoolPeriodList" class="period-list"></div>
-                  <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button></div>
+                  <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button><button id="deleteSchoolButton" class="button danger" type="button">删除学校</button></div>
                 </div>
               </details>
 
@@ -188,7 +193,8 @@
           <button id="saveCalendarButton" class="button primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>保存调休</button>
         </div>
         <section class="settings-panel calendar-panel">
-          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="importCalendarButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入国务院安排</button><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div class="calendar-import-toolbar"><label>导入学年（当年 9 月至次年 7 月）<input id="calendarAcademicYear" type="number" min="2000" max="2100" step="1" aria-label="学年起始年份"></label><button id="importCalendarButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入国务院安排</button><p>导入后加入草稿，保留已有日期。调课日需选定课程来源，再保存生效。</p></div>
           <div id="calendarImportNote" class="inline-empty" hidden></div>
           <div id="globalAdjustmentList" class="adjustment-list"></div>
           <div id="globalAdjustmentEmpty" class="inline-empty">尚未配置统一调休</div>
@@ -197,11 +203,30 @@
 
       <section id="statsView" class="content-view" hidden>
         <div class="metric-strip stats-metrics" aria-label="使用统计">
-          <div><span>已注册用户</span><strong id="totalUserCount">0</strong><small>台设备</small></div>
-          <div><span>覆盖学校</span><strong id="activeSchoolCount">0</strong><small>所有使用记录</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span><span>活跃使用设备</span><strong id="totalUserCount">0</strong><small>近 30 天 · 按安装去重</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>覆盖学校</span><strong id="activeSchoolCount">0</strong><small>近 30 天有设备使用</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4M12 17h.01"/></svg></span><span>未关联学校</span><strong id="unassignedUserCount">0</strong><small>等待设备关联学校</small></div>
+
         </div>
-        <div class="section-toolbar"><div><h2>各学校使用人数</h2><p>按已注册且启用的设备去重统计。</p></div><button id="refreshStatsButton" class="button secondary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14"/><path d="M20 4v7h-7"/></svg>刷新</button></div>
-        <section class="settings-panel stats-panel"><div class="stats-head"><span>学校</span><span>学校 ID</span><span>使用人数</span></div><div id="statsList" class="stats-list"></div></section>
+        <div class="section-toolbar"><div><h2>学校使用概览</h2><p id="statsUpdatedAt">近 30 天的设备使用情况</p></div><button id="refreshStatsButton" class="button secondary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14M20 4v7h-7"/></svg>刷新数据</button></div>
+        <div class="stats-overview">
+          <section class="settings-panel stats-panel">
+            <div class="card-heading"><div><h3>各学校使用人数</h3><p>以当前课表关联的学校为准</p></div><span class="soft-label">设备数</span></div>
+            <div class="stats-head"><span>学校</span><span>学校 ID</span><span>使用设备</span></div><div id="statsList" class="stats-list"></div>
+            <div class="stats-footnote">切换学校后更新归属；重装 App 可能产生新的安装记录。</div>
+          </section>
+          <section class="settings-panel school-share-panel">
+            <div class="card-heading"><div><h3>学校占比</h3><p>全部活跃设备的学校分布</p></div></div>
+            <div id="schoolShareChart" class="school-share-chart" role="img" aria-label="暂无统计数据"><div><strong id="chartDeviceCount">0</strong><span>活跃设备</span></div></div>
+            <div id="schoolShareLegend" class="chart-legend"></div>
+          </section>
+        </div>
+        <div class="section-toolbar distribution-toolbar"><div><h2>设备洞察</h2><p>为系统适配与设备支持提供参考</p></div><label class="filter-label"><span>筛选学校</span><select id="statsSchoolFilter"><option value="">全部学校</option></select></label></div>
+        <div class="distribution-grid">
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>系统版本</h3><p>设备当前使用的操作系统</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></span></div><div id="systemVersionStats" class="distribution-list"></div></section>
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>设备型号</h3><p>系统提供的硬件型号标识</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span></div><div id="deviceModelStats" class="distribution-list"></div></section>
+        </div>
+        <p class="stats-explanation">仅统计已同意基础隐私协议并上报的设备，与实时通知开关无关。<span id="unassignedStats"></span></p>
       </section>
 
       <section id="apnsView" class="content-view" hidden>
@@ -224,13 +249,12 @@
               <label>调度间隔<input id="apnsTickSeconds" type="number" min="0.5" max="3600" step="0.5"><span class="input-suffix">秒</span></label>
             </div>
           </section>
-
-          <section class="settings-panel">
-            <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 12.8a10 10 0 0 1 14 0"/><path d="M2 9.2a14 14 0 0 1 20 0"/></svg></span><div><h3>自动广播频道</h3><p>每所学校的生产与沙盒频道由服务自动创建和维护。</p></div><button id="reconcileChannelsButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14"/><path d="M20 4v7h-7"/></svg>同步频道</button></div>
-            <div class="table-head channel-head"><span>学校与环境</span><span>频道 ID</span><span>状态</span></div>
-            <div id="apnsChannelList" class="apns-channel-list"></div>
-            <div id="channelEmpty" class="inline-empty">尚未添加广播频道</div>
-          </section>
+          <aside class="apns-guide">
+            <span class="section-kicker">配置指南</span><h3>让提醒，准时抵达。</h3>
+            <p>连接 Apple 推送服务，为支持远程提醒的设备安排实时通知。</p>
+            <ol><li><strong>准备推送密钥</strong><span>将 .p8 密钥文件放在服务器可读取的位置。</span></li><li><strong>核对应用信息</strong><span>Key ID、Team ID 与 Bundle ID 需对应同一个应用。</span></li><li><strong>保存后生效</strong><span>关闭推送时，将四项凭据全部清空并保存。</span></li></ol>
+            <div class="guide-note">密钥文件保留在服务器，管理台只保存文件路径。</div>
+          </aside>
         </div>
       </section>
     </main>
@@ -255,6 +279,6 @@
     </form>
   </dialog>
 
-  <script src="/static/admin.js"></script>
+  <script src="/static/admin.js?v=20260923-ui2"></script>
 </body>
 </html>

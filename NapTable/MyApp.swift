@@ -3,7 +3,6 @@ import SwiftUI
 @main
 struct MyApp: App {
     @StateObject private var store = AppStore()
-    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         #if os(iOS)
@@ -15,33 +14,21 @@ struct MyApp: App {
         // token for the activity the system just created only reaches a
         // running app, so the observers start here rather than on first view.
         if #available(iOS 17.2, *) {
-            LiveActivityPushService.shared.activate()
+            if PrivacyPolicy.liveAllowed() {
+                LiveActivityPushService.shared.activate()
+            } else {
+                // An upgraded app may still have older local reservations or
+                // server registration; clear them before showing the privacy gate.
+                NativeLiveActivityController.shared.setEnabled(false)
+            }
         }
         #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppEntryView()
                 .environmentObject(store)
-                .task {
-                    store.seedSampleIfNeeded()
-                    await ScheduleSharingService.shared.refreshCurrentTerms(in: store)
-                    store.refreshForToday()
-                }
-                .onChange(of: scenePhase) { phase in
-                    // `WeekUtil.checkWeek()` ran on every foreground: a week can
-                    // roll over while the app sits in the background.
-                    if phase == .active {
-                        store.refreshForToday()
-                        Task { await ScheduleSharingService.shared.refreshCurrentTerms(in: store) }
-                        #if os(iOS)
-                        if #available(iOS 17.2, *) {
-                            Task { await LiveActivityPushService.shared.refreshStatus() }
-                        }
-                        #endif
-                    }
-                }
         }
         #if os(macOS)
         .defaultSize(width: 900, height: 720)

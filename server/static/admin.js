@@ -6,6 +6,9 @@
   const $ = id => document.getElementById(id);
   const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
   const escapeAttr = escapeHTML;
+  const today = new Date();
+  $("consoleDate").textContent = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(today);
+  $("calendarAcademicYear").value = today.getFullYear() - (today.getMonth() < 8 ? 1 : 0);
   let noticeTimer;
 
   const notice = (message, kind = "") => {
@@ -30,6 +33,7 @@
 
   const updateMetrics = () => {
     $("schoolCount").textContent = state.schools.length;
+    $("schoolListCount").textContent = state.schools.length;
     $("termCount").textContent = state.schools.reduce((sum, school) => sum + (school.terms?.length || 0), 0);
     $("periodCount").textContent = state.schools.reduce((sum, school) => sum + (school.periods?.length || 0), 0);
   };
@@ -42,25 +46,45 @@
     $("disconnectButton").hidden = !connected;
     document.querySelectorAll(".nav-item").forEach(item => { item.disabled = !connected; });
     if (connected) showView(state.view);
-    else document.querySelectorAll(".content-view").forEach(view => { view.hidden = true; });
+    else {
+      setNavigation(false);
+      document.querySelectorAll(".content-view").forEach(view => { view.hidden = true; });
+      $("pageTitle").textContent = "管理工作区";
+      $("breadcrumbCurrent").textContent = "登录";
+      $("pageSubtitle").textContent = "一处管理，让校园时间保持同步。";
+    }
   };
   const viewCopy = {
     schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
-    stats: ["使用统计", "查看各学校已注册设备的使用人数。"],
-    apns: ["APNs 推送", "配置推送凭据并管理学校广播频道。"]
+    stats: ["使用统计", "查看近 30 天各学校使用设备数、系统版本和设备型号。"],
+    apns: ["APNs 推送", "配置实况通知的推送凭据。"]
   };
+  const mobileNavigation = window.matchMedia("(max-width: 760px)");
+  const setNavigation = open => {
+    document.body.classList.toggle("nav-open", open);
+    $("menuButton").setAttribute("aria-expanded", String(open));
+    $("sidebar").inert = mobileNavigation.matches && !open;
+    document.querySelector(".main-content").inert = mobileNavigation.matches && open;
+  };
+  mobileNavigation.addEventListener("change", () => setNavigation(false));
   const showView = view => {
     if (!viewCopy[view]) return;
     state.view = view;
-    document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === view));
+    document.querySelectorAll(".nav-item").forEach(item => {
+      item.classList.toggle("active", item.dataset.view === view);
+      if (item.dataset.view === view) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    });
     document.querySelectorAll(".content-view").forEach(element => {
       element.hidden = !state.authenticated || element.id !== `${view}View`;
     });
     $("pageTitle").textContent = viewCopy[view][0];
     $("breadcrumbCurrent").textContent = viewCopy[view][0];
     $("pageSubtitle").textContent = viewCopy[view][1];
-    document.body.classList.remove("nav-open");
+    const wasOpen = document.body.classList.contains("nav-open");
+    setNavigation(false);
+    if (wasOpen) $("menuButton").focus();
   };
   const addMinutes = (time, minutes) => {
     const [hours, mins] = String(time || "00:00").split(":").map(Number);
@@ -84,6 +108,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = `school-item ${state.school?.id === school.id ? "active" : ""}`;
+      button.setAttribute("aria-pressed", String(state.school?.id === school.id));
       button.innerHTML = `<span class="school-avatar">${escapeHTML(school.name.slice(0, 1) || school.id.slice(0, 1))}</span><span><strong>${escapeHTML(school.name)}</strong><small>${escapeHTML(school.id)} · ${(school.terms || []).length} 个学期</small></span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>`;
       button.onclick = () => selectSchool(school.id);
       list.append(button);
@@ -189,7 +214,7 @@
   const adjustmentRows = () => [...$("globalAdjustmentList").querySelectorAll(".adjustment-row")].map(row => {
     const kind = row.querySelector('[data-field="kind"]').value;
     const value = { date: row.querySelector('[data-field="date"]').value, kind, note: row.querySelector('[data-field="note"]').value.trim() };
-    if (kind === "swap") value.source = row.querySelector('[data-field="source"]').value;
+    if (kind === "swap") value.source = row.querySelector('[data-field="source"]')?.value || "";
     return value;
   });
   const candidateChips = (item, swap) => {
@@ -205,9 +230,10 @@
     list.replaceChildren();
     (state.calendar.adjustments || []).forEach((item, index) => {
       const row = document.createElement("div");
-      row.className = "adjustment-row";
       const swap = item.kind === "swap";
-      row.innerHTML = `<label>日期<input data-field="date" type="date" value="${escapeAttr(item.date || "")}"></label><label>类型<select data-field="kind"><option value="off"${swap ? "" : " selected"}>放假</option><option value="swap"${swap ? " selected" : ""}>调课</option></select></label><label>上哪天的课<input data-field="source" type="date" value="${escapeAttr(item.source || "")}"${swap ? "" : " disabled"}>${candidateChips(item, swap)}</label><label>说明<input data-field="note" maxlength="80" placeholder="例如 国庆节" value="${escapeAttr(item.note || "")}"></label><button class="remove-button" type="button" aria-label="删除这条调休" title="删除调休"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg></button>`;
+      row.className = `adjustment-row ${swap ? "is-swap" : "is-off"}`;
+      row.innerHTML = `<label>日期<input data-field="date" type="date" value="${escapeAttr(item.date || "")}"></label><label>类型<select data-field="kind"><option value="off"${swap ? "" : " selected"}>放假</option><option value="swap"${swap ? " selected" : ""}>调课</option></select></label>${swap ? `<label>上哪天的课<input data-field="source" type="date" value="${escapeAttr(item.source || "")}"></label>` : ""}<label class="adjustment-note">说明<input data-field="note" maxlength="80" placeholder="例如 国庆节" value="${escapeAttr(item.note || "")}"></label><button class="remove-button" type="button" aria-label="删除这条调休" title="删除调休"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg></button>`;
+      row.insertAdjacentHTML("beforeend", candidateChips(item, swap));
       if (swap && !item.source) row.classList.add("needs-source");
       row.querySelectorAll(".candidate-chip").forEach(chip => {
         chip.onclick = () => {
@@ -244,19 +270,75 @@
     const schools = state.stats.schools || [];
     $("totalUserCount").textContent = state.stats.totalUsers || 0;
     $("activeSchoolCount").textContent = schools.filter(school => school.users > 0).length;
+    $("unassignedUserCount").textContent = state.stats.unassignedUsers || 0;
+    const updatedAt = new Date(state.stats.updatedAt);
+    $("statsUpdatedAt").textContent = Number.isNaN(updatedAt.getTime()) ? "近 30 天的设备使用情况" : `近 30 天 · 更新于 ${updatedAt.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}`;
     const list = $("statsList");
     list.replaceChildren();
     schools.forEach(school => {
       const row = document.createElement("div");
       row.className = "stats-row";
-      row.innerHTML = `<strong>${escapeHTML(school.name)}</strong><code>${escapeHTML(school.id)}</code><span>${Number(school.users || 0).toLocaleString("zh-CN")}</span>`;
+      row.innerHTML = `<div class="school-cell"><span class="school-avatar" aria-hidden="true">${escapeHTML(school.name.slice(0, 1))}</span><strong>${escapeHTML(school.name)}</strong></div><code>${escapeHTML(school.id)}</code><span>${Number(school.users || 0).toLocaleString("zh-CN")}</span>`;
       list.append(row);
     });
+    $("unassignedStats").textContent = `未关联当前学校目录：${Number(state.stats.unassignedUsers || 0)} 台`;
+    const filter = $("statsSchoolFilter");
+    const selected = filter.value;
+    filter.replaceChildren(new Option("全部学校", ""));
+    schools.forEach(school => filter.add(new Option(school.name, school.id)));
+    filter.value = schools.some(school => school.id === selected) ? selected : "";
+    renderDeviceStats();
+    renderSchoolShare();
     if (!schools.length) {
       const empty = document.createElement("div");
       empty.className = "inline-empty";
       empty.textContent = "尚无学校统计数据";
       list.append(empty);
+    }
+  };
+
+  const renderSchoolShare = () => {
+    const total = Number(state.stats.totalUsers || 0);
+    const rows = (state.stats.schools || []).filter(school => school.users > 0).map(school => ({ name: school.name, users: Number(school.users) }));
+    if (state.stats.unassignedUsers > 0) rows.push({ name: "未关联学校", users: Number(state.stats.unassignedUsers) });
+    const colors = ["#527c48", "#9ab76e", "#d0dba5", "#8ea79b", "#c6b789", "#8b9cae"];
+    const legend = $("schoolShareLegend");
+    legend.replaceChildren();
+    $("chartDeviceCount").textContent = total.toLocaleString("zh-CN");
+    const stops = [];
+    let start = 0;
+    rows.forEach((item, index) => {
+      const percent = total ? item.users / total * 100 : 0;
+      const color = colors[index % colors.length];
+      stops.push(`${color} ${start}% ${Math.min(100, start + percent)}%`);
+      start += percent;
+      const row = document.createElement("div");
+      row.className = "legend-row";
+      row.innerHTML = `<i style="background:${color}" aria-hidden="true"></i><span>${escapeHTML(item.name)}</span><strong>${percent.toFixed(1)}%</strong>`;
+      legend.append(row);
+    });
+    $("schoolShareChart").style.background = total && stops.length ? `conic-gradient(${stops.join(",")})` : "#edf1e7";
+    $("schoolShareChart").setAttribute("aria-label", total ? rows.map(item => `${item.name} ${item.users} 台`).join("，") : "暂无使用数据");
+    if (!rows.length) legend.innerHTML = '<p class="chart-empty">等待第一台设备<br>用户同意基础协议后开始统计</p>';
+  };
+
+  const renderDeviceStats = () => {
+    const selected = $("statsSchoolFilter").value;
+    const stats = (state.stats.schools || []).find(school => school.id === selected) || state.stats;
+    for (const [id, key] of [["systemVersionStats", "systemVersions"], ["deviceModelStats", "deviceModels"]]) {
+      const list = $(id);
+      list.replaceChildren();
+      const items = stats[key] || [];
+      const total = items.reduce((sum, item) => sum + Number(item.users || 0), 0);
+      for (const item of items) {
+        const count = Number(item.users || 0);
+        const percent = total ? Math.max(0, Math.min(100, count / total * 100)) : 0;
+        const row = document.createElement("div");
+        row.className = "distribution-row";
+        row.innerHTML = `<strong>${escapeHTML(item.name)}</strong><span><b>${count.toLocaleString("zh-CN")} 台</b>${percent.toFixed(1)}%</span><div class="distribution-track" aria-hidden="true"><i style="width:${percent}%"></i></div>`;
+        list.append(row);
+      }
+      if (!items.length) list.innerHTML = '<div class="distribution-empty"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 20h16M7 16v-4M12 16V5M17 16V9"/></svg><strong>还没有设备数据</strong><span>设备上报后，分布会显示在这里</span></div>';
     }
   };
 
@@ -273,18 +355,7 @@
     $("apnsStatus").className = `badge ${configured ? "configured" : ""}`;
     $("apnsNavDot").classList.toggle("configured", configured);
     $("apnsNavDot").setAttribute("aria-label", configured ? "已配置" : "未配置");
-    const list = $("apnsChannelList");
-    list.replaceChildren();
-    Object.entries(config.channels || {}).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, raw]) => {
-      const channel = typeof raw === "object" ? (raw.channelID || raw.channelId || "") : raw;
-      const [environment, schoolID] = key.split(":", 2);
-      const school = state.schools.find(item => item.id === schoolID);
-      const row = document.createElement("div");
-      row.className = "apns-channel-row readonly";
-      row.innerHTML = `<span><strong>${escapeHTML(school?.name || schoolID || key)}</strong><small>${environment === "sandbox" ? "沙盒" : "生产"} · ${escapeHTML(key)}</small></span><code title="${escapeAttr(channel)}">${escapeHTML(channel)}</code><span class="channel-status">正常</span>`;
-      list.append(row);
-    });
-    $("channelEmpty").hidden = list.children.length > 0;
+
   };
   const formApns = () => ({
     keyPath: $("apnsKeyPath").value.trim(), keyID: $("apnsKeyID").value.trim(),
@@ -345,10 +416,13 @@
     const button = $("importCalendarButton");
     setLoading(button, true);
     try {
-      const result = await request("/v1/admin/calendar/import", { method: "POST", body: JSON.stringify({}) });
+      const academicYear = Number($("calendarAcademicYear").value);
+      if (!Number.isInteger(academicYear) || academicYear < 2000 || academicYear > 2100) throw new Error("请填写 2000–2100 的学年起始年份");
+      const result = await request("/v1/admin/calendar/import", { method: "POST", body: JSON.stringify({ academicYear }) });
       const current = adjustmentRows();
       const seen = new Set(current.map(item => item.date));
       const added = (result.proposed || []).filter(item => !seen.has(item.date));
+      if (current.length + added.length > 200) throw new Error("最多配置 200 条调休，请先清理过期日期");
       state.calendar.adjustments = [...current, ...added].sort((a, b) => a.date.localeCompare(b.date));
       renderCalendar();
       const pending = added.filter(item => item.needsSource).length;
@@ -360,6 +434,7 @@
           + (kept ? `，保留已有 ${kept} 条` : "")
           + (pending ? `。其中 ${pending} 个补课日需要先选定上哪天的课，再点“保存调休”。` : "。确认后点“保存调休”写入。")
         : `已读取 ${(result.years || []).map(year => year.year).join("、")} 年安排，没有新的调休需要添加。`;
+      if (result.errors?.length) note.textContent += ` 部分年份未获取，请稍后重新导入补齐：${result.errors.join("；")}`;
       (result.errors || []).forEach(error => notice(error, "error"));
       if (!result.errors?.length) notice(added.length ? `导入 ${added.length} 条待确认调休` : "调休已是最新", "success");
     } catch (error) { notice(error.message, "error"); }
@@ -371,18 +446,7 @@
     try {
       const saved = await request("/v1/admin/apns", { method: "POST", body: JSON.stringify(formApns()) });
       fillApns(saved);
-      const errors = saved.channelSync?.errors || [];
-      notice(errors.length ? `配置已保存，${errors.length} 个频道同步失败` : "APNs 配置与学校频道已保存", errors.length ? "error" : "success");
-    } catch (error) { notice(error.message, "error"); }
-    finally { setLoading(button, false); }
-  };
-  const reconcileChannels = async () => {
-    const button = $("reconcileChannelsButton");
-    setLoading(button, true);
-    try {
-      const result = await request("/v1/admin/apns/reconcile", { method: "POST", body: "{}" });
-      fillApns(result.config || state.apns);
-      notice(result.errors?.length ? `${result.errors.length} 个频道同步失败` : `频道同步完成，新建 ${result.created?.length || 0} 个`, result.errors?.length ? "error" : "success");
+      notice("APNs 配置已保存", "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
@@ -400,15 +464,40 @@
     $("newSchoolForm").reset(); $("newSchoolDialog").showModal();
     requestAnimationFrame(() => $("newSchoolId").focus());
   };
-  const createSchool = event => {
+  const createSchool = async event => {
     event.preventDefault();
     const id = $("newSchoolId").value.trim();
     const name = $("newSchoolName").value.trim();
     if (state.schools.some(item => item.id === id)) return notice("学校 ID 已存在", "error");
-    const school = { id, name, note: "", periods: [{ id: 1, name: "第1节", start: "08:00", end: "08:50" }], currentTermID: null, terms: [] };
-    state.schools.push(school); updateMetrics(); $("newSchoolDialog").close(); selectSchool(school.id);
-    document.querySelector(".metadata-section").open = true;
-    notice("学校已加入编辑区，请保存学校配置", "success");
+    const button = event.currentTarget.querySelector('[type="submit"]');
+    setLoading(button, true);
+    try {
+      const school = await request(`/v1/schools/${encodeURIComponent(id)}`, {
+        method: "POST", body: JSON.stringify({ name, note: "", periods: [{ id: 1, name: "第1节", start: "08:00", end: "08:50" }] })
+      });
+      state.schools.push(school); updateMetrics(); $("newSchoolDialog").close();
+      $("schoolSearch").value = ""; selectSchool(school.id);
+      document.querySelector(".metadata-section").open = true;
+      notice("学校已创建，请继续配置节次与学期", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
+  const deleteSchool = async () => {
+    const school = state.school;
+    if (!school || !confirm(`确定删除“${school.name}”及其全部学期配置？已有分享快照会保留。`)) return;
+    const button = $("deleteSchoolButton");
+    setLoading(button, true);
+    try {
+      await request(`/v1/schools/${encodeURIComponent(school.id)}`, { method: "DELETE" });
+      state.schools = state.schools.filter(item => item.id !== school.id);
+      if (state.school?.id === school.id) {
+        state.school = null; state.term = null;
+        $("editor").hidden = true; $("editorEmpty").hidden = false;
+      }
+      renderSchools(); updateMetrics();
+      notice("学校及学期配置已删除", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
   };
   const loadConsole = async () => {
     const [catalogue, apns, calendar, stats] = await Promise.all([
@@ -419,6 +508,8 @@
     state.school = null; state.term = null; state.calendar = calendar; state.stats = stats;
     $("saveApnsButton").disabled = false; $("saveCalendarButton").disabled = false;
     fillApns(apns); renderCalendar(); renderStats(); renderSchools(); updateMetrics(); updateConnectionUI(true);
+    if (state.schools.length) selectSchool(state.schools[0].id);
+    else { $("editor").hidden = true; $("editorEmpty").hidden = false; }
   };
   const signedOut = () => {
     state.authenticated = false; state.schools = []; state.school = null; state.term = null;
@@ -473,8 +564,9 @@
   $("saveCalendarButton").onclick = saveCalendar;
   $("importCalendarButton").onclick = importCalendar;
   $("saveApnsButton").onclick = saveApns;
-  $("reconcileChannelsButton").onclick = reconcileChannels;
+  $("deleteSchoolButton").onclick = deleteSchool;
   $("refreshStatsButton").onclick = refreshStats;
+  $("statsSchoolFilter").onchange = renderDeviceStats;
   $("schoolSearch").oninput = renderSchools;
   $("addSchoolPeriodButton").onclick = () => {
     state.school.periods = periodRows();
@@ -495,8 +587,20 @@
     $("toggleTokenButton").title = revealed ? "显示令牌" : "隐藏令牌";
     $("toggleTokenButton").setAttribute("aria-label", revealed ? "显示令牌" : "隐藏令牌");
   };
-  $("menuButton").onclick = () => document.body.classList.add("nav-open");
-  $("sidebarScrim").onclick = () => document.body.classList.remove("nav-open");
+  const closeNavigation = () => {
+    const wasOpen = document.body.classList.contains("nav-open");
+    setNavigation(false);
+    if (wasOpen) $("menuButton").focus();
+  };
+  $("menuButton").onclick = () => {
+    setNavigation(!document.body.classList.contains("nav-open"));
+    if (document.body.classList.contains("nav-open")) {
+      ($("sidebar").querySelector(".nav-item.active:not(:disabled)") || $("sidebar").querySelector(".brand")).focus();
+    }
+  };
+  $("sidebarScrim").onclick = closeNavigation;
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeNavigation(); });
+  setNavigation(false);
   $("newSchoolDialog").addEventListener("click", event => { if (event.target === $("newSchoolDialog")) $("newSchoolDialog").close(); });
   updateConnectionUI(false);
   restore();

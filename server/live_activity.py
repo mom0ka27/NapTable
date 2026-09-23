@@ -212,12 +212,18 @@ class LiveActivityService:
     # -- lifecycle ---------------------------------------------------------
 
     def start(self):
+        if hasattr(self, "v2"):
+            self.v2.start()
+            return
         if self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, name="live-activity-dispatch", daemon=True)
         self._thread.start()
 
     def stop(self):
+        if hasattr(self, "v2"):
+            self.v2.stop()
+            return
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
@@ -317,7 +323,7 @@ class LiveActivityService:
             rows = self.db.execute("SELECT date_key,channel_id FROM la_day_channels WHERE school_id=? AND environment=? AND bundle_id=? AND date_key>=? AND date_key<=?", (school, environment, bundle, today.isoformat(), (today + timedelta(days=1)).isoformat())).fetchall()
         return {"channels": {r[0]: r[1] for r in rows}, "pushConfigured": self.client is not None}
 
-    def register(self, value):
+    def register(self, value, secret=""):
         """Create a device row, or refresh the one identified by its secret."""
         start_token = str(value.get("startToken", "")).strip()
         if start_token and not _token_is_hex(start_token):
@@ -339,6 +345,8 @@ class LiveActivityService:
             row = self._device(device_id)
             if row is None:
                 raise PlanError("unknown deviceID")
+            if self.authenticate(device_id, secret) is None:
+                raise PlanError("invalid device secret")
             with self.lock:
                 self.db.execute(
                     "UPDATE la_devices SET start_token=?,environment=?,bundle_id=?,time_zone=?,school_id=?,term_id=?,channel_id=?,supports_broadcast=?,broadcast_enabled=?,enabled=1,updated_at=? WHERE device_id=?",
@@ -545,8 +553,6 @@ class LiveActivityService:
                 if date < term_start or date >= term_end:
                     continue
                 adjustment = adjustments.get(date.isoformat())
-                if adjustment and adjustment.get("kind") == "off":
-                    continue
                 last_end = max((str(p.get("end", "")) for p in periods), default="")
                 for index, period in enumerate(periods, 1):
                     for phase, clock in (("started", period.get("start")), ("ended", period.get("end"))):
@@ -806,6 +812,26 @@ PREFIX = "/v1/live-activity"
 def handle(handler, service, method, path):
     """Answer a Live Activity request, or return False so the caller falls
     through to its own routes."""
+    if service is not None and hasattr(service, "v2"):
+        try:
+            from . import live_activity_v2
+        except ImportError:
+            import live_activity_v2
+        if live_activity_v2.handle(handler, service.v2, method, path):
+            return True
+        if path.startswith(PREFIX):
+            # Keep authenticated deletion available for old installations.
+            parts = path[len(PREFIX):].strip('/').split('/')
+            if method == "DELETE" and len(parts) == 2 and parts[0] == "devices":
+                device = service.authenticate(parts[1], handler.headers.get("X-Device-Secret", ""))
+                if device is None:
+                    return _send(handler, 403, {"error": "invalid device secret"})
+                with service.lock:
+                    service.db.execute("UPDATE la_devices SET enabled=0,start_token='' WHERE device_id=?", (parts[1],))
+                    service.db.execute("UPDATE la_plan SET state='cancelled' WHERE device_id=? AND state='pending'", (parts[1],))
+                    service.db.commit()
+                return _send(handler, 200, {"forgotten": True})
+            return _send(handler, 426, {"error": "请升级 NapTable；旧版实时活动推送已停用。", "protocolVersion": 2})
     if service is None or not path.startswith(PREFIX):
         return False
     rest = path[len(PREFIX):]
@@ -815,7 +841,7 @@ def handle(handler, service, method, path):
         if method == "POST" and rest == "/day-channels":
             return _send(handler, 200, service.day_config(handler.body()))
         if method == "POST" and rest == "/devices":
-            return _send(handler, 200, service.register(handler.body()))
+            return _send(handler, 200, service.register(handler.body(), handler.headers.get("X-Device-Secret", "")))
         parts = [part for part in rest.split("/") if part]
         if len(parts) >= 2 and parts[0] == "devices":
             device_id = parts[1]
@@ -897,7 +923,13 @@ def build_service(db, lock, environ=None, config=None):
     except (TypeError, ValueError):
         tick = 5.0
     channels = _channels_from_value(source.get("channels", source.get("channels_json", {})))
-    return LiveActivityService(db, lock, client=client, tick=tick, channels=channels)
+    service = LiveActivityService(db, lock, client=client, tick=tick, channels=channels)
+    try:
+        from .live_activity_v2 import Service
+    except ImportError:
+        from live_activity_v2 import Service
+    service.v2 = Service(service)
+    return service
 
 
 def apply_config(service, config):
@@ -907,5 +939,7 @@ def apply_config(service, config):
         tick = float(config.get("tickSeconds", config.get("tick_seconds", 5)) or 5)
     except (TypeError, ValueError):
         tick = 5.0
+    if hasattr(service, "v2"):
+        service.v2.validate_client(client)
     service.reconfigure(client=client, tick=tick,
                         channels=_channels_from_value(config.get("channels", {})))

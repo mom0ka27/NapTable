@@ -30,7 +30,10 @@ def opener(payload=ARRANGEMENT, fail_first=False):
         calls.append(url)
         if fail_first and len(calls) == 1:
             raise OSError("connection reset")
-        return Response(json.dumps(payload).encode())
+        value = payload
+        if "jiejiariapi.com" in url and "days" in payload:
+            value = {row["date"]: row for row in payload["days"]}
+        return Response(json.dumps(value).encode())
 
     open_url.calls = calls
     return open_url
@@ -41,13 +44,13 @@ class HolidayFetchTests(unittest.TestCase):
         result = holidays.fetch_year(2026, opener())
         self.assertEqual(result["year"], 2026)
         self.assertEqual(len(result["days"]), 4)
-        self.assertTrue(result["source"].endswith("2026.json"))
+        self.assertTrue(result["source"].endswith("2026"))
 
     def test_falls_back_to_the_mirror(self):
         open_url = opener(fail_first=True)
         result = holidays.fetch_year(2026, open_url)
         self.assertEqual(len(open_url.calls), 2)
-        self.assertIn("jsdelivr", result["source"])
+        self.assertIn("githubusercontent", result["source"])
 
     def test_every_mirror_failing_is_an_error(self):
         def broken(url, timeout=None): raise OSError("no route to host")
@@ -58,9 +61,30 @@ class HolidayFetchTests(unittest.TestCase):
         with self.assertRaises(holidays.HolidayError):
             holidays.fetch_year(2026, opener({"year": 2026}))
 
-    def test_skips_unparsable_days(self):
-        payload = {"days": [{"date": "not-a-date"}, {"date": "2026-10-01", "isOffDay": True}]}
-        self.assertEqual(len(holidays.fetch_year(2026, opener(payload))["days"]), 1)
+    def test_rejects_invalid_records(self):
+        for row in [
+            {"date": "2026-02-30", "name": "春节", "isOffDay": True},
+            {"date": "2025-10-01", "name": "国庆节", "isOffDay": True},
+            {"date": "2026-10-01", "name": "国庆节", "isOffDay": "false"},
+        ]:
+            with self.subTest(row=row), self.assertRaises(holidays.HolidayError):
+                holidays.fetch_year(2026, opener({"year": 2026, "days": [row]}))
+
+    def test_observances_are_not_makeup_days(self):
+        days = holidays._clean([
+            {"date": "2026-02-07", "name": "小年", "isOffDay": False},
+            {"date": "2026-10-09", "name": "国庆节", "isOffDay": False},
+            {"date": "2026-10-10", "name": "国庆节", "isOffDay": False},
+        ], 2026)
+        self.assertEqual([row["date"] for row in days], ["2026-10-10"])
+
+    def test_invalid_primary_falls_back(self):
+        fallback = opener()
+        def fetch(url):
+            if "jiejiariapi.com" in url:
+                return io.BytesIO(b'{"bad": {}}')
+            return fallback(url)
+        self.assertIn("githubusercontent", holidays.fetch_year(2026, fetch)["source"])
 
 
 class HolidayPlanTests(unittest.TestCase):
@@ -142,6 +166,35 @@ class ImportEndpointTests(JSONClientMixin, unittest.TestCase):
     def test_a_bad_year_list_is_rejected(self):
         self.req("POST", "/v1/admin/calendar/import", {"years": ["昨天"]}, self.head(), expect=400)
         self.req("POST", "/v1/admin/calendar/import", {"years": [1900]}, self.head(), expect=400)
+
+    def test_academic_year_filters_and_preserves_missing_year_warning(self):
+        def fetch(year):
+            if year == 2027:
+                raise holidays.HolidayError("2027 年尚未发布")
+            return {"year": year, "source": "test://2026", "papers": [], "days": [
+                {"date": "2026-08-01", "name": "假期", "isOffDay": True},
+                {"date": "2026-10-01", "name": "国庆节", "isOffDay": True},
+            ]}
+        holidays.fetch_year = fetch
+        result = self.req("POST", "/v1/admin/calendar/import", {"academicYear": 2026}, self.head())
+        self.assertEqual([r["date"] for r in result["proposed"]], ["2026-10-01"])
+        self.assertEqual(result["endDate"], "2027-07-31")
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(Handler.store.global_calendar()["adjustments"], [])
+        saved = [{"date": "2026-10-01", "kind": "off", "note": "国庆节"},
+                 {"date": "2026-10-10", "kind": "swap", "source": "2026-10-02", "note": "补课"}]
+        before = self.req("GET", "/v1/schools")["schools"]
+        self.req("POST", "/v1/admin/calendar", {"adjustments": saved}, self.head())
+        after = self.req("GET", "/v1/schools")["schools"]
+        for old, new in zip(before, after):
+            for old_term, term in zip(old["terms"], new["terms"]):
+                self.assertEqual(term["adjustments"], saved)
+                self.assertGreater(term["version"], old_term["version"])
+
+    def test_invalid_academic_year_rejected(self):
+        for value in [True, "2026", 1999, 2026.5]:
+            self.req("POST", "/v1/admin/calendar/import", {"academicYear": value}, self.head(), expect=400)
+        self.req("POST", "/v1/admin/calendar/import", {"academicYear": 2026, "years": [2026]}, self.head(), expect=400)
 
     def test_every_source_failing_is_reported(self):
         def broken(year, opener=None): raise holidays.HolidayError("获取失败")

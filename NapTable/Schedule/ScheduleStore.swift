@@ -33,6 +33,11 @@ final class NativeScheduleStore: ObservableObject {
     /// so they stay out of the grid and are surfaced separately by the view.
     @Published private(set) var freeCourses: [NativeScheduleCourse] = []
 
+    private var viewedShareCode: String?
+    private var sharedWeek: Int?
+    var localSelectedWeek: Int? { app?.displayWeek }
+    var isReadOnly: Bool { viewedShareCode != nil }
+
     private weak var app: AppStore?
     private var bag = Set<AnyCancellable>()
 
@@ -56,12 +61,8 @@ final class NativeScheduleStore: ObservableObject {
     /// NapTable has no network step, but the surface calls this after a table or
     /// week change and expects the selection to be honoured.
     func load(semester: String?, week: String?, force: Bool) async {
-        if let semester, let id = Int(semester), id != app?.selectedTableId {
-            app?.selectTable(id)
-        }
-        if let week, let value = Int(week) {
-            app?.selectWeek(value)
-        }
+        if let semester { await selectSemester(semester) }
+        if let week { commitWeekSelection(week) }
         rebuild()
     }
 
@@ -76,13 +77,22 @@ final class NativeScheduleStore: ObservableObject {
     /// Synchronous week commit used by the swipe settle animation.
     func commitWeekSelection(_ week: String) {
         selectedWeek = week
-        if let value = Int(week) { app?.selectWeek(value) }
+        if let value = Int(week) {
+            if isReadOnly { sharedWeek = value } else { app?.selectWeek(value) }
+        }
         rebuild()
     }
 
     func selectSemester(_ value: String) async {
         selectedSemester = value
-        if let id = Int(value) { app?.selectTable(id) }
+        if value.hasPrefix("share:") {
+            viewedShareCode = String(value.dropFirst(6))
+            sharedWeek = nil
+        } else if let id = Int(value) {
+            viewedShareCode = nil
+            sharedWeek = nil
+            app?.selectTable(id)
+        }
         rebuild()
     }
 
@@ -94,14 +104,16 @@ final class NativeScheduleStore: ObservableObject {
     /// Live Activity). Everything NapTable renders is already in memory, so
     /// there is no load step and no session to check: any table with courses is
     /// "authenticated" as far as a local snapshot is concerned.
-    func snapshot() -> NativeScheduleSnapshot? {
+    func snapshot(useSharedNotifications: Bool = true) -> NativeScheduleSnapshot? {
         // Following a share means the companion surfaces show *that* person's
         // day. It carries their school's periods and semester anchor, so the
         // projection has to come from the share rather than the local table --
         // otherwise a timetable from another school lands in the wrong rows.
-        if let followed = ScheduleSharingService.shared.followedSchedule {
+        if useSharedNotifications, ScheduleSharingService.shared.sharedNotificationsEnabled,
+           let followed = ScheduleSharingService.shared.followedSchedule {
             let projection = projection(for: followed)
             return NativeScheduleSnapshot(
+                scheduleScope: Self.liveActivityScope(for: "share:" + (followed.meta.scheduleScope ?? followed.meta.code)),
                 version: 1,
                 completeSemester: true,
                 cancelled: false,
@@ -120,26 +132,30 @@ final class NativeScheduleStore: ObservableObject {
                 sourceLabel: followed.name,
                 schoolID: followed.meta.schoolID,
                 termID: followed.meta.termID,
-                timeZone: "Asia/Shanghai",
+                timeZone: followed.meta.timeZone,
                 error: nil
             )
         }
-        guard let app, let result, let calendar else { return nil }
+        guard let app else { return nil }
+        let local = localProjection(app)
         return NativeScheduleSnapshot(
+            scheduleScope: Self.liveActivityScope(for: "local:" + String(app.selectedTableId)),
             version: 1,
             completeSemester: true,
             cancelled: false,
             source: .cache,
             fetchedAt: lastUpdatedAt ?? Date(),
-            periods: periods,
-            data: result,
-            calendar: calendar,
+            periods: local.classTimes.enumerated().map {
+                NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
+            },
+            data: makeResult(local),
+            calendar: makeCalendar(local),
             auth: NativeScheduleAuth(
                 authenticated: !app.tables.isEmpty,
                 identity: app.selectedTable?.name,
                 account: String(app.selectedTableId)
             ),
-            sourceLabel: sourceLabel,
+            sourceLabel: nil,
             schoolID: app.selectedTable?.schoolID,
             termID: app.selectedTable?.termID,
             timeZone: app.selectedTable?.termTimezone,
@@ -153,6 +169,7 @@ final class NativeScheduleStore: ObservableObject {
     /// source courses. Every NapTable course is local and directly editable, so
     /// all of them round-trip as custom items.
     func loadScheduleEdits() async throws -> NativeScheduleEditState {
+        guard !isReadOnly else { throw ScheduleServiceError.server("共享课表只读") }
         guard let app else { return NativeScheduleEditState() }
         let custom = app.currentCourses.map { course in
             NativeScheduleCustomItem(
@@ -169,6 +186,7 @@ final class NativeScheduleStore: ObservableObject {
     }
 
     func saveScheduleEdits(_ edits: NativeScheduleEditState) async throws {
+        guard !isReadOnly else { throw ScheduleServiceError.server("共享课表只读") }
         guard let app else { return }
         let tableID = app.selectedTableId
         let incoming = Dictionary(
@@ -210,9 +228,18 @@ final class NativeScheduleStore: ObservableObject {
         max(1, (max(start, 1) + 1) / 2)
     }
 
+    private static func liveActivityScope(for key: String) -> String {
+        let storageKey = "naptable.liveActivity.scope." + key
+        if let saved = UserDefaults.standard.string(forKey: storageKey) { return saved }
+        let scope = UUID().uuidString
+        UserDefaults.standard.set(scope, forKey: storageKey)
+        return scope
+    }
+
     private static func makeNativeCourse(_ course: Course) -> NativeScheduleCourse {
         let start = course.isFreeTime ? nil : max(1, course.startTime)
         return NativeScheduleCourse(
+            liveActivitySourceID: course.id > 0 ? String(course.id) : nil,
             nativeId: nil,
             name: course.name,
             teacher: course.teacher,
@@ -260,27 +287,34 @@ final class NativeScheduleStore: ObservableObject {
     private func rebuild() {
         guard let app else { return }
 
-        // The grid renders whatever bell schedule the selected table uses.
-        let slots = app.classTimeList.enumerated().map { index, time in
-            ScheduleSlot(number: index + 1, start: time.start, end: time.end)
+        let shares = ScheduleSharingService.shared.sharedSchedules
+        let viewed = shares.first { $0.meta.code == viewedShareCode }
+        if viewed == nil { viewedShareCode = nil; sharedWeek = nil }
+        let display = viewed.map { projection(for: $0) } ?? localProjection(app)
+        let slots = display.classTimes.enumerated().map {
+            ScheduleSlot(number: $0.offset + 1, start: $0.element.start, end: $0.element.end)
         }
         ScheduleSlot.all = slots.isEmpty ? ScheduleSlot.fallback : slots
-
-        let tableID = String(app.selectedTableId)
-        if selectedSemester != tableID { selectedSemester = tableID }
-        let week = String(app.displayWeek)
-        if selectedWeek != week { selectedWeek = week }
-
-        // Share the selected table's imported/configured clock times with all
-        // companion surfaces. CpuTime's bundled periods belong to another school.
-        periods = app.classTimeList.enumerated().map { index, time in
-            NativeSchedulePeriod(number: index + 1, startTime: time.start, endTime: time.end)
+        selectedSemester = viewed.map { "share:" + $0.meta.code } ?? String(app.selectedTableId)
+        selectedWeek = String(viewed == nil ? app.displayWeek : min(max(sharedWeek ?? display.currentWeek, 1), display.weekCount))
+        periods = display.classTimes.enumerated().map {
+            NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
         }
-        let local = localProjection(app)
-        result = makeResult(local)
-        calendar = makeCalendar(local)
-        freeCourses = app.currentCourses.filter(\.isFreeTime).map(Self.makeNativeCourse)
-        if app.tables.isEmpty {
+        let choices = app.tables.map {
+            NativeScheduleSemester(value: String($0.id), label: $0.name, current: String($0.id) == selectedSemester)
+        } + shares.map {
+            NativeScheduleSemester(value: "share:" + $0.meta.code, label: "共享 · " + $0.name,
+                                   current: "share:" + $0.meta.code == selectedSemester)
+        }
+        let visible = ScheduleProjection(
+            identifier: selectedSemester, semesters: choices, courses: display.courses,
+            classTimes: display.classTimes, semesterStartMonday: display.semesterStartMonday,
+            weekCount: display.weekCount, currentWeek: display.currentWeek, adjustments: display.adjustments
+        )
+        result = makeResult(visible)
+        calendar = makeCalendar(visible)
+        freeCourses = display.courses.filter(\.isFreeTime).map(Self.makeNativeCourse)
+        if app.tables.isEmpty && viewed == nil {
             // `.idle` would fall through to the loading card and spin forever;
             // NapTable always has a table unless the user erased everything.
             state = .failed
@@ -290,7 +324,7 @@ final class NativeScheduleStore: ObservableObject {
             errorMessage = app.loadErrorMessage
         }
         source = .cache
-        sourceLabel = ScheduleSharingService.shared.followedSchedule?.name
+        sourceLabel = viewed?.name
         lastUpdatedAt = Date()
     }
 
@@ -398,19 +432,25 @@ final class NativeScheduleStore: ObservableObject {
         var weeks: [NativeCalendarWeek] = []
 
         if let monday = WeekCalculator.parseDay(anchor) {
+            // One formatter per projection instead of one per day of the semester.
+            let formatter = DateFormatter()
+            formatter.calendar = WeekCalculator.calendar
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = WeekCalculator.calendar.timeZone
+            formatter.dateFormat = "yyyy-MM-dd"
             for value in 1...maxWeek {
                 let offset = (value - 1) * 7
                 guard let weekMonday = WeekCalculator.calendar.date(byAdding: .day, value: offset, to: monday) else { continue }
                 let days = (0..<7).compactMap { day -> String? in
                     guard let date = WeekCalculator.calendar.date(byAdding: .day, value: day, to: weekMonday) else { return nil }
-                    return WeekCalculator.format(date)
+                    return formatter.string(from: date)
                 }
                 let sunday = WeekCalculator.calendar.date(byAdding: .day, value: 6, to: weekMonday) ?? weekMonday
                 weeks.append(NativeCalendarWeek(
                     week: value,
                     days: days,
-                    monday: WeekCalculator.format(weekMonday),
-                    sunday: WeekCalculator.format(sunday)
+                    monday: formatter.string(from: weekMonday),
+                    sunday: formatter.string(from: sunday)
                 ))
             }
         }

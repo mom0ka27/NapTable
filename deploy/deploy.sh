@@ -38,6 +38,9 @@ cp "$root_dir/server/__init__.py" \
    "$root_dir/server/apns.py" \
    "$root_dir/server/holidays.py" \
    "$root_dir/server/live_activity.py" \
+   "$root_dir/server/live_activity_v2.py" \
+   "$root_dir/server/live_activity_timeline.py" \
+   "$root_dir/server/requirements.txt" \
    "$root_dir/server/naptable_server.py" \
    "$staging_dir/bundle/server/"
 cp -R "$root_dir/server/static" "$staging_dir/bundle/server/static"

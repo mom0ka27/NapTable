@@ -78,6 +78,7 @@ Swift 模型和实时活动检查：
 bash tests/check-live-activity.sh
 bash tests/check-chinese-calendar.sh
 bash tests/check-calendar-adjustment.sh
+bash tests/check-sharing.sh
 ```
 
 服务端测试：
@@ -100,3 +101,5 @@ Debug 模拟器可以通过环境变量直接打开指定入口：
 - visionOS 没有 `UIScreen`，生成分享图时不要直接读取屏幕 scale。
 
 更具体的服务端开发、APNs 配置和 API 示例见 [`server/README.md`](../server/README.md)。
+
+课程实时活动采用 v2：iOS 26 本地逐课程预约，iOS 18 远程启动，iOS 17 前台本地能力。协议、加密依赖、模式交接与验收见 [live-activity-v2.md](live-activity-v2.md)。

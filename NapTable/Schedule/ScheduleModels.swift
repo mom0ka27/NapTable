@@ -98,6 +98,7 @@ public struct NativeScheduleWeek: Codable, Identifiable, Equatable, Sendable {
 public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
     /// Stable occurrence identity supplied by the trusted schedule bridge. It
     /// excludes mutable presentation fields such as room and teacher.
+    public let liveActivitySourceID: String?
     public let nativeId: String?
     public let name: String
     public let teacher: String?
@@ -121,6 +122,7 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
     }
 
     public init(
+        liveActivitySourceID: String? = nil,
         nativeId: String? = nil,
         name: String,
         teacher: String? = nil,
@@ -135,6 +137,7 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
         custom: Bool = false,
         orphaned: Bool = false
     ) {
+        self.liveActivitySourceID = liveActivitySourceID
         self.nativeId = nativeId?.trimmedNonEmpty
         self.name = name
         self.teacher = teacher?.trimmedNonEmpty
@@ -151,13 +154,14 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case nativeId, name, teacher, weeks, weekList, location, slotNote, startSlot, endSlot
+        case liveActivitySourceID, nativeId, name, teacher, weeks, weekList, location, slotNote, startSlot, endSlot
         case sourceKey, customId, custom, orphaned
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
+            liveActivitySourceID: try values.decodeIfPresent(String.self, forKey: .liveActivitySourceID),
             nativeId: try values.decodeIfPresent(String.self, forKey: .nativeId),
             name: try values.decodeIfPresent(String.self, forKey: .name) ?? "课程",
             teacher: try values.decodeIfPresent(String.self, forKey: .teacher),

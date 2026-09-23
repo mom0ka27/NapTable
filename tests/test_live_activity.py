@@ -53,7 +53,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_registration_returns_a_secret_only_once(self):
         self.assertIn("secret", self.device)
-        again = self.service.register({"deviceID": self.device["deviceID"], "startToken": "cd34"})
+        again = self.service.register({"deviceID": self.device["deviceID"], "startToken": "cd34"}, self.device["secret"])
         self.assertNotIn("secret", again)
         self.assertEqual(self.service.status(self.device["deviceID"])["hasStartToken"], True)
 
@@ -73,7 +73,7 @@ class ServiceTests(unittest.TestCase):
             self.service.register({"deviceID": "missing", "startToken": "ab"})
 
     def test_keeping_the_old_token_when_a_refresh_omits_it(self):
-        self.service.register({"deviceID": self.device["deviceID"]})
+        self.service.register({"deviceID": self.device["deviceID"]}, self.device["secret"])
         self.assertTrue(self.service.status(self.device["deviceID"])["hasStartToken"])
 
     # -- plan validation ---------------------------------------------------

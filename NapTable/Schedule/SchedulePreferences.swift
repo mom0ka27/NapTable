@@ -28,8 +28,6 @@ final class NativeSchedulePreferences: ObservableObject {
     @Published var showDateHeader: Bool { didSet { persist() } }
     @Published var defaultView: String { didSet { persist() } }
     @Published var density: String { didSet { persist() } }
-    /// Height of one teaching slot in the week grid, in points.
-    @Published var rowHeight: Double { didSet { persist() } }
     @Published var backgroundPath: String { didSet { loadBackgroundImage(); persist() } }
     @Published var backgroundOpacity: Double { didSet { persist() } }
     @Published private(set) var backgroundImage: ScheduleBackgroundImage?
@@ -37,10 +35,6 @@ final class NativeSchedulePreferences: ObservableObject {
     private let defaults: UserDefaults
     private var ready = false
 
-    /// The week grid's original fixed row height, kept as the default so an
-    /// upgrade does not move anyone's layout.
-    static let defaultRowHeight: Double = 44
-    static let rowHeightRange: ClosedRange<Double> = 34...64
 
     private enum Key {
         static let showLocation = "nativeSchedule.showLocation"
@@ -50,7 +44,6 @@ final class NativeSchedulePreferences: ObservableObject {
         static let showDateHeader = "nativeSchedule.showDateHeader"
         static let defaultView = "nativeSchedule.defaultView"
         static let density = "nativeSchedule.density"
-        static let rowHeight = "nativeSchedule.rowHeight"
         static let backgroundPath = "nativeSchedule.backgroundPath"
         static let backgroundOpacity = "nativeSchedule.backgroundOpacity"
     }
@@ -66,8 +59,6 @@ final class NativeSchedulePreferences: ObservableObject {
         defaultView = Self.viewOptions.contains(savedView) ? savedView : "week"
         let savedDensity = defaults.string(forKey: Key.density) ?? "comfortable"
         density = savedDensity == "compact" ? "compact" : "comfortable"
-        let savedRowHeight = defaults.object(forKey: Key.rowHeight) as? Double ?? Self.defaultRowHeight
-        rowHeight = min(Self.rowHeightRange.upperBound, max(Self.rowHeightRange.lowerBound, savedRowHeight))
         backgroundPath = defaults.string(forKey: Key.backgroundPath) ?? ""
         let opacity = defaults.object(forKey: Key.backgroundOpacity) as? Double ?? 0.18
         backgroundOpacity = min(0.5, max(0.05, opacity))
@@ -81,6 +72,11 @@ final class NativeSchedulePreferences: ObservableObject {
 
     /// The weekday columns the grid draws, Monday-first.
     var visibleDays: [Int] { showWeekend ? Array(1...7) : Array(1...5) }
+
+    /// 隐藏普通周末时，仍保留当前周有调休安排的日期。
+    func visibleDays(adjustedDays: Set<Int>) -> [Int] {
+        (1...7).filter { showWeekend || $0 <= 5 || adjustedDays.contains($0) }
+    }
 
     // MARK: Backup
 
@@ -96,6 +92,7 @@ final class NativeSchedulePreferences: ObservableObject {
         var showDateHeader: Bool
         var defaultView: String
         var density: String
+        // Retained for decoding older backups; fixed grid heights ignore it.
         var rowHeight: Double
         var backgroundOpacity: Double
         var backgroundImageData: Data?
@@ -110,7 +107,7 @@ final class NativeSchedulePreferences: ObservableObject {
             showDateHeader: showDateHeader,
             defaultView: defaultView,
             density: density,
-            rowHeight: rowHeight,
+            rowHeight: 44,
             backgroundOpacity: backgroundOpacity,
             backgroundImageData: backgroundPath.isEmpty
                 ? nil
@@ -128,10 +125,6 @@ final class NativeSchedulePreferences: ObservableObject {
         showDateHeader = snapshot.showDateHeader
         defaultView = Self.viewOptions.contains(snapshot.defaultView) ? snapshot.defaultView : "week"
         density = Self.densityOptions.contains(snapshot.density) ? snapshot.density : "comfortable"
-        rowHeight = min(
-            Self.rowHeightRange.upperBound,
-            max(Self.rowHeightRange.lowerBound, snapshot.rowHeight)
-        )
         backgroundOpacity = min(0.5, max(0.05, snapshot.backgroundOpacity))
         // A backup without an image leaves the current one alone; clearing is an
         // explicit action in settings, not a side effect of restoring.
@@ -156,7 +149,6 @@ final class NativeSchedulePreferences: ObservableObject {
         showDateHeader = true
         defaultView = "week"
         density = "comfortable"
-        rowHeight = Self.defaultRowHeight
         backgroundPath = ""
         backgroundOpacity = 0.18
         backgroundImage = nil
@@ -195,10 +187,6 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(showDateHeader, forKey: Key.showDateHeader)
         defaults.set(Self.viewOptions.contains(defaultView) ? defaultView : "week", forKey: Key.defaultView)
         defaults.set(Self.densityOptions.contains(density) ? density : "comfortable", forKey: Key.density)
-        defaults.set(
-            min(Self.rowHeightRange.upperBound, max(Self.rowHeightRange.lowerBound, rowHeight)),
-            forKey: Key.rowHeight
-        )
         defaults.set(backgroundPath, forKey: Key.backgroundPath)
         defaults.set(min(0.5, max(0.05, backgroundOpacity)), forKey: Key.backgroundOpacity)
     }

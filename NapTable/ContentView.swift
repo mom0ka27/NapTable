@@ -37,16 +37,24 @@ struct ContentView: View {
             NativeDeviceSettingsView(scheduleStore: scheduleStore, widgetSettings: widgetSettings)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
         }
-        // The widgets and the Live Activity read the same native snapshot the
-        // timetable renders, so every rebuild is pushed to them. NapTable has
-        // no session to check: the write is local and cheap.
+        // Schedule edits update both companion surfaces. Caring changes only
+        // the Live Activity source; the displayed timetable and widgets stay put.
         .onChange(of: scheduleStore.lastUpdatedAt) { _, _ in
             syncCompanionFeatures()
         }
         .onReceive(NotificationCenter.default.publisher(for: .naptableFollowedSourceChanged)) { _ in
-            Task { await scheduleStore.refresh(); syncCompanionFeatures() }
+            Task { await scheduleStore.refresh() }
         }
-        .onAppear { syncCompanionFeatures() }
+        .onReceive(NotificationCenter.default.publisher(for: .naptableCaringSelectionChanged)) { _ in
+            Task { @MainActor in
+                syncCompanionFeatures(updateWidgets: false)
+            }
+        }
+        .onAppear {
+            scheduleStore.connect(store)
+            syncCompanionFeatures()
+            if store.tables.isEmpty { showImport = true }
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             // A followed share lives on the server, so the companion surfaces
@@ -73,34 +81,33 @@ struct ContentView: View {
     /// app store before its first render.
     private var timetable: some View {
         VStack(spacing: 0) {
-            if let source = scheduleStore.sourceLabel, !source.isEmpty {
-                HStack {
-                    Image(systemName: "eye")
-                    Text("提示来源：\(source)")
-                    Spacer()
-                    Text("只读")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            if store.tables.isEmpty {
+                ContentUnavailableView {
+                    Label("从你的学校开始", systemImage: "graduationcap")
+                } description: {
+                    Text("选择学校，导入你的第一张课表。")
+                } actions: {
+                    Button("添加课表") { showImport = true }
+                        .buttonStyle(.borderedProminent)
                 }
-                .font(.caption)
-                .padding(.horizontal)
-                .padding(.vertical, 6)
-                .background(.thinMaterial)
+            } else {
+                NativeScheduleView(store: scheduleStore, onWidgets: { showDeviceSettings = true }, onAddTable: { showImport = true })
+                    .tint(themeSettings.brandColor)
             }
-            NativeScheduleView(store: scheduleStore, onWidgets: { showDeviceSettings = true })
-                .tint(themeSettings.brandColor)
         }
         .onAppear { scheduleStore.connect(store) }
     }
 
-    private func syncCompanionFeatures() {
+    private func syncCompanionFeatures(updateWidgets: Bool = true) {
         guard let snapshot = scheduleStore.snapshot() else {
             #if os(iOS)
             NativeLiveActivityController.shared.reset()
             #endif
             return
         }
-        widgetSettings.writePayload(from: snapshot, selectedWeek: Int(scheduleStore.selectedWeek))
+        if updateWidgets, let ownSnapshot = scheduleStore.snapshot(useSharedNotifications: false) {
+            widgetSettings.writePayload(from: ownSnapshot, selectedWeek: store.displayWeek)
+        }
         #if os(iOS)
         if snapshot.auth.authenticated,
            snapshot.data?.cells.contains(where: { !$0.courses.isEmpty }) == true {

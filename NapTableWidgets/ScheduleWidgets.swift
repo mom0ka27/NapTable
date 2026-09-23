@@ -74,14 +74,19 @@ private struct ScheduleLiveActivityWidget: Widget {
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .topLeading)
+                    // `contentMargins(.top, 0)` 之外系统还给展开区留了一段固定上边距，
+                    // 只能用负 padding 顶回去。上沿不是被胶囊圆角切的那一侧，但也别
+                    // 再往上加了，否则会贴到灵动岛的黑边。
+                    .padding(.top, -8)
                     // 放不下就整块挪到下面那一行，而不是被摄像头和圆角切掉。
                     .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.trailing, priority: 1) {
                     if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).state {
                         ScheduleLiveActivityCountdown(state: state, compact: true, centered: true)
-                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .trailing)
+                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .topTrailing)
+                            .padding(.top, -8)
                             .dynamicIsland(verticalPlacement: .belowIfTooWide)
                     }
                 }
@@ -118,8 +123,8 @@ private struct ScheduleLiveActivityWidget: Widget {
             }
             // 左右和底部交给系统：`contentMargins(_:_:for: .expanded)` 是覆盖而不是
             // 叠加，之前把三边一起写死（18/8/10）比系统默认值窄，左上角的图标和右上角
-            // 的「距上课」才会被胶囊圆角切掉。顶部沿用最早的 8pt：系统默认的上边距把
-            // 内容压得太靠下，而上边并不是被圆角切到的那一侧。
+            // 的「距上课」才会被胶囊圆角切掉。顶部归零：上边不是被圆角切到的那一侧，
+            // 系统默认的上边距只会把内容白白往下压。
             .contentMargins(.top, 0, for: .expanded)
             .widgetURL(context.attributes.deepLinkURL)
             .keylineTint(ScheduleLiveActivityPalette.brand)
@@ -140,6 +145,11 @@ private struct ScheduleLiveActivityDisplay {
     private let hasMoreToday: Bool
 
     init(state: ScheduleLiveActivityAttributes.ContentState, isStale: Bool, attributes: ScheduleLiveActivityAttributes) {
+        if attributes.protocolVersion == 2 {
+            self.state = LiveActivityDisplaySnapshot.resolveStored(attributes: attributes, at: Date())
+            self.hasMoreToday = false
+            return
+        }
         // A broadcast is only a clock marker, never displayable course content.
         // No local match means today's classes are over (or unavailable).
         guard let localState = state.broadcastDateKey == nil ? state : state.resolvedFromLocalSchedule(attributes: attributes) else {
@@ -395,7 +405,7 @@ private struct ScheduleLiveActivityExpandedDetails: View {
         // The bottom region is clipped by Dynamic Island's own capsule. Keep
         // the progress track and the metadata away from its lower corners.
         .padding(.horizontal, 6)
-        .padding(.bottom, 7)
+        .padding(.bottom, 8)
     }
 }
 
@@ -1262,7 +1272,11 @@ private struct TodayScheduleView: View {
                 hidesCountdown: showsAfterClass && AfterClassView.showsHolidayCard(payload: payload, options: options)
             )
             if showsAfterClass {
-                AfterClassView(payload: payload, limit: family == .systemLarge ? 5 : 2)
+                AfterClassView(
+                    payload: payload,
+                    limit: family == .systemLarge ? 5 : 2,
+                    showsRemainingCount: family != .systemMedium
+                )
             } else {
                 ForEach(Array(window.courses.enumerated()), id: \.offset) { _, course in
                     TodayCourseRow(
@@ -1649,6 +1663,7 @@ private struct EmptyCoursesView: View {
 private struct AfterClassView: View {
     let payload: WidgetSchedulePayload
     let limit: Int
+    var showsRemainingCount: Bool = true
     @Environment(\.scheduleWidgetDisplayOptions) private var options
     @Environment(\.widgetFamily) private var family
 
@@ -1709,7 +1724,7 @@ private struct AfterClassView: View {
                     completed: true
                 )
             }
-            if day.courseList.count > visible.count {
+            if showsRemainingCount && day.courseList.count > visible.count {
                 Text("明天还有 \(day.courseList.count - visible.count) 门课程")
                     .font(.system(size: 9))
                     .foregroundStyle(WidgetPalette.muted)
@@ -1753,7 +1768,7 @@ private struct AfterClassView: View {
         return "\(countdown.phrase) · \(countdown.dateLabel)"
     }
 
-    /// 「距国庆节 12 天」「明天就是中秋节」；锁屏那一行也用它。
+    /// 「距国庆节还有 12 天」「距中秋节还有 1 天」；锁屏那一行也用它。
     static func holidayLine(now: Date = .now) -> String? {
         countdown(now: now)?.phrase
     }

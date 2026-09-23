@@ -20,6 +20,14 @@ except ImportError:  # pragma: no cover - depends on how the server was started
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS usage_devices (
+ installation_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
+ school_id TEXT NOT NULL DEFAULT '', system_name TEXT NOT NULL,
+ system_version TEXT NOT NULL, device_model TEXT NOT NULL, app_version TEXT NOT NULL,
+ consent_version INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_devices_last_seen ON usage_devices(last_seen);
+CREATE TABLE IF NOT EXISTS configuration_migrations (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS apns_config (
  id INTEGER PRIMARY KEY CHECK(id=1), key_path TEXT NOT NULL DEFAULT '',
  key_id TEXT NOT NULL DEFAULT '', team_id TEXT NOT NULL DEFAULT '',
@@ -165,6 +173,10 @@ class Store:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(shares)")}
             if "semester_start_monday" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN semester_start_monday TEXT NOT NULL DEFAULT ''")
             if "class_time_list_json" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN class_time_list_json TEXT NOT NULL DEFAULT '[]'")
+            if "schedule_scope" not in columns:
+                self.db.execute("ALTER TABLE shares ADD COLUMN schedule_scope TEXT NOT NULL DEFAULT ''")
+            for row in self.db.execute("SELECT code FROM shares WHERE schedule_scope='' ").fetchall():
+                self.db.execute("UPDATE shares SET schedule_scope=? WHERE code=?", (secrets.token_hex(16), row[0]))
             if "term_id" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_id TEXT NOT NULL DEFAULT ''")
             if "term_version" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_version INTEGER NOT NULL DEFAULT 0")
             if "term_snapshot_json" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_snapshot_json TEXT NOT NULL DEFAULT '{}'")
@@ -286,10 +298,14 @@ class Store:
                     errors.append({"key": key, "error": str(error)})
         return {"created": created, "errors": errors, "config": self.apns_config()}
     def seed(self):
-        # These are editable teaching templates, not a claim about current
-        # school data. CPU is kept in this shared catalogue so the CPU app can
-        # use the same APNs/device service without making NapTable's app a CPU
-        # client (the latter filters this entry on the client side).
+        if self.db.execute("SELECT 1 FROM configuration_migrations WHERE name='editable-school-catalog'").fetchone():
+            return
+        # Remove only the former built-in CPU entry; preserve administrator entries.
+        legacy = self.db.execute("SELECT 1 FROM school_configs WHERE id='cpu' AND note=?",
+                                 ("CPU 客户端共享服务配置；校历以 CPU 教务数据为准",)).fetchone()
+        if legacy:
+            self.db.execute("DELETE FROM school_terms WHERE school_id='cpu'")
+            self.db.execute("DELETE FROM school_configs WHERE id='cpu'")
         periods = [{"id": i, "name": f"第{i}节", "start": s, "end": e} for i,(s,e) in enumerate([
             ("08:00","08:50"),("09:00","09:50"),("10:10","11:00"),("11:10","12:00"),
             ("14:00","14:50"),("15:00","15:50"),("16:10","17:00"),("17:10","18:00"),
@@ -303,25 +319,8 @@ class Store:
             row = self.db.execute("SELECT periods_json FROM school_configs WHERE id='nju'").fetchone()
             self.db.execute("INSERT INTO school_terms (school_id,term_id,version,semester_start_monday,week_count,periods_json,timezone,note,updated_at,adjustments_json) VALUES (?,?,?,?,?,?,?,?,?,'[]')", ("nju", "2026-fall-template", 1, "2026-09-14", 18, row[0], "Asia/Shanghai", "模板，未按官方校历校准", now()))
             self.db.commit()
-        cpu_periods = [{"id": i, "name": f"第{i}节", "start": s, "end": e} for i,(s,e) in enumerate([
-            ("08:00", "08:45"), ("08:55", "09:40"), ("09:55", "10:40"),
-            ("10:50", "11:35"), ("13:30", "14:15"), ("14:25", "15:10"),
-            ("15:25", "16:10"), ("16:20", "17:05"), ("18:30", "19:15"),
-            ("19:25", "20:10"), ("20:20", "21:05")], 1)]
-        cpu = self.db.execute("SELECT 1 FROM school_configs WHERE id='cpu'").fetchone()
-        if not cpu:
-            self.db.execute(
-                "INSERT INTO school_configs VALUES (?,?,?,?,?,?)",
-                ("cpu", "中国药科大学", "", json.dumps(cpu_periods, ensure_ascii=False), "CPU 客户端共享服务配置；校历以 CPU 教务数据为准", now()),
-            )
-            self.db.commit()
-        cpu_term = self.db.execute("SELECT 1 FROM school_terms WHERE school_id='cpu' AND term_id='cpu-default'").fetchone()
-        if not cpu_term:
-            self.db.execute(
-                "INSERT INTO school_terms (school_id,term_id,version,semester_start_monday,week_count,periods_json,timezone,note,updated_at,adjustments_json) VALUES (?,?,?,?,?,?,?,?,?,'[]')",
-                ("cpu", "cpu-default", 1, "2026-09-14", 18, json.dumps(cpu_periods, ensure_ascii=False), "Asia/Shanghai", "模板；实际学期和校历由 CPU 客户端提供", now()),
-            )
-            self.db.commit()
+        self.db.execute("INSERT INTO configuration_migrations (name) VALUES ('editable-school-catalog')")
+        self.db.commit()
     def _migrate_configuration_model(self):
         """Promote school periods, one current term and one global calendar.
 
@@ -388,7 +387,14 @@ class Store:
         classes each worked weekend runs, and saves through the normal path.
         """
         raw_years = value.get("years") if isinstance(value, dict) else None
-        if raw_years:
+        academic_year = value.get("academicYear") if isinstance(value, dict) else None
+        start_date = end_date = None
+        if academic_year is not None:
+            if type(academic_year) is not int or not 2000 <= academic_year <= 2100 or raw_years is not None:
+                raise ValueError("academicYear 必须是 2000-2100 的整数，且不能与 years 同时指定")
+            years = [academic_year, academic_year + 1]
+            start_date, end_date = f"{academic_year}-09-01", f"{academic_year + 1}-07-31"
+        elif raw_years:
             try:
                 years = sorted({int(year) for year in raw_years})
             except (TypeError, ValueError):
@@ -405,18 +411,19 @@ class Store:
             except holidays.HolidayError as error:
                 errors.append(str(error))
                 continue
-            plan = holidays.plan(arrangement["days"], existing)
+            days = arrangement["days"]
+            if start_date:
+                days = [row for row in days if start_date <= row["date"] <= end_date]
+            plan = holidays.plan(days, existing)
             results.append({"year": year, "source": arrangement["source"],
                             "papers": arrangement["papers"], **plan})
         if not results and errors:
             raise ValueError("；".join(errors))
-        return {"years": results, "errors": errors,
+        return {"years": results, "errors": errors, "startDate": start_date, "endDate": end_date,
                 "proposed": [row for item in results for row in item["proposed"]]}
     def schools(self):
         with self.lock:
-            # Keep the historical demo school first for older clients; shared
-            # service consumers may still filter the CPU tenant explicitly.
-            rows=self.db.execute("SELECT * FROM school_configs ORDER BY CASE WHEN id='cpu' THEN 1 ELSE 0 END, id").fetchall()
+            rows=self.db.execute("SELECT * FROM school_configs ORDER BY id").fetchall()
             return [self.school(r) for r in rows]
     def school(self, r):
         terms = self.db.execute("SELECT * FROM school_terms WHERE school_id=? ORDER BY semester_start_monday DESC,term_id", (r["id"],)).fetchall()
@@ -436,6 +443,13 @@ class Store:
         with self.lock:
             r=self.db.execute("SELECT * FROM school_terms WHERE school_id=? AND term_id=?",(school_id,term_id)).fetchone()
         return self.term(r) if r else None
+    def delete_school(self, school_id):
+        # Shares carry frozen snapshots and remain readable after removal.
+        with self.lock, self.db:
+            deleted = self.db.execute("DELETE FROM school_configs WHERE id=?", (school_id,)).rowcount
+            if deleted:
+                self.db.execute("DELETE FROM school_terms WHERE school_id=?", (school_id,))
+            return bool(deleted)
     def save_school(self, value):
         required = value.get("id"), value.get("name")
         if not all(required): raise ValueError("id/name/periods are required")
@@ -453,29 +467,114 @@ class Store:
             self.db.commit()
         row = self.db.execute("SELECT * FROM school_configs WHERE id=?", (value["id"],)).fetchone()
         return self.school(row)
+    def report_usage(self, installation_id, secret, value):
+        if not re.fullmatch(r"[a-fA-F0-9-]{36}", installation_id):
+            raise ValueError("invalid installation ID")
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{32,128}", secret):
+            raise ValueError("invalid device secret")
+        if not isinstance(value, dict) or type(value.get("consentVersion")) is not int or value["consentVersion"] != 1:
+            raise ValueError("basic privacy consent version 1 required")
+        allowed = {"consentVersion", "schoolID", "systemName", "systemVersion", "deviceModel", "appVersion"}
+        if set(value) - allowed: raise ValueError("unexpected usage fields")
+        fields = []
+        for key in ("systemName", "systemVersion", "deviceModel", "appVersion"):
+            field = value.get(key)
+            if not isinstance(field, str) or not field.strip() or len(field) > 80 or any(ord(c) < 32 for c in field):
+                raise ValueError("invalid " + key)
+            fields.append(field.strip())
+        school = value.get("schoolID") or ""
+        if not isinstance(school, str) or len(school) > 80: raise ValueError("invalid schoolID")
+        stamp = datetime.now(timezone.utc)
+        with self.lock, self.db:
+            existing = self.db.execute("SELECT secret_hash FROM usage_devices WHERE installation_id=?", (installation_id,)).fetchone()
+            if existing and not secrets.compare_digest(existing[0], self._digest(secret)):
+                return False
+            if school and not self.db.execute("SELECT 1 FROM school_configs WHERE id=?", (school,)).fetchone():
+                raise ValueError("unknown schoolID")
+            self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", ((stamp - timedelta(days=90)).isoformat(),))
+            self.db.execute(
+                "INSERT INTO usage_devices VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(installation_id) DO UPDATE SET school_id=excluded.school_id,system_name=excluded.system_name,"
+                "system_version=excluded.system_version,device_model=excluded.device_model,app_version=excluded.app_version,"
+                "consent_version=excluded.consent_version,last_seen=excluded.last_seen",
+                (installation_id, self._digest(secret), school, *fields, 1, stamp.isoformat(), stamp.isoformat()))
+        return True
+
     def usage_stats(self):
-        with self.lock:
-            table = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='la_devices'").fetchone()
-            counts = {} if not table else {row["school_id"]: row["users"] for row in self.db.execute(
-                "SELECT school_id,COUNT(DISTINCT device_id) AS users FROM la_devices WHERE enabled=1 AND school_id!='' GROUP BY school_id")}
+        stamp = datetime.now(timezone.utc)
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", ((stamp - timedelta(days=90)).isoformat(),))
+            devices = self.db.execute("SELECT school_id,system_name,system_version,device_model FROM usage_devices WHERE last_seen>=?",
+                                      ((stamp - timedelta(days=30)).isoformat(),)).fetchall()
             rows = self.db.execute("SELECT id,name FROM school_configs ORDER BY name").fetchall()
-        schools = [{"id": row["id"], "name": row["name"], "users": counts.get(row["id"], 0)} for row in rows]
-        return {"totalUsers": sum(item["users"] for item in schools), "schools": schools, "updatedAt": now()}
+        def distribution(items, key):
+            counts = {}
+            for item in items:
+                label = (item["system_name"] + " " + item["system_version"]) if key == "systemVersions" else item["device_model"]
+                counts[label] = counts.get(label, 0) + 1
+            return [{"name": name, "users": count} for name, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))]
+        schools = []
+        for row in rows:
+            matching = [device for device in devices if device["school_id"] == row["id"]]
+            schools.append({"id": row["id"], "name": row["name"], "users": len(matching),
+                            "systemVersions": distribution(matching, "systemVersions"),
+                            "deviceModels": distribution(matching, "deviceModels")})
+        known = {row["id"] for row in rows}
+        return {"totalUsers": len(devices), "unassignedUsers": sum(device["school_id"] not in known for device in devices),
+                "windowDays": 30, "schools": schools, "systemVersions": distribution(devices, "systemVersions"),
+                "deviceModels": distribution(devices, "deviceModels"), "updatedAt": stamp.isoformat()}
     def school_name(self, school_id):
         """The catalogue name, never the client's copy of it: a reader should
         see 南京大学 even when the sharer's app had not loaded the catalogue."""
         with self.lock:
             r=self.db.execute("SELECT name FROM school_configs WHERE id=?",(school_id,)).fetchone()
         return r["name"] if r else school_id
-    def create(self, value):
+    def create(self, value, previous_code=None, write_token=None):
         term = self.find_term(value.get("schoolID", ""), value.get("termID", ""))
         if not term: raise ValueError("unknown schoolID/termID")
         _, payload = normalize_courses(value.get("courses"))
         owner = str(value.get("owner") or "匿名").strip()[:MAX_OWNER_LENGTH] or "匿名"
         code=secrets.token_urlsafe(6).replace("-", "").replace("_", "").upper()[:8]
         token=secrets.token_urlsafe(24); stamp=now()
-        with self.lock:
-            self.db.execute("INSERT INTO shares (code,write_token_hash,owner,school_id,school_name,payload_json,semester_start_monday,class_time_list_json,adjustments_json,term_id,term_version,term_snapshot_json,created_at,updated_at,revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", (code,hashlib.sha256(token.encode()).hexdigest(),owner,value["schoolID"],self.school_name(value["schoolID"]),payload,term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp,stamp)); self.db.commit()
+        with self.lock, self.db:
+            obsolete_codes = []
+            if previous_code is not None:
+                previous = self.authorize(previous_code, write_token)
+                if previous is None: return None
+                obsolete_codes.append(previous_code.upper())
+                legacy = value.get("previousShares", [])
+                if not isinstance(legacy, list) or len(legacy) > 100:
+                    raise ValueError("invalid previous shares")
+                for item in legacy:
+                    if not isinstance(item, dict): raise ValueError("invalid previous share")
+                    old_code, old_token = item.get("code"), item.get("token")
+                    if not isinstance(old_code, str) or not isinstance(old_token, str):
+                        raise ValueError("invalid previous share")
+                    if self.authorize(old_code, old_token) is None: return None
+                    obsolete_codes.append(old_code.upper())
+                def content(rows):
+                    # Database identities and ordering are not timetable changes.
+                    ignored = {"id", "tableId", "courseKey"}
+                    cleaned = []
+                    for row in rows:
+                        row = {k: v for k, v in row.items() if k not in ignored}
+                        if isinstance(row.get("weeks"), list): row["weeks"] = sorted(set(row["weeks"]))
+                        cleaned.append(json.dumps(row, ensure_ascii=False, sort_keys=True))
+                    return sorted(cleaned)
+                unchanged = (previous["school_id"] == value["schoolID"]
+                             and previous["term_id"] == term["id"]
+                             and content(json.loads(previous["payload_json"])) == content(json.loads(payload))
+                             and previous["semester_start_monday"] == term["semesterStartMonday"]
+                             and json.loads(previous["class_time_list_json"]) == term["periods"]
+                             and json.loads(previous["adjustments_json"] or "[]") == term.get("adjustments", [])
+                             and json.loads(previous["term_snapshot_json"] or "{}").get("weekCount") == term["weekCount"]
+                             and json.loads(previous["term_snapshot_json"] or "{}").get("timezone") == term["timezone"])
+                if unchanged: raise ValueError("课表没有变更，请继续使用现有分享码")
+            self.db.execute("INSERT INTO shares (code,write_token_hash,owner,school_id,school_name,payload_json,semester_start_monday,class_time_list_json,adjustments_json,term_id,term_version,term_snapshot_json,created_at,updated_at,revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", (code,hashlib.sha256(token.encode()).hexdigest(),owner,value["schoolID"],self.school_name(value["schoolID"]),payload,term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp,stamp))
+            scope = previous["schedule_scope"] if previous_code is not None else secrets.token_hex(16)
+            self.db.execute("UPDATE shares SET schedule_scope=? WHERE code=?", (scope, code))
+            for obsolete_code in obsolete_codes:
+                self.db.execute("UPDATE shares SET revoked=1 WHERE code=?", (obsolete_code,))
         return self.get(code, include_token=True, token=token)
     def get(self, code, include_token=False, token=None):
         with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
@@ -484,7 +583,7 @@ class Store:
         courses=json.loads(r["payload_json"])
         # `name` becomes the reader's table name, so it says whose timetable
         # this is rather than repeating the school for every share.
-        out={"id":r["code"],"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"term_version":r["term_version"],"term_week_count":snapshot.get("weekCount",0),"term_timezone":snapshot.get("timezone","Asia/Shanghai"),"configurationFrozen":True,"courses":courses,"courseCount":len(courses),"semester_start_monday":r["semester_start_monday"],"class_time_list":json.loads(r["class_time_list_json"]),"calendar_adjustments":json.loads(r["adjustments_json"] or "[]"),"createdAt":r["created_at"],"updatedAt":r["updated_at"]}
+        out={"id":r["code"],"scheduleScope":r["schedule_scope"],"timeZone":snapshot.get("timezone"),"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"term_version":r["term_version"],"term_week_count":snapshot.get("weekCount",0),"term_timezone":snapshot.get("timezone","Asia/Shanghai"),"configurationFrozen":True,"courses":courses,"courseCount":len(courses),"semester_start_monday":r["semester_start_monday"],"class_time_list":json.loads(r["class_time_list_json"]),"calendar_adjustments":json.loads(r["adjustments_json"] or "[]"),"createdAt":r["created_at"],"updatedAt":r["updated_at"]}
         if include_token: out["writeToken"]=token
         return out
     def meta(self, code):
@@ -492,7 +591,7 @@ class Store:
         with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
         if not r: return None
         snapshot=json.loads(r["term_snapshot_json"] or "{}")
-        return {"id":r["code"],"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"courseCount":len(json.loads(r["payload_json"])),"semester_start_monday":r["semester_start_monday"],"term_week_count":snapshot.get("weekCount",0),"adjustmentCount":len(json.loads(r["adjustments_json"] or "[]")),"updatedAt":r["updated_at"]}
+        return {"id":r["code"],"scheduleScope":r["schedule_scope"],"timeZone":snapshot.get("timezone"),"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"courseCount":len(json.loads(r["payload_json"])),"semester_start_monday":r["semester_start_monday"],"term_week_count":snapshot.get("weekCount",0),"adjustmentCount":len(json.loads(r["adjustments_json"] or "[]")),"updatedAt":r["updated_at"]}
     def authorize(self, code, token):
         """The share row when `token` is its write token, otherwise None.
 
@@ -584,6 +683,11 @@ class Handler(BaseHTTPRequestHandler):
         if n < 0 or n > MAX_REQUEST_BYTES:
             raise ValueError(f"request body exceeds {MAX_REQUEST_BYTES} bytes")
         return json.loads(self.rfile.read(n) or b"{}")
+    def apns_status(self):
+        value = self.store.apns_config() or {"keyPath": "", "keyID": "", "teamID": "", "bundleID": "", "tickSeconds": 5, "channels": {}}
+        if self.live_activity is not None and hasattr(self.live_activity, "v2"):
+            value["liveActivityHealth"] = self.live_activity.v2.health()
+        return value
     def do_GET(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "GET", path): return
@@ -597,10 +701,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"authenticated": True})
         if path == "/v1/admin/apns":
             if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-            return self.send_json(200, self.store.apns_config() or {
-                "keyPath": "", "keyID": "", "teamID": "", "bundleID": "",
-                "tickSeconds": 5, "channels": {}, "updatedAt": None,
-            })
+            return self.send_json(200, self.apns_status())
         if path in ("/v1/admin/calendar", "/v1/admin/stats"):
             if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
             value = self.store.global_calendar() if path.endswith("/calendar") else self.store.usage_stats()
@@ -617,6 +718,10 @@ class Handler(BaseHTTPRequestHandler):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "POST", path): return
         try:
+            if path.startswith("/v1/usage/devices/"):
+                accepted = self.store.report_usage(path.removeprefix("/v1/usage/devices/"),
+                                                   self.headers.get("X-Device-Secret", ""), self.body())
+                return self.send_json(200, {"accepted": True}) if accepted else self.send_json(403, {"error": "invalid device secret"})
             if path == "/v1/admin/session":
                 secret = self.admin_secret()
                 supplied = str(self.body().get("token", ""))
@@ -631,19 +736,17 @@ class Handler(BaseHTTPRequestHandler):
                 # Parse the key before writing, so a typo cannot replace a
                 # working configuration with one that the dispatcher cannot use.
                 client = live_activity._client_from_config(candidate)
+                if self.live_activity is not None and hasattr(self.live_activity, "v2"):
+                    self.live_activity.v2.validate_client(client)
                 value = self.store.save_apns_config(candidate)
-                sync = self.store.reconcile_apns_channels(client)
-                value = sync.get("config") or value
+                if client is not None: client.close()
                 if self.live_activity is not None:
                     live_activity.apply_config(self.live_activity, value)
-                value["channelSync"] = {"created": sync["created"], "errors": sync["errors"]}
-                return self.send_json(200, value)
+                return self.send_json(200, self.apns_status())
             if path == "/v1/admin/apns/reconcile":
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                sync = self.store.reconcile_apns_channels(getattr(self.live_activity, "client", None))
-                if self.live_activity is not None and sync.get("config"):
-                    live_activity.apply_config(self.live_activity, sync["config"])
-                return self.send_json(200, sync)
+                return self.send_json(200, {"config": self.apns_status(), "created": [], "errors": []})
+
             if path == "/v1/admin/calendar":
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.save_global_calendar(self.body()))
@@ -651,6 +754,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.import_calendar(self.body()))
             if path == "/v1/shares": return self.send_json(201,self.store.create(self.body()))
+            if path.startswith("/v1/shares/") and path.endswith("/replace"):
+                code = path[len("/v1/shares/"):-len("/replace")]
+                value = self.store.create(self.body(), previous_code=code,
+                                          write_token=self.headers.get("X-Write-Token", ""))
+                return self.send_json(201, value) if value else self.send_json(403, {"error": "invalid write token"})
             if path.startswith("/v1/shares/") and path.endswith("/resync"):
                 code=path[len("/v1/shares/"):-len("/resync")]
                 value=self.store.resync(code,self.headers.get("X-Write-Token",""))
@@ -660,9 +768,6 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(403,{"error":"school template is read-only without admin token"})
                 value=self.body(); value["id"]=path.rsplit("/",1)[-1]
                 saved = self.store.save_school(value)
-                if self.live_activity is not None and self.live_activity.client is not None:
-                    sync = self.store.reconcile_apns_channels(self.live_activity.client)
-                    if sync.get("config"): live_activity.apply_config(self.live_activity, sync["config"])
                 return self.send_json(200, saved)
             if path.startswith("/v1/admin/schools/") and path.endswith("/terms"):
                 if not self.require_admin(): return self.send_json(403,{"error":"admin token required"})
@@ -718,6 +823,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/admin/session":
             self.store.delete_admin_session(self.cookie(ADMIN_COOKIE))
             return self.send_json(200, {"authenticated": False}, [("Set-Cookie", self.session_cookie("", 0))])
+        if re.fullmatch(r"/v1/schools/[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", path):
+            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
+            if not self.store.delete_school(path.rsplit("/", 1)[-1]):
+                return self.send_json(404, {"error": "school not found"})
+            return self.send_json(200, {"deleted": True})
         token=self.headers.get("X-Write-Token","")
         if path.startswith("/v1/shares/"): return self.send_json(200,{"revoked":True}) if self.store.revoke(path.rsplit("/",1)[-1],token) else self.send_json(403,{"error":"invalid write token"})
         self.send_json(404,{"error":"not found"})
@@ -726,9 +836,6 @@ def main():
     p=argparse.ArgumentParser(); p.add_argument("--host",default="127.0.0.1"); p.add_argument("--port",type=int,default=8787); p.add_argument("--db",default="naptable.sqlite3"); a=p.parse_args()
     Handler.store=Store(a.db)
     Handler.live_activity=live_activity.build_service(Handler.store.db, Handler.store.lock, config=Handler.store.apns_config())
-    sync = Handler.store.reconcile_apns_channels(Handler.live_activity.client)
-    if sync.get("config"): live_activity.apply_config(Handler.live_activity, sync["config"])
-    for item in sync["errors"]: print(f"APNs channel sync failed for {item['key']}: {item['error']}")
     Handler.live_activity.start()
     server=ThreadingHTTPServer((a.host,a.port),Handler)
     configured = "已配置" if Handler.live_activity.client else "未配置（只接受注册与计划，不发推送）"

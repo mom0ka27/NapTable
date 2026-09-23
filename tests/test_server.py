@@ -61,8 +61,8 @@ class ServerTests(unittest.TestCase):
                     ('a','nju',1), ('b','nju',1), ('c','cpu',1), ('off','nju',0)])
                 Handler.store.db.commit()
             stats=self.req('GET','/v1/admin/stats',headers=headers)
-            self.assertEqual(stats['totalUsers'],3)
-            self.assertEqual(next(item['users'] for item in stats['schools'] if item['id']=='nju'),2)
+            self.assertEqual(stats['totalUsers'],0)  # Legacy notification devices are not usage reports.
+            self.assertEqual(next(item['users'] for item in stats['schools'] if item['id']=='nju'),0)
         finally:
             if old is None: os.environ.pop('NAPTABLE_ADMIN_TOKEN',None)
             else: os.environ['NAPTABLE_ADMIN_TOKEN']=old
@@ -79,11 +79,11 @@ class ServerTests(unittest.TestCase):
         Handler.store.save_apns_config({'tickSeconds':5})
         client=Client()
         first=Handler.store.reconcile_apns_channels(client)
-        self.assertEqual(len(first['created']),4)
+        self.assertEqual(len(first['created']),2)
         self.assertEqual(set(first['config']['channels']), {
-            'production:nju','sandbox:nju','production:cpu','sandbox:cpu'})
+            'production:nju','sandbox:nju'})
         second=Handler.store.reconcile_apns_channels(client)
-        self.assertEqual(second['created'],[]); self.assertEqual(len(client.environments),4)
+        self.assertEqual(second['created'],[]); self.assertEqual(len(client.environments),2)
     def test_apns_bundle_change_discards_channels_from_the_old_app(self):
         Handler.store.save_apns_config({
             'keyPath':'/key.p8','keyID':'K','teamID':'T','bundleID':'old.app',

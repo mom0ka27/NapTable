@@ -1,94 +1,74 @@
-#if os(iOS)
+#if os(iOS) || LIVE_SERVICE_CHECKS
 import ActivityKit
 import Combine
 import CryptoKit
 import Foundation
+import Security
 
-/// Hands the Live Activity over to the NapTable server so a class can reach the
-/// Lock Screen while the app is suspended.
-///
-/// `Activity.request` is refused from the background, which is why the existing
-/// controller can only start an activity once the app is opened. iOS 17.2 added
-/// a second way in: a push-to-start token the system accepts on the app's
-/// behalf. This service collects that token, uploads the plan the controller
-/// renders, and registers the push token of every activity that is running so
-/// the server can also advance and dismiss it.
-///
-/// Nothing here decides *what* to show. The plan arrives fully rendered from
-/// `NativeLiveActivityController`, so the island looks the same whether a frame
-/// came from the refresh loop or from APNs.
+/// Serialized reconciliation preserves late registration credentials for revocation.
+/// Server mode is authoritative; a token update can never switch local back to remote.
 @available(iOS 17.2, *)
 @MainActor
 final class LiveActivityPushService: ObservableObject {
     enum Status: Equatable {
-        case off
-        case waitingForToken
+        case off, waitingForToken
         case ready(pending: Int, nextFireAt: Date?)
         case failed(String)
-
         var title: String {
             switch self {
             case .off: return "已关闭"
-            case .waitingForToken: return "等待系统下发推送令牌"
-            case .ready(let pending, _): return pending > 0 ? "已排定 \(pending) 条推送" : "已连接，暂无待推送的课程"
+            case .waitingForToken: return "等待推送令牌"
+            case .ready(let pending, _): return "已连接，\(pending) 门课程等待远程启动"
             case .failed: return "同步失败"
             }
         }
-
-        var detail: String? {
-            if case .failed(let message) = self { return message }
-            if case .ready(_, let next) = self, let next {
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "zh_CN")
-                formatter.dateFormat = "M 月 d 日 HH:mm"
-                formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-                return "下一条推送：" + formatter.string(from: next)
-            }
-            return nil
-        }
+        var detail: String? { if case .failed(let text) = self { return text }; return nil }
     }
-
     static let shared = LiveActivityPushService()
-    /// The device credential lives beside the share token rather than in the
-    /// App Group: only the app itself ever talks to the server.
-    private static let deviceIDKey = "naptable.liveActivity.deviceID"
-    private static let secretKey = "naptable.liveActivity.deviceSecret"
-    private static let channelIDKey = "naptable.liveActivity.channelID"
-    private static let digestKey = "naptable.liveActivity.planDigest"
-    private static let pendingStartTokenKey = "naptable.liveActivity.pendingStartToken"
-    private static let pendingActivityTokensKey = "naptable.liveActivity.pendingActivityTokens"
-
-    private struct PendingActivityRegistration: Codable, Equatable {
-        var activityID: String
-        var updateToken: String
-        var expiresAt: Int
-    }
-
+    private static let deviceKey = "naptable.liveActivity.deviceID"
+    private static let legacySecretKey = "naptable.liveActivity.deviceSecret"
+    private static let revokeKey = "naptable.liveActivity.pendingRevocation"
+    private static let registrationKey = "naptable.liveActivity.v2.registered"
+    private static let handoffKey = "naptable.liveActivity.v2.handoff"
+    private static let planKey = "naptable.liveActivity.v2.plan"
+    private static let keychainService = "naptable.liveActivity.device"
     @Published private(set) var status: Status = .off
-
-    private let defaults = UserDefaults.standard
-    private var startTokenTask: Task<Void, Never>?
-    private var activityTask: Task<Void, Never>?
-    private var tokenTasks: [String: Task<Void, Never>] = [:]
-    private var uploadTask: Task<Void, Never>?
-    private var pendingStartToken: String?
-    private var dayConfigTask: Task<Void, Never>?
-
-    /// Server push is not a separate feature: whoever turned Live Activities on
-    /// wants them to appear without opening the app, so this follows the single
-    /// switch the controller owns.
-    var isEnabled: Bool { NativeLiveActivityController.shared.isEnabled }
-    var deviceID: String? { defaults.string(forKey: Self.deviceIDKey) }
-    var channelID: String? { defaults.string(forKey: Self.channelIDKey) }
-    private var secret: String? { defaults.string(forKey: Self.secretKey) }
-
-    /// `development` for a build signed with a development profile, so the
-    /// server reaches the matching APNs host. Reading the embedded profile
-    /// avoids guessing from build configuration, which is wrong for TestFlight.
+    struct CredentialStore {
+        var read: (String) -> String?
+        var write: (String, String) throws -> Void
+        var remove: (String) -> Void
+    }
+    private let defaults: UserDefaults
+    private let owner: NativeLiveActivityController
+    private let credentials: CredentialStore?
+    private let baseURL: URL?
+    private let transport: ((URLRequest) async throws -> (Data, HTTPURLResponse))?
+    init(controller: NativeLiveActivityController? = nil, defaults: UserDefaults = .standard,
+         credentials: CredentialStore? = nil, baseURL: URL? = nil,
+         transport: ((URLRequest) async throws -> (Data, HTTPURLResponse))? = nil) {
+        self.owner = controller ?? .shared
+        self.defaults = defaults
+        self.credentials = credentials
+        self.baseURL = baseURL
+        self.transport = transport
+    }
+    private var worker: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
+    private var tokenTask: Task<Void, Never>?
+    private var dirty = false
+    private var generation = 0
+    private var token: String?
+    private var uploadedToken: String?
+    private var cachedMapping: LiveActivityMapping?
+    private var cachedSchool: String?
+    private var mappingFetchedAt = Date.distantPast
+    private var serverHistory: Set<String> = []
+    private var controller: NativeLiveActivityController { owner }
+    var deviceID: String? { defaults.string(forKey: Self.deviceKey) }
+    var isEnabled: Bool { controller.isEnabled }
     static let environment: String = {
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .isoLatin1),
+              let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .isoLatin1),
               let range = text.range(of: "<key>aps-environment</key>") else {
             #if DEBUG
             return "sandbox"
@@ -99,438 +79,232 @@ final class LiveActivityPushService: ObservableObject {
         return text[range.upperBound...].prefix(200).contains("development") ? "sandbox" : "production"
     }()
 
-    // MARK: - Lifecycle
-
-    /// Called at launch, including the background launch that a push-to-start
-    /// triggers: the update token of the activity the system just created is
-    /// only delivered to a running app.
+    private func secret(_ id: String) -> String? {
+        if let credentials { return credentials.read(id) ?? defaults.string(forKey: Self.legacySecretKey) }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: id, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data { return String(data: data, encoding: .utf8) }
+        return defaults.string(forKey: Self.legacySecretKey)
+    }
+    private func saveSecret(_ secret: String, id: String) throws {
+        if let credentials { try credentials.write(id, secret); defaults.removeObject(forKey: Self.legacySecretKey); return }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keychainService, kSecAttrAccount as String: id]
+        let attributes: [String: Any] = [kSecValueData as String: Data(secret.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let update = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let result = update == errSecItemNotFound ? SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil) : update
+        guard result == errSecSuccess else { throw ScheduleServiceError.server("设备凭据无法保存到钥匙串") }
+        defaults.removeObject(forKey: Self.legacySecretKey)
+    }
     func activate() {
-        if #available(iOS 26.0, *) {
-            let controller = NativeLiveActivityController.shared
-            controller.wantsPushToken = false
-            controller.planDidChange = { [weak self] _ in self?.refreshDayChannels() }
-            refreshDayChannels()
-            return
-        }
-        NativeLiveActivityController.shared.wantsPushToken = isEnabled
-        NativeLiveActivityController.shared.broadcastChannelID = channelID
-        NativeLiveActivityController.shared.planDidChange = { [weak self] plan in self?.submit(plan) }
-        observeActivities()
-        guard isEnabled else {
-            status = .off
-            return
-        }
-        status = deviceID == nil ? .waitingForToken : status
-        observeStartToken()
-        Task {
-            if let token = self.defaults.string(forKey: Self.pendingStartTokenKey) {
-                await self.registerDevice(startToken: token)
-            }
-            await self.flushPendingActivityRegistrations()
-            await self.refreshStatus()
-        }
-    }
-
-    /// Called by the controller right after the Live Activity switch changes.
-    /// It never writes the setting itself — `isEnabled` reads the same key.
-    func enabledDidChange(_ enabled: Bool) {
-        if #available(iOS 26.0, *) {
-            if enabled { activate() }
-            else {
-                dayConfigTask?.cancel()
-                NativeLiveActivityController.shared.broadcastDayChannels = [:]
-                Task { await self.forgetDevice() }
-                status = .off
-            }
-            return
-        }
-        // A locally started activity is only push-updatable when it was
-        // requested with a token, so the controller has to know before it
-        // creates the next one.
-        NativeLiveActivityController.shared.wantsPushToken = enabled
-        if enabled {
-            status = .waitingForToken
-            observeStartToken()
-            // A token that arrived while the feature was off is still valid.
-            if let pendingStartToken = pendingStartToken ?? defaults.string(forKey: Self.pendingStartTokenKey) {
-                self.pendingStartToken = nil
-                Task { await self.registerDevice(startToken: pendingStartToken) }
-            }
-            NativeLiveActivityController.shared.replanForPush()
+        controller.planDidChange = { [weak self] in self?.enqueue() }
+        guard isEnabled else { enqueue(); return }
+        if #available(iOS 18.0, *) {
+            if #available(iOS 26.0, *) {} else { observeToken() }
+            enqueue()
         } else {
-            startTokenTask?.cancel()
-            startTokenTask = nil
-            defaults.removeObject(forKey: Self.digestKey)
-            status = .off
-            Task { await self.forgetDevice() }
+            // Explicitly retire iOS 17.2's former remote capability.
+            if deviceID != nil { revoke() }
+            controller.setServiceFailure("iOS 17 仅支持前台本地提醒；自动启动需要 iOS 18 或更新版本。")
         }
     }
-
-    private func observeStartToken() {
-        guard startTokenTask == nil else { return }
-        startTokenTask = Task { @MainActor [weak self] in
+    private func observeToken() {
+        guard tokenTask == nil else { return }
+        tokenTask = Task { [weak self] in
             for await data in Activity<ScheduleLiveActivityAttributes>.pushToStartTokenUpdates {
-                guard let self else { continue }
-                let token = Self.hex(data)
-                self.defaults.set(token, forKey: Self.pendingStartTokenKey)
-                await self.registerDevice(startToken: token)
+                guard let self else { return }
+                token = data.map { String(format: "%02x", $0) }.joined()
+                enqueue()
             }
         }
     }
-
-    /// Watches every activity for its push token. This runs even when the
-    /// feature is off, because turning it on mid-class should not have to wait
-    /// for the next activity to be created.
-    private func observeActivities() {
-        guard activityTask == nil else { return }
-        for activity in Activity<ScheduleLiveActivityAttributes>.activities {
-            observe(activity)
-        }
-        activityTask = Task { @MainActor [weak self] in
-            for await activity in Activity<ScheduleLiveActivityAttributes>.activityUpdates {
-                self?.observe(activity)
-            }
-        }
+    func enabledDidChange(_ enabled: Bool) {
+        if enabled { activate() } else { revoke() }
     }
-
-    private func observe(_ activity: Activity<ScheduleLiveActivityAttributes>) {
-        guard tokenTasks[activity.id] == nil else { return }
-        NativeLiveActivityController.shared.dropDuplicates(keeping: activity)
-        tokenTasks[activity.id] = Task { @MainActor [weak self] in
-            for await data in activity.pushTokenUpdates {
-                await self?.registerActivity(activity, token: Self.hex(data))
-            }
-            self?.tokenTasks[activity.id] = nil
-            await self?.forgetActivity(activity.id)
-        }
+    func invalidatePlan() {
+        defaults.set(true, forKey: "naptable.liveActivity.v2.cancelPlan")
+        enqueue()
     }
-
-    // MARK: - Server
-
-    private func registerDevice(startToken: String) async {
-        guard isEnabled else {
-            if !startToken.isEmpty {
-                defaults.set(startToken, forKey: Self.pendingStartTokenKey)
-            }
-            pendingStartToken = startToken
+    private func cancelPreviousPlanIfNeeded() async throws {
+        guard var previous = defaults.data(forKey: Self.planKey).flatMap({ try? JSONDecoder().decode(LiveActivityPlan.self, from: $0) }),
+              let device = deviceID, defaults.bool(forKey: Self.registrationKey), !defaults.bool(forKey: Self.handoffKey) else {
+            defaults.removeObject(forKey: "naptable.liveActivity.v2.cancelPlan")
             return
         }
-        if !startToken.isEmpty {
-            defaults.set(startToken, forKey: Self.pendingStartTokenKey)
+        let changedScope = previous.scheduleScope != controller.currentScheduleMetadata?.scheduleScope
+        guard changedScope || defaults.bool(forKey: "naptable.liveActivity.v2.cancelPlan") else { return }
+        if !previous.items.isEmpty || !previous.busyIntervals.isEmpty || previous.coverageStart < Date().timeIntervalSince1970 - 86400 || previous.coverageEndExclusive <= Date().timeIntervalSince1970 {
+            previous.planRevision += 1
+            previous.items = []
+            previous.busyIntervals = []
+            previous.coverageStart = floor(Date().timeIntervalSince1970 / 86400) * 86400
+            previous.coverageEndExclusive = previous.coverageStart + 86400
+            defaults.set(try JSONEncoder().encode(previous), forKey: Self.planKey)
         }
-        let baseBody: [String: Any] = [
-            "startToken": startToken,
-            "environment": Self.environment,
-            "bundleID": Bundle.main.bundleIdentifier ?? "",
-            "timeZone": "Asia/Shanghai",
-        ]
-        var lastError: Error?
-        for attempt in 0..<4 {
-            var body = baseBody
-            if #available(iOS 26.0, *) { body["supportsBroadcast"] = true }
-            if let snapshot = NativeLiveActivityController.shared.currentScheduleMetadata {
-                body["schoolID"] = snapshot.schoolID ?? ""
-                body["termID"] = snapshot.termID ?? ""
-            }
-            if let deviceID { body["deviceID"] = deviceID }
-            do {
-                let result = try await request(path: "/v1/live-activity/devices", method: "POST", body: body)
-                if let id = result["deviceID"] as? String { defaults.set(id, forKey: Self.deviceIDKey) }
-                if let secret = result["secret"] as? String { defaults.set(secret, forKey: Self.secretKey) }
-                if !startToken.isEmpty {
-                    defaults.removeObject(forKey: Self.pendingStartTokenKey)
-                }
-                if let channelID = result["channelID"] as? String {
-                    defaults.set(channelID, forKey: Self.channelIDKey)
-                    NativeLiveActivityController.shared.broadcastChannelID = channelID
-                } else {
-                    defaults.removeObject(forKey: Self.channelIDKey)
-                    NativeLiveActivityController.shared.broadcastChannelID = nil
-                }
-                if result["pushConfigured"] as? Bool == false {
-                    status = .failed("服务端还没有配置 APNs 推送密钥。")
-                    return
-                }
-                // A token can arrive before or after the first plan is rendered.
-                defaults.removeObject(forKey: Self.digestKey)
-                NativeLiveActivityController.shared.replanForPush()
-                await flushPendingActivityRegistrations()
-                return
-            } catch {
-                lastError = error
-                if attempt < 3 {
-                    try? await Task.sleep(for: .seconds(Double(1 << attempt)))
-                }
-            }
+        let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(previous)) as! [String: Any]
+        do { _ = try await request("/devices/\(device)/plan", method: "PUT", body: body) }
+        catch {
+            let original = error
+            let status = try await request("/devices/\(device)", method: "GET")
+            guard status["launchMode"] as? String == "local" else { throw original }
         }
-        status = .failed(lastError?.localizedDescription ?? "无法注册推送设备")
+        defaults.removeObject(forKey: "naptable.liveActivity.v2.cancelPlan")
     }
-
-    private func registerActivity(_ activity: Activity<ScheduleLiveActivityAttributes>, token: String) async {
-        guard isEnabled else { return }
-        let expires = max(
-            activity.content.state.endDate.addingTimeInterval(48 * 3600),
-            Date().addingTimeInterval(48 * 3600)
-        )
-        let registration = PendingActivityRegistration(
-            activityID: activity.id,
-            updateToken: token,
-            expiresAt: Int(expires.timeIntervalSince1970)
-        )
-        savePendingActivityRegistration(registration)
-        await retryActivityRegistration(registration)
+    func revoke() {
+        defaults.set(true, forKey: Self.revokeKey)
+        generation += 1
+        dirty = true
+        enqueue()
     }
-
-    private func retryActivityRegistration(_ registration: PendingActivityRegistration) async {
-        guard isEnabled else { return }
-        for attempt in 0..<4 {
-            guard deviceID != nil else { return }
-            do {
-                let id = registration.activityID
-                _ = try await request(
-                    path: "/v1/live-activity/devices/\(deviceID!)/activities",
-                    method: "POST",
-                    body: ["activityID": id, "updateToken": registration.updateToken, "expiresAt": registration.expiresAt]
-                )
-                removePendingActivityRegistration(id)
-                return
-            } catch {
-                if attempt < 3 {
-                    try? await Task.sleep(for: .seconds(Double(1 << attempt)))
-                }
-            }
-        }
-    }
-
-    private func pendingActivityRegistrations() -> [PendingActivityRegistration] {
-        guard let data = defaults.data(forKey: Self.pendingActivityTokensKey),
-              let values = try? JSONDecoder().decode([PendingActivityRegistration].self, from: data) else { return [] }
-        return values
-    }
-
-    private func savePendingActivityRegistration(_ registration: PendingActivityRegistration) {
-        var values = pendingActivityRegistrations().filter { $0.activityID != registration.activityID }
-        values.append(registration)
-        if let data = try? JSONEncoder().encode(values) {
-            defaults.set(data, forKey: Self.pendingActivityTokensKey)
-        }
-    }
-
-    private func removePendingActivityRegistration(_ activityID: String) {
-        let values = pendingActivityRegistrations().filter { $0.activityID != activityID }
-        if values.isEmpty {
-            defaults.removeObject(forKey: Self.pendingActivityTokensKey)
-        } else if let data = try? JSONEncoder().encode(values) {
-            defaults.set(data, forKey: Self.pendingActivityTokensKey)
-        }
-    }
-
-    private func flushPendingActivityRegistrations() async {
-        for registration in pendingActivityRegistrations() {
-            await retryActivityRegistration(registration)
-        }
-    }
-
-    private func forgetActivity(_ activityID: String) async {
-        guard let deviceID else { return }
-        _ = try? await request(path: "/v1/live-activity/devices/\(deviceID)/activities/\(activityID)", method: "DELETE")
-    }
-
-    private func forgetDevice() async {
-        guard let deviceID else { return }
-        _ = try? await request(path: "/v1/live-activity/devices/\(deviceID)", method: "DELETE")
-        defaults.removeObject(forKey: Self.deviceIDKey)
-        defaults.removeObject(forKey: Self.secretKey)
-        defaults.removeObject(forKey: Self.channelIDKey)
-        NativeLiveActivityController.shared.broadcastChannelID = nil
-    }
-
-    /// Upload a freshly rendered plan, skipping the round trip when nothing
-    /// about it changed since the last upload.
-    func submit(_ plan: [NativeLiveActivityController.PlannedPush]) {
-        if #available(iOS 26.0, *) { refreshDayChannels(); return }
-        guard isEnabled else { return }
-        guard deviceID != nil else {
-            // Scheduled Live Activities on iOS 26 do not need a push-to-start
-            // token. Register a lightweight device row so the server can
-            // return the school's broadcast channel.
-            if #available(iOS 26.0, *) {
-                Task { await self.registerDevice(startToken: "") }
-            }
-            return
-        }
-        let items = plan.map(Self.payload)
-        let digest = Self.digest(of: items)
-        guard digest != defaults.string(forKey: Self.digestKey) else { return }
-        uploadTask?.cancel()
-        uploadTask = Task { @MainActor [weak self] in
-            guard let self, let deviceID = self.deviceID else { return }
-            do {
-                await self.refreshDeviceMetadata()
-                let result = try await self.request(
-                    path: "/v1/live-activity/devices/\(deviceID)/plan", method: "PUT", body: ["items": items])
-                self.defaults.set(digest, forKey: Self.digestKey)
-                self.apply(result)
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.defaults.removeObject(forKey: Self.digestKey)
-                self.status = .failed(error.localizedDescription)
-            }
-        }
-    }
-
-    private func refreshDeviceMetadata() async {
-        guard let deviceID, let snapshot = NativeLiveActivityController.shared.currentScheduleMetadata else { return }
-        var body: [String: Any] = [
-            "deviceID": deviceID,
-            "environment": Self.environment,
-            "bundleID": Bundle.main.bundleIdentifier ?? "",
-            "timeZone": snapshot.timeZone ?? "Asia/Shanghai",
-            "schoolID": snapshot.schoolID ?? "",
-            "termID": snapshot.termID ?? "",
-        ]
-        if #available(iOS 26.0, *) { body["supportsBroadcast"] = true }
-        guard let result = try? await request(path: "/v1/live-activity/devices", method: "POST", body: body) else { return }
-        if let channelID = result["channelID"] as? String {
-            defaults.set(channelID, forKey: Self.channelIDKey)
-            NativeLiveActivityController.shared.broadcastChannelID = channelID
-        } else {
-            defaults.removeObject(forKey: Self.channelIDKey)
-            NativeLiveActivityController.shared.broadcastChannelID = nil
-        }
-    }
-
-    func refreshStatus() async {
-        if #available(iOS 26.0, *) { refreshDayChannels(); return }
-        guard isEnabled, let deviceID else { return }
-        if let result = try? await request(path: "/v1/live-activity/devices/\(deviceID)", method: "GET") {
-            apply(result)
-        }
-    }
-
-    private func apply(_ result: [String: Any]) {
-        if result["pushConfigured"] as? Bool == false {
-            status = .failed("服务端还没有配置 APNs 推送密钥。")
-            return
-        }
-        if let channelID = result["channelID"] as? String {
-            defaults.set(channelID, forKey: Self.channelIDKey)
-            NativeLiveActivityController.shared.broadcastChannelID = channelID
-        } else {
-            defaults.removeObject(forKey: Self.channelIDKey)
-            NativeLiveActivityController.shared.broadcastChannelID = nil
-        }
-        if result["hasStartToken"] as? Bool == false && channelID == nil {
-            status = .waitingForToken
-            return
-        }
-        let pending = result["pendingCount"] as? Int ?? 0
-        let next = (result["nextFireAt"] as? Double).map { Date(timeIntervalSince1970: $0) }
-        status = .ready(pending: pending, nextFireAt: next)
-    }
-
-    // MARK: - Payload
-
-    private func refreshDayChannels() {
-        guard isEnabled, dayConfigTask == nil else { return }
-        dayConfigTask = Task { [weak self] in
+    func refreshStatus() async { mappingFetchedAt = .distantPast; enqueue(); await worker?.value }
+    private func enqueue() {
+        dirty = true
+        generation += 1
+        guard worker == nil else { return }
+        worker = Task { [weak self] in
             guard let self else { return }
-            defer { dayConfigTask = nil }
-            // Retire the pre-upgrade credential before scheduling local starts.
-            if let deviceID {
-                do {
-                    _ = try await request(path: "/v1/live-activity/devices/\(deviceID)", method: "DELETE")
-                    defaults.removeObject(forKey: Self.deviceIDKey)
-                    defaults.removeObject(forKey: Self.secretKey)
-                } catch { status = .failed(error.localizedDescription); return }
+            while dirty {
+                dirty = false
+                let captured = generation
+                do { try await synchronize(generation: captured) }
+                catch {
+                    guard captured == generation else { continue }
+                    status = .failed(error.localizedDescription)
+                    controller.setServiceFailure(error.localizedDescription)
+                    scheduleRetry()
+                }
             }
-            guard let school = NativeLiveActivityController.shared.currentScheduleMetadata?.schoolID else { return }
+            worker = nil
+        }
+    }
+    private func scheduleRetry() {
+        guard retryTask == nil, isEnabled || defaults.bool(forKey: Self.revokeKey) else { return }
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard let self, !Task.isCancelled else { return }
+            retryTask = nil
+            mappingFetchedAt = .distantPast
+            enqueue()
+        }
+    }
+    private func current(_ captured: Int, scope: String) -> Bool {
+        captured == generation && isEnabled && !defaults.bool(forKey: Self.revokeKey) && controller.currentScheduleMetadata?.scheduleScope == scope
+    }
+    private func synchronize(generation captured: Int) async throws {
+        if defaults.bool(forKey: Self.revokeKey) || !isEnabled {
+            try await forget()
+            if !isEnabled { status = .off; return }
+        }
+        try await cancelPreviousPlanIfNeeded()
+        guard #available(iOS 18.0, *), let snapshot = controller.currentScheduleMetadata,
+              let scope = snapshot.scheduleScope, let school = snapshot.schoolID else {
+            status = .failed("课表未关联服务端学校，自动实时活动不可用。")
+            return
+        }
+        if deviceID == nil { defaults.set(UUID().uuidString, forKey: Self.deviceKey) }
+        guard let device = deviceID else { return }
+        if let existingSecret = secret(device) { try saveSecret(existingSecret, id: device) }
+        else {
+            // A lost first registration response must remain recoverable.
+            try saveSecret(UUID().uuidString + UUID().uuidString, id: device)
+        }
+        if !defaults.bool(forKey: Self.registrationKey) || token != uploadedToken {
+            let registrationToken = token
+            var body: [String: Any] = ["deviceID": device, "installationId": device, "environment": Self.environment, "bundleID": Bundle.main.bundleIdentifier ?? ""]
+            if let registrationToken { body["startToken"] = registrationToken }
+            let response = try await request("/devices", method: "POST", body: body)
+            // Always retain late registration credentials, even after disable/scope change.
+            if let secret = response["secret"] as? String { try saveSecret(secret, id: device) }
+            defaults.set(true, forKey: Self.registrationKey)
+            uploadedToken = registrationToken
+            guard current(captured, scope: scope) else { dirty = true; return }
+        }
+        var local = false
+        if #available(iOS 26.0, *) {
+            if !defaults.bool(forKey: Self.handoffKey) {
+                let response = try await request("/devices/\(device)/local-handoff", method: "POST", body: [:])
+                guard response["launchMode"] as? String == "local" else { throw ScheduleServiceError.invalidResponse }
+                if let error = response["error"] as? String, !error.isEmpty { throw ScheduleServiceError.server("旧实时活动仍在排空，请稍后重新打开 App。") }
+                serverHistory = Self.submittedHistory(response)
+                defaults.set(Array(serverHistory), forKey: Self.handoffKey + ".history")
+                defaults.set(true, forKey: Self.handoffKey)
+            } else {
+                serverHistory = Set(defaults.stringArray(forKey: Self.handoffKey + ".history") ?? [])
+            }
+            local = true
+        }
+        guard current(captured, scope: scope) else { dirty = true; return }
+        if cachedSchool != school || cachedMapping?.periods != snapshot.periods.map({ LiveActivityMapping.Period(number: $0.number, start: $0.startTime, end: $0.endTime) }) || cachedMapping?.timeZone != snapshot.timeZone || Date().timeIntervalSince(mappingFetchedAt) > 3600 {
+            var components = URLComponents()
+            components.queryItems = [URLQueryItem(name: "schoolID", value: school), URLQueryItem(name: "scheduleId", value: "default"), URLQueryItem(name: "bundleID", value: Bundle.main.bundleIdentifier ?? ""), URLQueryItem(name: "environment", value: Self.environment)]
             do {
-                let result = try await request(path: "/v1/live-activity/day-channels", method: "POST", body: [
-                    "schoolID": school, "environment": Self.environment,
-                    "bundleID": Bundle.main.bundleIdentifier ?? ""
-                ])
-                guard !Task.isCancelled, isEnabled,
-                      school == NativeLiveActivityController.shared.currentScheduleMetadata?.schoolID else { return }
-                NativeLiveActivityController.shared.broadcastDayChannels = result["channels"] as? [String: String] ?? [:]
-                status = .ready(pending: 0, nextFireAt: nil)
-            } catch { status = .failed(error.localizedDescription) }
-        }
-    }
-
-    private static func payload(_ push: NativeLiveActivityController.PlannedPush) -> [String: Any] {
-        var item: [String: Any] = [
-            "id": push.id,
-            "event": push.event.rawValue,
-            "fireAt": Int(push.fireAt.timeIntervalSince1970),
-            "expiresAt": Int(push.expiresAt.timeIntervalSince1970),
-            "contentState": object(from: push.state),
-            "attributesType": "ScheduleLiveActivityAttributes",
-            "staleDate": Int(push.staleDate.timeIntervalSince1970),
-        ]
-        switch push.event {
-        case .start:
-            item["attributes"] = object(from: push.attributes)
-            // The alert is what a locked device and the Watch show when the
-            // activity appears; the island itself needs none.
-            item["alert"] = [
-                "title": push.state.courseName,
-                "body": [push.state.periodLabel, push.state.location]
-                    .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                    .joined(separator: " · "),
-            ]
-        case .end:
-            item["dismissalDate"] = Int(push.fireAt.timeIntervalSince1970)
-        case .update:
-            break
-        }
-        return item
-    }
-
-    /// The state is coded by its own `Codable`, so the JSON the server relays
-    /// is byte for byte what ActivityKit decodes on the way back in.
-    private static func object<Value: Encodable>(from value: Value) -> [String: Any] {
-        guard let data = try? JSONEncoder().encode(value),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        return object
-    }
-
-    /// Stable across launches, unlike `hashValue`, so a plan that did not
-    /// change survives a restart without another upload.
-    private static func digest(of items: [[String: Any]]) -> String {
-        let data = (try? JSONSerialization.data(withJSONObject: items, options: [.sortedKeys])) ?? Data()
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func hex(_ data: Data) -> String {
-        data.map { String(format: "%02x", $0) }.joined()
-    }
-
-    // MARK: - Transport
-
-    @discardableResult
-    private func request(path: String, method: String, body: [String: Any]? = nil) async throws -> [String: Any] {
-        guard let base = ScheduleSharingService.shared.validatedBaseURL,
-              let url = URL(string: path, relativeTo: base) else { throw ScheduleServiceError.missingBaseURL }
-        var value = URLRequest(url: url)
-        value.httpMethod = method
-        value.timeoutInterval = 20
-        value.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let secret { value.setValue(secret, forHTTPHeaderField: "X-Device-Secret") }
-        if let body { value.httpBody = try JSONSerialization.data(withJSONObject: body) }
-        let (data, response) = try await URLSession.shared.data(for: value)
-        guard let http = response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 403 {
-                // The server forgot this device; register again from scratch.
-                defaults.removeObject(forKey: Self.deviceIDKey)
-                defaults.removeObject(forKey: Self.secretKey)
+                let response = try await request("/broadcast-config?" + (components.percentEncodedQuery ?? ""), method: "GET")
+                cachedMapping = try JSONDecoder().decode(LiveActivityMapping.self, from: JSONSerialization.data(withJSONObject: response))
+                cachedSchool = school
+                mappingFetchedAt = Date()
+                defaults.set(try JSONEncoder().encode(cachedMapping), forKey: "naptable.liveActivity.v2.mapping." + Self.environment)
+            } catch {
+                // Cached expiry is immutable: offline use never renews its promise.
+                cachedMapping = defaults.data(forKey: "naptable.liveActivity.v2.mapping." + Self.environment).flatMap { try? JSONDecoder().decode(LiveActivityMapping.self, from: $0) }
+                guard local, let mapping = cachedMapping, mapping.schoolID == school, mapping.createBefore > Date().timeIntervalSince1970 else { throw error }
+                cachedSchool = school
+                mappingFetchedAt = Date()
             }
-            throw ScheduleServiceError.server(object["error"] as? String ?? "HTTP \(http.statusCode)")
         }
-        return object
+        guard current(captured, scope: scope), let mapping = cachedMapping else { return }
+        controller.applyMapping(mapping, localHandoff: local, submitted: serverHistory)
+        if mapping.status != "ready" { scheduleRetry() }
+        // applyMapping may rebuild once; the serialized next pass submits that snapshot.
+        guard current(captured, scope: scope), let display = controller.display,
+              display.scope == scope, display.scheduleVersion == mapping.scheduleVersion else { return }
+        if local { status = .ready(pending: 0, nextFireAt: nil); return }
+        let coverageStart = floor(Date().timeIntervalSince1970 / 86400) * 86400
+        let old = defaults.data(forKey: Self.planKey).flatMap { try? JSONDecoder().decode(LiveActivityPlan.self, from: $0) }
+        var plan = LiveActivityPlan(planRevision: old?.planRevision ?? 1, scheduleScope: scope, schoolID: school,
+            scheduleVersion: mapping.scheduleVersion, coverageStart: coverageStart, coverageEndExclusive: coverageStart + 181 * 86400,
+            leadMinutes: controller.leadMinutes, items: display.occurrences.map(\.item), busyIntervals: [])
+        if let old, plan != old { plan.planRevision = old.planRevision + 1 }
+        // Persist before upload: retry after a lost response reuses exactly the same revision/body.
+        defaults.set(try JSONEncoder().encode(plan), forKey: Self.planKey)
+        let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as! [String: Any]
+        let response = try await request("/devices/\(device)/plan", method: "PUT", body: body)
+        guard current(captured, scope: scope) else { return }
+        status = token == nil ? .waitingForToken : .ready(pending: response["pendingCount"] as? Int ?? 0, nextFireAt: nil)
+    }
+    private static func submittedHistory(_ response: [String: Any]) -> Set<String> {
+        Set((response["history"] as? [[String: Any]] ?? []).compactMap {
+            guard let state = $0["state"] as? String, ["submitting", "submitted", "submissionUnknown"].contains(state) else { return nil }
+            return $0["occurrenceId"] as? String
+        })
+    }
+    private func forget() async throws {
+        guard let device = deviceID else { defaults.removeObject(forKey: Self.revokeKey); return }
+        if secret(device) != nil {
+            _ = try await request("/devices/\(device)", method: "DELETE", legacy: !defaults.bool(forKey: Self.registrationKey))
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keychainService, kSecAttrAccount as String: device]
+            if let credentials { credentials.remove(device) } else { SecItemDelete(query as CFDictionary) }
+        }
+        for key in [Self.deviceKey, Self.legacySecretKey, Self.registrationKey, Self.revokeKey, Self.handoffKey, Self.handoffKey + ".history", Self.planKey] { defaults.removeObject(forKey: key) }
+        uploadedToken = nil
+    }
+    private func request(_ path: String, method: String, body: [String: Any]? = nil, legacy: Bool = false) async throws -> [String: Any] {
+        guard let base = baseURL ?? ScheduleSharingService.shared.validatedBaseURL,
+              let url = URL(string: (legacy ? "/v1" : "/v2") + "/live-activity" + path, relativeTo: base) else { throw ScheduleServiceError.missingBaseURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let device = deviceID, let secret = secret(device) { request.setValue(secret, forHTTPHeaderField: "X-Device-Secret") }
+        if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) }
+        let data: Data
+        let response: URLResponse
+        if let transport { (data, response) = try await transport(request) }
+        else { (data, response) = try await URLSession.shared.data(for: request) }
+        guard let http = response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }
+        let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        // Never discard credentials after a transient/auth error: pending revoke needs them.
+        guard (200..<300).contains(http.statusCode) else { throw ScheduleServiceError.server(value["error"] as? String ?? "HTTP \(http.statusCode)") }
+        return value
     }
 }
 #endif

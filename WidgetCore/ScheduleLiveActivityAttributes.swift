@@ -3,8 +3,8 @@ import ActivityKit
 import Foundation
 
 /// Shared wire model for the iPhone Live Activity and its WidgetKit view.
-/// This file is compiled into both the app and the widget extension, exactly as
-/// in `../CPU-Web/ios_next` (CpuTime) `CPUWebWidgets/ScheduleLiveActivityAttributes.swift`.
+/// Compiled into both app and widget. Optional v2 identity fields preserve
+/// decoding of activities created before the protocol migration.
 nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Equatable {
     public struct ContentState: Codable, Hashable {
         public enum Phase: String, Codable, Hashable {
@@ -239,6 +239,10 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         }
     }
 
+    public let protocolVersion: Int?
+    public let scheduleScope: String?
+    public let occurrenceId: String?
+    public let scheduleVersion: String?
     public let semester: String
     public let dateKey: String
     public let week: Int
@@ -247,7 +251,11 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
     public let broadcastChannel: String?
     public let reminderDate: Date?
 
-    public init(semester: String, dateKey: String, week: Int = 0, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil) {
+    public init(semester: String, dateKey: String, week: Int = 0, protocolVersion: Int? = nil, scheduleScope: String? = nil, occurrenceId: String? = nil, scheduleVersion: String? = nil, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil) {
+        self.protocolVersion = protocolVersion
+        self.scheduleScope = scheduleScope
+        self.occurrenceId = occurrenceId
+        self.scheduleVersion = scheduleVersion
         self.semester = semester
         self.dateKey = dateKey
         self.week = week

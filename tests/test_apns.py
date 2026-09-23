@@ -4,6 +4,7 @@ The cryptography is pinned to the RFC 6979 known answer vector, and the frame
 layer runs against a fake APNs that speaks real HTTP/2 over a plain socket.
 """
 import base64, json, socket, struct, threading, unittest
+from unittest.mock import patch
 
 from server import apns
 
@@ -174,10 +175,13 @@ class FakeAPNs(threading.Thread):
             if self.send_settings:
                 sock.sendall(apns._frame(apns._SETTINGS, 0, 0, struct.pack(">HI", 0x5, 16384)))
             headers, body, stream = {}, b"", 1
+            settings_acked = not self.send_settings
             while True:
                 kind, flags, stream_id, payload = self._frame(sock)
                 if kind == apns._SETTINGS and not flags & 0x1:
                     sock.sendall(apns._frame(apns._SETTINGS, 0x1, 0))
+                elif kind == apns._SETTINGS and flags & 0x1:
+                    settings_acked = True
                 elif kind == apns._HEADERS:
                     stream = stream_id
                     headers = decode_literal_headers(payload)
@@ -185,6 +189,11 @@ class FakeAPNs(threading.Thread):
                     body += payload
                     if flags & 0x1:
                         break
+            # Drain the ACK before closing the socket. Closing with unread
+            # bytes sends RST and can erase an otherwise valid rejection.
+            while not settings_acked:
+                kind, flags, _, _ = self._frame(sock)
+                settings_acked = kind == apns._SETTINGS and bool(flags & 0x1)
             self.requests.append({"headers": headers, "body": body})
             block = bytes([0x48, len(str(self.status))]) + str(self.status).encode()
             end = 0x4 | (0x1 if not self.body else 0)
@@ -239,7 +248,7 @@ class HTTP2Tests(unittest.TestCase):
         result = client.push("a1b2c3", {"aps": {"event": "start"}}, environment="production",
                              expiration=1_700_000_000, collapse_id="abc-start")
         client.close()
-        self.assertEqual(result, {"ok": True, "status": 200, "reason": ""})
+        self.assertEqual(result, {"ok": True, "status": 200, "reason": "", "certainty": "accepted"})
         request = server.requests[0]
         self.assertEqual(request["headers"][":path"], "/3/device/a1b2c3")
         self.assertEqual(request["headers"][":method"], "POST")
@@ -258,7 +267,7 @@ class HTTP2Tests(unittest.TestCase):
         client = self._patched(self._client(server))
         result = client.push("dead", {"aps": {}})
         client.close()
-        self.assertEqual(result, {"ok": False, "status": 400, "reason": "BadDeviceToken"})
+        self.assertEqual(result, {"ok": False, "status": 400, "reason": "BadDeviceToken", "certainty": "rejected"})
 
     def test_broadcast_uses_the_apns_broadcast_endpoint_and_channel_header(self):
         server = FakeAPNs(status=200)
@@ -269,7 +278,7 @@ class HTTP2Tests(unittest.TestCase):
             "dHN0LXNyY2gtY2hubA==", {"aps": {"event": "update"}},
             environment="production", expiration=0, collapse_id="school-boundary")
         client.close()
-        self.assertEqual(result, {"ok": True, "status": 200, "reason": ""})
+        self.assertEqual(result, {"ok": True, "status": 200, "reason": "", "certainty": "accepted"})
         request = server.requests[0]
         self.assertEqual(request["headers"][":path"], "/4/broadcasts/apps/me.mom0ka27.naptable")
         self.assertEqual(request["headers"]["apns-channel-id"], "dHN0LXNyY2gtY2hubA==")
@@ -291,14 +300,14 @@ class HTTP2Tests(unittest.TestCase):
 
     def test_transport_failure_is_reported_not_raised(self):
         server = FakeAPNs()
-        server.start()
-        port = server.port
-        server.close()
+        self.addCleanup(server.close)
         client = self._patched(self._client(server))
-        result = client.push("dead", {"aps": {}})
+        self.addCleanup(client.close)
+        # Closing a listener from another thread need not cancel accept() on Linux.
+        with patch.object(apns.socket, "create_connection", side_effect=ConnectionRefusedError("test connection refused")):
+            result = client.push("dead", {"aps": {}})
         self.assertFalse(result["ok"])
         self.assertTrue(result["reason"].startswith("TransportError"))
-        self.assertEqual(port, server.port)
 
     def test_oversized_payload_is_refused_before_the_network(self):
         server = FakeAPNs()
@@ -322,6 +331,7 @@ class HTTP2Tests(unittest.TestCase):
 class ChannelManagementTests(unittest.TestCase):
     def client_with_calls(self, responses):
         client = object.__new__(apns.APNsClient)
+        client._channel_locks = {env: threading.RLock() for env in ("production", "sandbox")}
         calls = []
 
         def call(method, suffix, environment="production", body=None, channel_id=None):
@@ -358,3 +368,37 @@ class EnvironmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SubmissionCertaintyTests(unittest.TestCase):
+    def client(self, connection):
+        client = apns.APNsClient(apns.ES256Key(VECTOR_KEY), 'key', 'team', 'bundle')
+        client._connection = lambda *args, **kwargs: connection
+        return client
+
+    def test_start_transport_failure_is_not_replayed(self):
+        class Connection:
+            calls = 0
+            def request(self, *args):
+                self.calls += 1
+                raise OSError('response lost after send')
+            def close(self): pass
+        connection = Connection()
+        result = self.client(connection).push('abcd', {'aps': {'event': 'start'}})
+        self.assertEqual(connection.calls, 1)
+        self.assertEqual(result['certainty'], 'unknown')
+        self.assertFalse(result['ok'])
+
+    def test_empty_body_without_status_is_not_success(self):
+        class Connection:
+            def request(self, *args): return None, b''
+            def close(self): pass
+        result = self.client(Connection()).push('abcd', {'aps': {'event': 'start'}})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['certainty'], 'unknown')
+
+    def test_connection_failure_before_request_is_retryable_not_sent(self):
+        class Connection:
+            def request(self, *args): raise apns.APNsNotSentError('connect failed')
+            def close(self): pass
+        result = self.client(Connection()).push('abcd', {'aps': {'event': 'start'}})
+        self.assertEqual(result['certainty'], 'notSent')

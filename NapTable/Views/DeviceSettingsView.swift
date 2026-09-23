@@ -88,8 +88,6 @@ struct NativeDeviceSettingsContent: View {
             #endif
         } header: {
             Text("桌面与锁屏")
-        } footer: {
-            Text("改动课表后自动更新，不用手动同步。")
         }
     }
 }
@@ -140,32 +138,6 @@ struct ScheduleSettingsSection: View {
             Toggle("显示日期栏", isOn: $preferences.showDateHeader)
         } header: {
             Text("布局")
-        } footer: {
-            Text("「紧凑」的卡片只留课程名和教室。关掉周末后五列会变宽。")
-        }
-
-        Section {
-            HStack {
-                Text("行高")
-                Slider(
-                    value: $preferences.rowHeight,
-                    in: NativeSchedulePreferences.rowHeightRange,
-                    step: 1
-                )
-                Text("\(Int(preferences.rowHeight))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, alignment: .trailing)
-            }
-            if preferences.rowHeight != NativeSchedulePreferences.defaultRowHeight {
-                Button("恢复默认行高") {
-                    preferences.rowHeight = NativeSchedulePreferences.defaultRowHeight
-                }
-            }
-        } header: {
-            Text("行高")
-        } footer: {
-            Text("一节课占的高度。调小能多塞几节，默认 \(Int(NativeSchedulePreferences.defaultRowHeight))。")
         }
 
         Section {
@@ -174,8 +146,6 @@ struct ScheduleSettingsSection: View {
             Toggle("周次", isOn: $preferences.showWeeks)
         } header: {
             Text("课程卡片上显示什么")
-        } footer: {
-            Text("课程名始终显示。点开某节课仍可看到全部信息。")
         }
 
         ScheduleBackgroundSection(preferences: preferences)
@@ -222,8 +192,6 @@ private struct ScheduleBackgroundSection: View {
             }
         } header: {
             Text("背景图片")
-        } footer: {
-            Text("不透明度越低文字越清楚，建议不超过 30%。")
         }
         .onChange(of: selectedBackground) { _, item in
             guard let item else { return }
@@ -268,7 +236,7 @@ struct WidgetSettingsScreen: View {
                 } label: {
                     Label("立即同步一次", systemImage: "arrow.triangle.2.circlepath")
                 }
-                .disabled(store.snapshot() == nil)
+                .disabled(store.snapshot(useSharedNotifications: false) == nil)
 
                 if let status = settings.status {
                     Label(status, systemImage: status.contains("失败") ? "exclamationmark.triangle" : "checkmark.circle.fill")
@@ -289,8 +257,6 @@ struct WidgetSettingsScreen: View {
                 Toggle("上课时间", isOn: optionBinding(\.showTime))
             } header: {
                 Text("小组件上显示什么")
-            } footer: {
-                Text("关掉几项，剩下的会显示得更大。")
             }
 
             Section {
@@ -339,11 +305,11 @@ struct WidgetSettingsScreen: View {
     }
 
     private func sync() {
-        guard let snapshot = store.snapshot() else {
+        guard let snapshot = store.snapshot(useSharedNotifications: false) else {
             settings.status = "当前没有可同步的课表"
             return
         }
-        settings.writePayload(from: snapshot, selectedWeek: Int(store.selectedWeek))
+        settings.writePayload(from: snapshot, selectedWeek: store.localSelectedWeek)
     }
 }
 
@@ -370,8 +336,6 @@ struct GlobalThemeSettingsSection: View {
             .listRowSeparator(.hidden)
         } header: {
             Text("深色 / 浅色")
-        } footer: {
-            Text("跟随系统时随 iPhone 的深色模式切换。")
         }
 
         Section {
@@ -457,15 +421,16 @@ struct GlobalThemeSettingsSection: View {
 #if os(iOS)
 @available(iOS 16.1, *)
 struct LiveActivitySettingsScreen: View {
+    @ObservedObject private var consent = PrivacyConsent.shared
+    @State private var showPrivacyConsent = false
     @ObservedObject private var controller = NativeLiveActivityController.shared
     @State private var enabled: Bool
-    @State private var persistent: Bool
+    @State private var perPeriod: Bool
     @State private var leadMinutes: Int
 
     init() {
-        let defaults = UserDefaults(suiteName: NextWidgetConfiguration.appGroup)
-        _enabled = State(initialValue: defaults?.object(forKey: NativeLiveActivityController.enabledKey) as? Bool ?? true)
-        _persistent = State(initialValue: defaults?.object(forKey: NativeLiveActivityController.persistentKey) as? Bool ?? false)
+        _enabled = State(initialValue: NativeLiveActivityController.shared.isEnabled)
+        _perPeriod = State(initialValue: NativeLiveActivityController.shared.perPeriod)
         _leadMinutes = State(initialValue: NativeLiveActivityController.shared.leadMinutes)
     }
 
@@ -479,6 +444,7 @@ struct LiveActivitySettingsScreen: View {
                 Toggle("显示实时活动", isOn: Binding(
                     get: { enabled },
                     set: { value in
+                        if value && !consent.liveAccepted { showPrivacyConsent = true; return }
                         enabled = value
                         NativeLiveActivityController.shared.setEnabled(value)
                     }
@@ -505,27 +471,43 @@ struct LiveActivitySettingsScreen: View {
             } header: {
                 Text("什么时候出现")
             } footer: {
-                Text("距下节课还有这么久时出现。设得比课间长就会一下课直接接上。")
+                Text("提醒不会占用上一门课的上课时间；每门课程在最后一节结束时收起。")
             }
 
             Section {
-                Toggle("课间也保留", isOn: Binding(
-                    get: { persistent },
+                Toggle("分节计时", isOn: Binding(
+                    get: { perPeriod },
                     set: { value in
-                        persistent = value
-                        NativeLiveActivityController.shared.setPersistent(value)
+                        perPeriod = value
+                        NativeLiveActivityController.shared.setPerPeriod(value)
                     }
                 ))
                 .disabled(!enabled)
             } header: {
-                Text("下课后怎么办")
+                Text("课程内计时")
             } footer: {
-                Text("开启：接着倒计时到下一节，上完今天的课才消失。\n"
-                     + "关闭：一下课就收起，到上面的提前量再出现。")
+                Text("开启后分别倒计时到每节课的边界；关闭后倒计时到整堂课结束。连堂课的课间保留同一活动。")
             }
 
-            if #available(iOS 17.2, *) {
-                LiveActivityPushSection(enabled: enabled)
+            Section("实际安排") {
+                Text(controller.coverage)
+                if controller.omitted > 0 { Text("\(controller.omitted) 项课程缺少可靠时间或来源身份，未安排。") }
+                if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
+                Text("iOS 26 及以上预约未来 168 小时，回到前台后补充；离线漏收广播可能延迟收起。iOS 18 使用远程启动，iOS 17 仅支持前台本地提醒。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if !controller.conflicts.isEmpty {
+                Section("选择冲突课程") {
+                    ForEach(controller.conflicts) { conflict in
+                        Picker("\(conflict.date) 第 \(conflict.period) 节", selection: Binding(
+                            get: { controller.selectedSource(for: conflict) },
+                            set: { controller.selectSource($0, for: conflict) }
+                        )) {
+                            Text("请选择").tag("")
+                            ForEach(conflict.choices) { choice in Text(choice.name).tag(choice.id) }
+                        }
+                    }
+                }
             }
 
             Section {
@@ -551,11 +533,7 @@ struct LiveActivitySettingsScreen: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(controller.status.title)
                                 .font(.subheadline.weight(.medium))
-                            if let detail = controller.status.detail {
-                                Text(detail)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            } else if controller.isPreviewActive {
+                            if controller.isPreviewActive {
                                 Text("正在显示一节演示课程，锁屏后可以看到完整布局。")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
@@ -574,12 +552,18 @@ struct LiveActivitySettingsScreen: View {
                 }
             } header: {
                 Text("当前状态")
-            } footer: {
-                Text("预览是本地演示，不会改动课表。")
             }
         }
         .navigationTitle("实时活动")
         .appInlineNavigationTitle()
+        .onAppear { enabled = controller.isEnabled }
+        .onChange(of: consent.liveAccepted) { _, _ in enabled = controller.isEnabled }
+        .sheet(isPresented: $showPrivacyConsent) {
+            LiveActivityConsentView {
+                controller.setEnabled(true)
+                enabled = controller.isEnabled
+            }
+        }
     }
 
     private var statusSymbol: String {
@@ -588,74 +572,17 @@ struct LiveActivitySettingsScreen: View {
         case .failed: return "exclamationmark.triangle.fill"
         case .unavailable: return "minus.circle"
         case .disabled: return "pause.circle"
-        case .waiting: return "clock"
+        case .waiting, .limited: return "clock"
         }
     }
 
     private var statusColor: Color {
         switch controller.status {
         case .active: return .cpuBrand
-        case .failed, .unavailable: return .orange
+        case .failed, .unavailable, .limited: return .orange
         case .disabled, .waiting: return .secondary
         }
     }
 }
 
-/// Server driven start. Separate from the rest of the screen because it is the
-/// only part that needs a reachable NapTable server with an APNs key. It has no
-/// switch of its own: the Live Activity toggle above turns it on.
-@available(iOS 17.2, *)
-private struct LiveActivityPushSection: View {
-    let enabled: Bool
-    @ObservedObject private var service = LiveActivityPushService.shared
-
-    var body: some View {
-        Section {
-            if enabled {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: symbol)
-                        .foregroundStyle(color)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(service.status.title)
-                            .font(.subheadline.weight(.medium))
-                        if let detail = service.status.detail {
-                            Text(detail)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Button {
-                    NativeLiveActivityController.shared.replanForPush()
-                    Task { await LiveActivityPushService.shared.refreshStatus() }
-                } label: {
-                    Label("立即同步计划", systemImage: "arrow.triangle.2.circlepath")
-                }
-            }
-        } header: {
-            Text("不打开 App 也出现")
-        } footer: {
-            Text("接下来一周的课程时间会交给 NapTable 服务端，到点由服务端推送启动实时活动，"
-                 + "不用先打开 App。服务端没有配置 APNs 推送密钥时，回到打开 App 才启动。")
-        }
-    }
-
-    private var symbol: String {
-        switch service.status {
-        case .ready(let pending, _): return pending > 0 ? "checkmark.circle.fill" : "checkmark.circle"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .waitingForToken: return "clock"
-        case .off: return "pause.circle"
-        }
-    }
-
-    private var color: Color {
-        switch service.status {
-        case .ready: return .cpuBrand
-        case .failed: return .orange
-        case .waitingForToken, .off: return .secondary
-        }
-    }
-}
 #endif

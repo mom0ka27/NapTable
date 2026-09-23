@@ -1,0 +1,76 @@
+{
+  "periods": [
+    {
+      "start": "08:00",
+      "end": "08:50"
+    },
+    {
+      "start": "09:00",
+      "end": "09:50"
+    }
+  ],
+  "timeZone": "Asia/Taipei",
+  "dateKey": "2026-09-22",
+  "start": {
+    "aps": {
+      "event": "start",
+      "timestamp": 1790033400,
+      "attributes-type": "ScheduleLiveActivityAttributes",
+      "attributes": {
+        "semester": "",
+        "dateKey": "2026-09-22",
+        "week": 0,
+        "protocolVersion": 2,
+        "scheduleScope": "scope",
+        "occurrenceId": "occurrence",
+        "scheduleVersion": "version",
+        "reservationStart": 811728000,
+        "reservationEnd": 811734600,
+        "reminderDate": 811726200
+      },
+      "input-push-channel": "final-period-2",
+      "content-state": {
+        "broadcastDateKey": "2026-09-22",
+        "broadcastPeriod": 1,
+        "broadcastPhase": "upcoming",
+        "broadcastTimestamp": 1790033400,
+        "updatedAt": 1790033400,
+        "startDate": 1790033400,
+        "endDate": 1790033400
+      },
+      "stale-date": 1790041800
+    }
+  },
+  "update": {
+    "aps": {
+      "timestamp": 1790035200,
+      "event": "update",
+      "content-state": {
+        "broadcastDateKey": "2026-09-22",
+        "broadcastPeriod": 1,
+        "broadcastPhase": "started",
+        "broadcastTimestamp": 1790035200,
+        "updatedAt": 1790035200,
+        "startDate": 1790035200,
+        "endDate": 1790035200
+      },
+      "stale-date": 1790035260
+    }
+  },
+  "end": {
+    "aps": {
+      "timestamp": 1790041800,
+      "event": "end",
+      "content-state": {
+        "broadcastDateKey": "2026-09-22",
+        "broadcastPeriod": 2,
+        "broadcastPhase": "ended",
+        "broadcastTimestamp": 1790041800,
+        "updatedAt": 1790041800,
+        "startDate": 1790041800,
+        "endDate": 1790041800
+      },
+      "dismissal-date": 1790041800
+    }
+  }
+}

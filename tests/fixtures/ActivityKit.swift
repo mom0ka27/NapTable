@@ -36,14 +36,19 @@ public struct AlertConfiguration {
     }
 }
 
-public enum ActivityState { case active, stale, ended, dismissed }
+public enum ActivityState { case pending, active, stale, ended, dismissed }
 public enum ActivityUIDismissalPolicy { case immediate }
 public enum PushType {
     case token
     case channel(String)
 }
 
+public enum ActivityAuthorizationError: Error { case targetMaximumExceeded, globalMaximumExceeded }
+
 public enum TestActivityKit {
+    public static var capacity = Int.max
+    public static var capacityError = ActivityAuthorizationError.targetMaximumExceeded
+    public static var requestAttempts = 0
     public static var activitiesEnabled = true
     public static var failNextRequest = false
     public static var events: [String] = []
@@ -61,6 +66,8 @@ public final class Activity<Attributes: ActivityAttributes> {
     public private(set) var content: ActivityContent<Attributes.ContentState>
     public private(set) var activityState: ActivityState = .active
 
+    public static var pushToStartTokenUpdates: AsyncStream<Data> { AsyncStream { $0.finish() } }
+
     public static var activities: [Activity<Attributes>] {
         TestActivityKit.activities.compactMap { $0 as? Activity<Attributes> }
     }
@@ -75,6 +82,10 @@ public final class Activity<Attributes: ActivityAttributes> {
         content: ActivityContent<Attributes.ContentState>,
         pushType: PushType?
     ) throws -> Activity<Attributes> {
+        TestActivityKit.requestAttempts += 1
+        if activities.filter({ $0.activityState != .ended && $0.activityState != .dismissed }).count >= TestActivityKit.capacity {
+            throw TestActivityKit.capacityError
+        }
         if TestActivityKit.failNextRequest {
             TestActivityKit.failNextRequest = false
             throw NSError(domain: "ActivityKit", code: 1)
@@ -93,7 +104,9 @@ public final class Activity<Attributes: ActivityAttributes> {
         alertConfiguration: AlertConfiguration,
         start: Date
     ) throws -> Activity<Attributes> {
-        try request(attributes: attributes, content: content, pushType: pushType)
+        let activity = try request(attributes: attributes, content: content, pushType: pushType)
+        activity.activityState = .pending
+        return activity
     }
 
     public func update(_ content: ActivityContent<Attributes.ContentState>) async {

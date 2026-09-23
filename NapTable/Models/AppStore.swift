@@ -325,7 +325,7 @@ final class AppStore: ObservableObject {
     }
 
     func deleteTable(_ id: Int) {
-        guard tables.count > 1 else { return }
+        guard tables.contains(where: { $0.id == id }) else { return }
         tables.removeAll { $0.id == id }
         courses.removeAll { $0.tableId == id }
         if selectedTableId == id {
@@ -389,15 +389,12 @@ final class AppStore: ObservableObject {
 
     func eraseEverything() {
         courses.removeAll()
-        let table = tables.first ?? selectedTable
         tables = []
         selectedTableId = 0
         nextCourseId = 1
         nextTableId = 1
         nextCourseKey = 1
         didSeedSample = true
-        _ = table
-        addTable(name: SchoolDefaults.defaultTableName)
         scheduleSave()
     }
 
@@ -482,49 +479,6 @@ final class AppStore: ObservableObject {
         }
     }
 
-    // MARK: Sample data
-
-    /// Mirrors the Flutter app's admin/admin demo table so a new install has
-    /// something to look at and to try the gestures on.
-    func seedSampleIfNeeded() {
-        guard !didSeedSample else { return }
-        didSeedSample = true
-        if tables.isEmpty {
-            addTable(name: "Demo课表")
-        }
-        let allWeeks = Array(1...22)
-        let tableId = selectedTableId
-        func make(_ name: String, weeks: [Int], day: Int, slot: Int, count: Int, teacher: String, room: String, kind: Int = ImportKind.imported) -> Course {
-            var course = Course(
-                id: nextCourseId,
-                tableId: tableId,
-                name: name,
-                weeks: weeks,
-                weekTime: day,
-                startTime: slot,
-                timeCount: count,
-                importType: kind,
-                classroom: room,
-                teacher: teacher
-            )
-            nextCourseId += 1
-            course.courseKey = nextCourseKey
-            nextCourseKey += 1
-            return course
-        }
-        courses.append(contentsOf: [
-            make("自动导入的课程", weeks: allWeeks, day: 3, slot: 5, count: 1, teacher: "测试教师", room: "测试地点"),
-            make("手动导入的课程", weeks: allWeeks, day: 3, slot: 7, count: 1, teacher: "测试教师", room: "仙林校区", kind: ImportKind.manual),
-            make("单周展示的课程", weeks: WeekSeries.single(from: 1, to: 21), day: 2, slot: 5, count: 1, teacher: "测试教师", room: "测试地点"),
-            make("双周展示的课程", weeks: WeekSeries.double(from: 2, to: 22), day: 2, slot: 8, count: 1, teacher: "测试教师", room: "测试地点"),
-            make("有时间冲突的课程1", weeks: allWeeks, day: 4, slot: 2, count: 1, teacher: "测试教师", room: "测试地点"),
-            make("有时间冲突的课程2", weeks: allWeeks, day: 4, slot: 2, count: 1, teacher: "测试教师", room: "测试地点"),
-            make("自由时间课程", weeks: allWeeks, day: 0, slot: 0, count: 0, teacher: "", room: "测试地点")
-        ])
-        scheduleSave()
-        refreshForToday()
-    }
-
     // MARK: Settings
 
     func updateSettings(_ update: (inout AppSettings) -> Void) {
@@ -568,7 +522,7 @@ final class AppStore: ObservableObject {
             table.id = newId
             newTables.append(table)
         }
-        if newTables.isEmpty {
+        if newTables.isEmpty && !document.courses.isEmpty {
             let table = CourseTable(id: nextTableId, name: SchoolDefaults.defaultTableName)
             nextTableId += 1
             newTables = [table]
@@ -586,6 +540,8 @@ final class AppStore: ObservableObject {
         }
         tables.append(contentsOf: newTables)
         courses.append(contentsOf: newCourses)
+        normalize()
+        resetWeekToLive()
         // Tables and courses merge; display preferences are single values, so
         // the backup's copy wins. Older backups carry none and change nothing.
         if let display = document.display {
@@ -612,13 +568,6 @@ final class AppStore: ObservableObject {
     // MARK: Persistence
 
     private func normalize() {
-        if tables.isEmpty {
-            let table = CourseTable(id: nextTableId, name: SchoolDefaults.defaultTableName,
-                                    semesterStartMonday: "")
-            nextTableId += 1
-            tables = [table]
-            selectedTableId = table.id
-        }
         if !tables.contains(where: { $0.id == selectedTableId }) {
             selectedTableId = tables.first?.id ?? 0
         }

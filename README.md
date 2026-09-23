@@ -34,7 +34,7 @@ NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 
 
 ## 快速开始
 
-使用 Xcode 打开 `NapTable.xcodeproj`，选择 `NapTable` scheme 后运行。首次启动后可以导入课表，或在设置中使用学校网页导入；小组件和实时活动需要在 iOS 真机或对应模拟器中测试。
+使用 Xcode 打开 `NapTable.xcodeproj`，选择 `NapTable` scheme 后运行。首次启动需同意基础隐私协议并成功导入课表；实时通知上传许可可先拒绝，后续开启实时通知时再授权。设置中可查看协议和撤回实时通知许可；小组件和实时活动需要在 iOS 真机或对应模拟器中测试。
 
 最低部署版本和完整构建验证命令见[开发与构建](docs/DEVELOPMENT.md)。服务端不是运行 App 的必需项，只有学校配置、课表分享或服务端推送启动等功能需要它。
 
