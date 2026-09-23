@@ -4,14 +4,15 @@ import SwiftUI
 struct OnboardingColors {
     var scheme: ColorScheme
     private var dark: Bool { scheme == .dark }
-    var background: Color { dark ? Color(red: 0.065, green: 0.105, blue: 0.085) : Color(red: 0.962, green: 0.973, blue: 0.950) }
-    var surface: Color { dark ? Color(red: 0.105, green: 0.16, blue: 0.125) : .white }
-    var ink: Color { dark ? Color(red: 0.91, green: 0.95, blue: 0.88) : Color(red: 0.12, green: 0.23, blue: 0.17) }
-    var secondary: Color { dark ? Color(red: 0.65, green: 0.73, blue: 0.66) : Color(red: 0.39, green: 0.46, blue: 0.39) }
-    var accent: Color { dark ? Color(red: 0.73, green: 0.87, blue: 0.62) : Color(red: 0.20, green: 0.43, blue: 0.29) }
-    var soft: Color { dark ? Color(red: 0.17, green: 0.24, blue: 0.18) : Color(red: 0.91, green: 0.95, blue: 0.86) }
-    var line: Color { dark ? Color.white.opacity(0.09) : Color(red: 0.86, green: 0.90, blue: 0.83) }
-    var buttonText: Color { dark ? Color(red: 0.12, green: 0.23, blue: 0.17) : .white }
+    // Warm pinks taken from the app logo (see the 兔兔粉 theme).
+    var background: Color { dark ? Color(red: 0.110, green: 0.071, blue: 0.071) : Color(red: 0.984, green: 0.953, blue: 0.941) }
+    var surface: Color { dark ? Color(red: 0.165, green: 0.110, blue: 0.105) : .white }
+    var ink: Color { dark ? Color(red: 0.97, green: 0.93, blue: 0.91) : Color(red: 0.23, green: 0.15, blue: 0.14) }
+    var secondary: Color { dark ? Color(red: 0.75, green: 0.65, blue: 0.63) : Color(red: 0.48, green: 0.37, blue: 0.36) }
+    var accent: Color { dark ? Color(red: 0.95, green: 0.60, blue: 0.56) : Color(red: 0.84, green: 0.37, blue: 0.33) }
+    var soft: Color { dark ? Color(red: 0.23, green: 0.145, blue: 0.14) : Color(red: 0.988, green: 0.894, blue: 0.871) }
+    var line: Color { dark ? Color.white.opacity(0.09) : Color(red: 0.94, green: 0.87, blue: 0.85) }
+    var buttonText: Color { dark ? Color(red: 0.23, green: 0.12, blue: 0.11) : .white }
 }
 
 struct OnboardingPrimaryButtonStyle: ButtonStyle {

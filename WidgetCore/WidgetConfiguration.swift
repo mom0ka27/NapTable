@@ -63,8 +63,8 @@ enum NextWidgetConfiguration {
             return theme
         }
 
-        // Older widget settings used `color-glass`; use the brand green as the
-        // closest single-color equivalent for the unified theme.
+        // Nothing saved yet (or the old `color-glass` widget setting): fall back
+        // to the logo pink, the brand default.
         switch defaults?.string(forKey: widgetThemeKey) {
         case "blue": return .blue
         case "teal": return .teal
@@ -73,7 +73,8 @@ enum NextWidgetConfiguration {
         case "orange": return .orange
         case "rose": return .rose
         case "slate": return .slate
-        default: return .green
+        case "green": return .green
+        default: return .bunny
         }
     }
 
@@ -204,6 +205,7 @@ enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable,
 }
 
 enum ScheduleWidgetTheme: String {
+    case bunny
     case green
     case blue
     case teal
@@ -217,6 +219,7 @@ enum ScheduleWidgetTheme: String {
 }
 
 enum ScheduleLiveActivityTheme: String, CaseIterable, Codable, Identifiable {
+    case bunny
     case green
     case blue
     case teal
@@ -231,6 +234,7 @@ enum ScheduleLiveActivityTheme: String, CaseIterable, Codable, Identifiable {
 
     var title: String {
         switch self {
+        case .bunny: return "兔兔粉"
         case .green: return "青绿"
         case .blue: return "晴蓝"
         case .teal: return "湖青"
@@ -252,6 +256,9 @@ enum ScheduleLiveActivityTheme: String, CaseIterable, Codable, Identifiable {
 
     var brandColor: ScheduleLiveActivityRGB {
         switch self {
+        // The rabbit's ear and cheek pink from the app logo, deepened so it
+        // still reads as text and tint on light backgrounds.
+        case .bunny: return .init(red: 226 / 255, green: 111 / 255, blue: 99 / 255)
         case .green: return .init(red: 15 / 255, green: 143 / 255, blue: 127 / 255)
         case .blue: return .init(red: 37 / 255, green: 99 / 255, blue: 235 / 255)
         case .teal: return .init(red: 8 / 255, green: 145 / 255, blue: 178 / 255)
@@ -266,6 +273,7 @@ enum ScheduleLiveActivityTheme: String, CaseIterable, Codable, Identifiable {
 
     var widgetTheme: ScheduleWidgetTheme {
         switch self {
+        case .bunny: return .bunny
         case .green: return .green
         case .blue: return .blue
         case .teal: return .teal
@@ -284,11 +292,7 @@ struct ScheduleLiveActivityRGB: Codable, Equatable {
     var green: Double
     var blue: Double
 
-    static let `default` = ScheduleLiveActivityRGB(
-        red: 15 / 255,
-        green: 143 / 255,
-        blue: 127 / 255
-    )
+    static let `default` = ScheduleLiveActivityTheme.bunny.brandColor
 
     var clamped: Self {
         Self(

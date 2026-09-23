@@ -2050,6 +2050,8 @@ private enum WidgetPalette {
 
     static func accent(for theme: ScheduleWidgetTheme) -> Color {
         switch theme {
+        case .bunny:
+            return Color(red: 226 / 255, green: 111 / 255, blue: 99 / 255)
         case .green:
             return Color(red: 15 / 255, green: 143 / 255, blue: 127 / 255)
         case .blue:
@@ -2098,6 +2100,8 @@ private enum WidgetPalette {
             return colorGlassTints[index]
         }
         switch theme {
+        case .bunny:
+            return Color(red: 1, green: 244 / 255, blue: 241 / 255)
         case .green:
             return Color(red: 244 / 255, green: 251 / 255, blue: 248 / 255)
         case .blue:
