@@ -12,6 +12,54 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             case inProgress
         }
 
+        /// 自己的一节课，和正在显示的共享课表同时进行。
+        ///
+        /// Following a share makes the activity track somebody else's day.
+        /// When the reader is in class at the same moment, their own course
+        /// rides along so the island can show both instead of hiding one.
+        public struct Companion: Codable, Hashable {
+            public let courseName: String
+            public let teacher: String
+            public let location: String
+            public let periodLabel: String?
+            public let startDate: Date
+            public let endDate: Date
+
+            public init(courseName: String, teacher: String = "", location: String = "",
+                        periodLabel: String? = nil, startDate: Date, endDate: Date) {
+                self.courseName = courseName
+                self.teacher = teacher
+                self.location = location
+                self.periodLabel = periodLabel
+                self.startDate = startDate
+                self.endDate = endDate
+            }
+
+            private enum CodingKeys: String, CodingKey {
+                case courseName, teacher, location, periodLabel, startDate, endDate
+            }
+
+            public init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                courseName = try values.decodeIfPresent(String.self, forKey: .courseName) ?? ""
+                teacher = try values.decodeIfPresent(String.self, forKey: .teacher) ?? ""
+                location = try values.decodeIfPresent(String.self, forKey: .location) ?? ""
+                periodLabel = try values.decodeIfPresent(String.self, forKey: .periodLabel)
+                startDate = Date(timeIntervalSince1970: try values.decode(Double.self, forKey: .startDate))
+                endDate = Date(timeIntervalSince1970: try values.decode(Double.self, forKey: .endDate))
+            }
+
+            public func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(courseName, forKey: .courseName)
+                try values.encode(teacher, forKey: .teacher)
+                try values.encode(location, forKey: .location)
+                try values.encodeIfPresent(periodLabel, forKey: .periodLabel)
+                try values.encode(startDate.timeIntervalSince1970, forKey: .startDate)
+                try values.encode(endDate.timeIntervalSince1970, forKey: .endDate)
+            }
+        }
+
         public let phase: Phase
         public let courseName: String
         public let teacher: String
@@ -46,6 +94,8 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         public let broadcastPeriod: Int?
         public let broadcastPhase: String?
         public let broadcastTimestamp: Date?
+        /// 同时在上的自己的课。只有显示共享课表时才会出现。
+        public let companion: Companion?
 
         /// A persisted activity can render after its deadline. Keep its timer
         /// interval valid even when a late update arrives after the course ends.
@@ -124,7 +174,8 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             broadcastDateKey: String? = nil,
             broadcastPeriod: Int? = nil,
             broadcastPhase: String? = nil,
-            broadcastTimestamp: Date? = nil
+            broadcastTimestamp: Date? = nil,
+            companion: Companion? = nil
         ) {
             self.phase = phase
             self.courseName = courseName
@@ -150,6 +201,28 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             self.broadcastPeriod = broadcastPeriod
             self.broadcastPhase = broadcastPhase
             self.broadcastTimestamp = broadcastTimestamp
+            self.companion = companion
+        }
+
+        /// The same state with the reader's concurrent course attached (or
+        /// cleared with `nil`).
+        public func with(companion: Companion?) -> Self {
+            Self(phase: phase, courseName: courseName, teacher: teacher, location: location,
+                 periodLabel: periodLabel, dateLabel: dateLabel, weekRangeLabel: weekRangeLabel,
+                 startDate: startDate, endDate: endDate, nextCourseName: nextCourseName,
+                 nextCoursePeriod: nextCoursePeriod, nextCourseDateLabel: nextCourseDateLabel,
+                 nextCourseWeekRangeLabel: nextCourseWeekRangeLabel, nextCourseTeacher: nextCourseTeacher,
+                 nextCourseLocation: nextCourseLocation, nextCourseStart: nextCourseStart,
+                 nextCourseEnd: nextCourseEnd, sourceLabel: sourceLabel, adjustmentNote: adjustmentNote,
+                 updatedAt: updatedAt, broadcastDateKey: broadcastDateKey, broadcastPeriod: broadcastPeriod,
+                 broadcastPhase: broadcastPhase, broadcastTimestamp: broadcastTimestamp, companion: companion)
+        }
+
+        /// 共享课表的名字，去掉空白后为空就当是自己的课表。
+        public var normalizedSourceLabel: String? {
+            guard let value = sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
         }
 
         // MARK: Wire format
@@ -167,7 +240,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             case startDate, endDate, nextCourseName, nextCoursePeriod, nextCourseDateLabel
             case nextCourseWeekRangeLabel, nextCourseTeacher, nextCourseLocation
             case nextCourseStart, nextCourseEnd, sourceLabel, adjustmentNote, updatedAt
-            case broadcastDateKey, broadcastPeriod, broadcastPhase, broadcastTimestamp
+            case broadcastDateKey, broadcastPeriod, broadcastPhase, broadcastTimestamp, companion
         }
 
         /// An activity started by an earlier build outlives the app update that
@@ -208,6 +281,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             broadcastPeriod = try values.decodeIfPresent(Int.self, forKey: .broadcastPeriod)
             broadcastPhase = try values.decodeIfPresent(String.self, forKey: .broadcastPhase)
             broadcastTimestamp = try values.decodeIfPresent(Double.self, forKey: .broadcastTimestamp).map(Self.instant)
+            companion = try? values.decodeIfPresent(Companion.self, forKey: .companion)
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -236,6 +310,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             try values.encodeIfPresent(broadcastPeriod, forKey: .broadcastPeriod)
             try values.encodeIfPresent(broadcastPhase, forKey: .broadcastPhase)
             try values.encodeIfPresent(broadcastTimestamp?.timeIntervalSince1970, forKey: .broadcastTimestamp)
+            try values.encodeIfPresent(companion, forKey: .companion)
         }
     }
 

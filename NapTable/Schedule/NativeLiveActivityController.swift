@@ -44,6 +44,10 @@ final class NativeLiveActivityController: ObservableObject {
     var scheduleBackgroundWakeup: ((Date) -> Void)?
     var planDidChange: (() -> Void)?
     private(set) var currentScheduleMetadata: NativeScheduleSnapshot?
+    /// The reader's own timetable while `currentScheduleMetadata` is a
+    /// followed share. Display only: it never changes the scope, the plan or
+    /// the broadcast mapping, it just rides along as each frame's companion.
+    private var ownScheduleMetadata: NativeScheduleSnapshot?
     private(set) var display: LiveActivityDisplaySnapshot?
     private(set) var mapping: LiveActivityMapping?
     private var handoffConfirmed = false
@@ -97,8 +101,9 @@ final class NativeLiveActivityController: ObservableObject {
         defaults.set(selections, forKey: key)
         rebuild()
     }
-    func accept(_ snapshot: NativeScheduleSnapshot) {
+    func accept(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil) {
         guard !snapshot.cancelled else { return }
+        ownScheduleMetadata = snapshot.sourceLabel == nil ? nil : own
         if let previousScope = currentScheduleMetadata?.scheduleScope, previousScope != snapshot.scheduleScope {
             #if os(iOS)
             if #available(iOS 17.2, *) { LiveActivityPushService.shared.invalidatePlan() }
@@ -130,7 +135,7 @@ final class NativeLiveActivityController: ObservableObject {
         task?.cancel()
         guard isEnabled else { status = .disabled; return }
         guard let scope = snapshot.scheduleScope else { status = .unavailable("课表缺少稳定身份，请重新打开课表。"); return }
-        let built = LiveActivityTimeline.build(snapshot, scope: scope, now: now(), lead: leadMinutes, perPeriod: perPeriod, defaults: defaults)
+        let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, scope: scope, now: now(), lead: leadMinutes, perPeriod: perPeriod, defaults: defaults)
         conflicts = built.conflicts
         omitted = built.omitted
         let value = LiveActivityDisplaySnapshot(scope: scope, scheduleVersion: mapping?.scheduleVersion ?? "local", occurrences: built.occurrences)
@@ -174,6 +179,7 @@ final class NativeLiveActivityController: ObservableObject {
     func refreshForThemeChange() { rebuild() }
     func reset() {
         currentScheduleMetadata = nil
+        ownScheduleMetadata = nil
         display = nil
         mapping = nil
         defaults.removeObject(forKey: LiveActivityDisplaySnapshot.key)

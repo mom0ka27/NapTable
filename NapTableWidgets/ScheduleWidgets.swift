@@ -83,7 +83,10 @@ private struct ScheduleLiveActivityWidget: Widget {
                     .dynamicIsland(verticalPlacement: .belowIfTooWide)
                 }
                 DynamicIslandExpandedRegion(.trailing, priority: 1) {
-                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).state {
+                    // Merged rows carry one timer each; a third one up here
+                    // would only repeat the share's.
+                    if let state = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes).state,
+                       state.companion == nil {
                         ScheduleLiveActivityCountdown(state: state, compact: true, centered: true)
                             .frame(maxWidth: .infinity, minHeight: 24, alignment: .topTrailing)
                             .padding(.top, -8)
@@ -93,7 +96,11 @@ private struct ScheduleLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     let display = ScheduleLiveActivityDisplay(state: context.state, isStale: context.isStale, attributes: context.attributes)
                     Group {
-                        if let state = display.state {
+                        if let state = display.state, state.companion != nil {
+                            ScheduleLiveActivityPairRows(state: state)
+                                .padding(.horizontal, 6)
+                                .padding(.bottom, 8)
+                        } else if let state = display.state {
                             ScheduleLiveActivityExpandedDetails(state: state)
                         } else {
                             ScheduleLiveActivityFinishedRow(title: display.closingTitle)
@@ -166,7 +173,7 @@ private struct ScheduleLiveActivityDisplay {
         self.hasMoreToday = localState.afterEndState != nil
     }
 
-    var islandTitle: String { state?.phaseTitle ?? closingTitle }
+    var islandTitle: String { state?.islandTitle ?? closingTitle }
 
     /// 今天还有课但这一节已经结束（非常驻马上就收起）时说「已下课」；今天没课了
     /// 就说「今日无课」，而不是预告明天的课。
@@ -327,10 +334,44 @@ private struct ScheduleLiveActivityLockScreen: View {
     }
 
     var body: some View {
-        content
-            .environment(\.liveActivityPalette, palette)
-            .activityBackgroundTint(nil)
-            .activitySystemActionForegroundColor(.primary)
+        Group {
+            if state.companion != nil { merged } else { content }
+        }
+        .environment(\.liveActivityPalette, palette)
+        .activityBackgroundTint(nil)
+        .activitySystemActionForegroundColor(.primary)
+    }
+
+    /// Both people in class: a slim header, then one row per timetable.
+    /// The next-course line is dropped so the card stays within the Lock
+    /// Screen's height budget.
+    private var merged: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                ScheduleLiveActivityLogo(size: 24)
+                Text(state.islandTitle)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(palette.primaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let note = state.normalizedAdjustmentNote {
+                    ScheduleLiveActivityAdjustmentChip(note: note)
+                }
+            }
+            ScheduleLiveActivityPairRows(state: state, showsProgress: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 21)
+        .padding(.vertical, 12)
+        .background(gradient)
+    }
+
+    private var gradient: some View {
+        LinearGradient(
+            colors: [ScheduleLiveActivityPalette.brand.opacity(colorScheme == .dark ? 0.12 : 0.06), .clear],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var content: some View {
@@ -351,9 +392,7 @@ private struct ScheduleLiveActivityLockScreen: View {
                 ScheduleLiveActivityCountdown(state: state)
             }
 
-            if let note = state.normalizedAdjustmentNote {
-                ScheduleLiveActivityAdjustmentChip(note: note)
-            }
+            ScheduleLiveActivityChips(state: state)
             ScheduleLiveActivityCourseDetails(state: state)
             ScheduleLiveActivityProgress(state: state)
 
@@ -367,13 +406,7 @@ private struct ScheduleLiveActivityLockScreen: View {
         // Keep every baseline clear of its corners, including the next row.
         .padding(.horizontal, 21)
         .padding(.vertical, 14)
-        .background {
-            LinearGradient(
-                colors: [ScheduleLiveActivityPalette.brand.opacity(colorScheme == .dark ? 0.12 : 0.06), .clear],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
+        .background(gradient)
     }
 }
 
@@ -395,9 +428,7 @@ private struct ScheduleLiveActivityExpandedDetails: View {
                     .foregroundStyle(ScheduleLiveActivityPalette.secondaryText)
                     .fixedSize()
             }
-            if let note = state.normalizedAdjustmentNote {
-                ScheduleLiveActivityAdjustmentChip(note: note)
-            }
+            ScheduleLiveActivityChips(state: state)
             ScheduleLiveActivityCourseDetails(state: state)
             ScheduleLiveActivityProgress(state: state)
         }
@@ -406,6 +437,182 @@ private struct ScheduleLiveActivityExpandedDetails: View {
         // the progress track and the metadata away from its lower corners.
         .padding(.horizontal, 6)
         .padding(.bottom, 8)
+    }
+}
+
+/// 共享课表的名字和调休说明排成一行。两者都没有时什么也不画。
+@available(iOS 16.1, *)
+private struct ScheduleLiveActivityChips: View {
+    let state: ScheduleLiveActivityAttributes.ContentState
+
+    var body: some View {
+        let source = state.normalizedSourceLabel
+        let note = state.normalizedAdjustmentNote
+        if source != nil || note != nil {
+            HStack(spacing: 6) {
+                if let source { ScheduleLiveActivitySourceChip(name: source) }
+                if let note { ScheduleLiveActivityAdjustmentChip(note: note) }
+            }
+        }
+    }
+}
+
+/// 显示的是别人的课表时，标出是谁的。
+@available(iOS 16.1, *)
+private struct ScheduleLiveActivitySourceChip: View {
+    @Environment(\.liveActivityPalette) private var palette
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "person.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text(name)
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(palette.accent)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(palette.accent.opacity(0.16), in: Capsule())
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
+        .accessibilityLabel("\(name)的课表")
+    }
+}
+
+/// One line per timetable when the reader and the followed share are in
+/// class at the same time: the share first (the activity follows it), the
+/// reader's own course below. Course names share one leading edge; the
+/// small tag on the second line says whose each one is.
+@available(iOS 16.1, *)
+private struct ScheduleLiveActivityPairRows: View {
+    let state: ScheduleLiveActivityAttributes.ContentState
+    var showsProgress = false
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+            ScheduleLiveActivityPairRow(entry: .share(state), showsProgress: showsProgress, compact: compact)
+            if let companion = state.companion {
+                ScheduleLiveActivityPairRow(entry: .own(companion), showsProgress: showsProgress, compact: compact)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ScheduleLiveActivityPairEntry {
+    let tag: String
+    let isOwn: Bool
+    let courseName: String
+    let detail: String
+    let inProgress: Bool
+    let timer: ClosedRange<Date>
+    let showsHours: Bool
+    let progress: ClosedRange<Date>?
+
+    static func share(_ state: ScheduleLiveActivityAttributes.ContentState) -> Self {
+        Self(tag: state.normalizedSourceLabel ?? "共享", isOwn: false, courseName: state.courseName,
+             detail: detail(location: state.location, teacher: state.teacher, period: state.periodLabel),
+             inProgress: state.phase == .inProgress, timer: state.countdownInterval,
+             showsHours: state.countdownShowsHours,
+             progress: state.phase == .inProgress && state.endDate > state.startDate ? state.startDate...state.endDate : nil)
+    }
+
+    static func own(_ companion: ScheduleLiveActivityAttributes.ContentState.Companion) -> Self {
+        let interval = min(companion.startDate, companion.endDate)...companion.endDate
+        return Self(tag: "我", isOwn: true, courseName: companion.courseName,
+                    detail: detail(location: companion.location, teacher: companion.teacher, period: companion.periodLabel),
+                    inProgress: true, timer: interval,
+                    showsHours: interval.upperBound.timeIntervalSince(interval.lowerBound) >= 3600,
+                    progress: companion.endDate > companion.startDate ? interval : nil)
+    }
+
+    private static func detail(location: String, teacher: String, period: String?) -> String {
+        [location.isEmpty ? teacher : location, period ?? ""]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+}
+
+@available(iOS 16.1, *)
+private struct ScheduleLiveActivityPairRow: View {
+    @Environment(\.liveActivityPalette) private var palette
+    let entry: ScheduleLiveActivityPairEntry
+    var showsProgress = false
+    var compact = false
+
+    /// The share takes the brand accent, the reader's own row a neutral tone,
+    /// so the two can be told apart before either tag is read.
+    private var tint: Color { entry.isOwn ? palette.primaryText.opacity(0.78) : palette.accent }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: compact ? 6 : 8) {
+            Capsule()
+                .fill(tint)
+                .frame(width: 3)
+                .padding(.vertical, 1)
+            VStack(alignment: .leading, spacing: compact ? 1 : 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.courseName)
+                        .font(.system(size: compact ? 13 : 15, weight: .bold))
+                        .foregroundStyle(palette.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(timerInterval: entry.timer, countsDown: true, showsHours: entry.showsHours)
+                        .font(.system(size: compact ? 12 : 15, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: entry.showsHours ? 64 : 48, alignment: .trailing)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(entry.tag)
+                        .font(.system(size: compact ? 9 : 10, weight: .bold))
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(tint.opacity(0.18), in: Capsule())
+                        .frame(maxWidth: compact ? 44 : 72, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
+                    if !entry.detail.isEmpty {
+                        Text(entry.detail)
+                            .font(.system(size: compact ? 10 : 11, weight: .medium))
+                            .foregroundStyle(palette.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 4)
+                    if !compact {
+                        Text(entry.inProgress ? "距下课" : "距上课")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(palette.tertiaryText)
+                            .fixedSize()
+                    }
+                }
+                if showsProgress, let progress = entry.progress {
+                    ProgressView(timerInterval: progress, countsDown: false) {
+                        EmptyView()
+                    } currentValueLabel: {
+                        EmptyView()
+                    }
+                    .progressViewStyle(.linear)
+                    .tint(tint)
+                    .frame(height: 4)
+                    .padding(.top, 1)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(entry.isOwn ? "我" : entry.tag)：\(entry.courseName)，\(entry.inProgress ? "正在上课" : "即将上课")")
     }
 }
 
@@ -536,14 +743,36 @@ private struct ScheduleLiveActivityWatchCard: View {
         // than the phone lock screen. Fit within it instead of overflowing a
         // six-row stack and losing the logo/top baseline to the system clip.
         ViewThatFits(in: .vertical) {
-            content(showsTimeRange: true)
-            content(showsTimeRange: false)
+            if state.companion != nil {
+                merged(showsHeader: true)
+                merged(showsHeader: false)
+            } else {
+                content(showsTimeRange: true)
+                content(showsTimeRange: false)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .activityBackgroundTint(ScheduleLiveActivityPalette.surface)
         .activitySystemActionForegroundColor(.white)
+    }
+
+    private func merged(showsHeader: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if showsHeader {
+                HStack(spacing: 5) {
+                    ScheduleLiveActivityLogo(size: 16)
+                    Text(state.islandTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(ScheduleLiveActivityPalette.accent)
+                        .lineLimit(1)
+                }
+            }
+            ScheduleLiveActivityPairRows(state: state, compact: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func content(showsTimeRange: Bool) -> some View {
@@ -568,7 +797,7 @@ private struct ScheduleLiveActivityWatchCard: View {
                     .foregroundStyle(ScheduleLiveActivityPalette.primaryText)
                     .frame(width: 46, alignment: .trailing)
             }
-            Text([state.location.isEmpty ? state.teacher : state.location, state.periodLabel ?? ""]
+            Text([state.normalizedSourceLabel ?? "", state.location.isEmpty ? state.teacher : state.location, state.periodLabel ?? ""]
                 .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ScheduleLiveActivityPalette.secondaryText)
@@ -745,6 +974,12 @@ private enum ScheduleLiveActivityFormatting {
 
 private extension ScheduleLiveActivityAttributes.ContentState {
     var phaseTitle: String { phase == .inProgress ? "正在上课" : "即将上课" }
+
+    /// 自己也在上课时，标题说两边的关系；否则就是这节课的状态。
+    var islandTitle: String {
+        guard companion != nil else { return phaseTitle }
+        return phase == .inProgress ? "同时在上课" : "\(normalizedSourceLabel ?? "对方")即将上课"
+    }
 
     var hasNextCourse: Bool {
         !(nextCourseName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)

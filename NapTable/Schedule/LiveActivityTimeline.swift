@@ -24,7 +24,11 @@ struct LiveActivityTimeline {
         var supersedes: [String]
     }
 
-    static func build(_ snapshot: NativeScheduleSnapshot, scope: String, now: Date,
+    /// - Parameter own: The reader's own timetable. Only consulted when
+    ///   `snapshot` is a followed share (it carries a `sourceLabel`); a course
+    ///   of theirs that overlaps the share's frames is attached as the frame's
+    ///   `companion` so the activity can show both.
+    static func build(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil, scope: String, now: Date,
                       lead: Int, perPeriod: Bool, defaults: UserDefaults) -> Result {
         guard let data = snapshot.data, let calendar = snapshot.calendar,
               let zone = TimeZone(identifier: snapshot.timeZone ?? TimeZone.current.identifier) else {
@@ -43,6 +47,7 @@ struct LiveActivityTimeline {
         var result = Result(occurrences: [], conflicts: [], omitted: 0)
         var unassigned: Set<String> = []
         let limit = now.addingTimeInterval(180 * 86400).timeIntervalSince1970
+        let companions = snapshot.sourceLabel == nil ? [] : own.map { companionSpans($0, now: now, limit: limit) } ?? []
         for week in calendar.weeks {
             for (index, day) in week.days.enumerated() {
                 let adjustment = calendar.adjustments[day]
@@ -115,12 +120,13 @@ struct LiveActivityTimeline {
                                   let a = instant(day: day, clock: period.startTime, zone: zone),
                                   let b = instant(day: day, clock: period.endTime, zone: zone) else { continue }
                             if let previous = frames.last, previous.until < a {
-                                let pause = ScheduleLiveActivityAttributes.ContentState(phase: .upcoming, courseName: course.name, teacher: course.teacher ?? "", location: course.location ?? "", periodLabel: "课间 · 第 \(value.0) 节", dateLabel: day, startDate: Date(timeIntervalSince1970: a), endDate: Date(timeIntervalSince1970: b), updatedAt: Date(timeIntervalSince1970: previous.until))
+                                let pause = ScheduleLiveActivityAttributes.ContentState(phase: .upcoming, courseName: course.name, teacher: course.teacher ?? "", location: course.location ?? "", periodLabel: "课间 · 第 \(value.0) 节", dateLabel: day, startDate: Date(timeIntervalSince1970: a), endDate: Date(timeIntervalSince1970: b), sourceLabel: snapshot.sourceLabel, adjustmentNote: adjustment?.detail, updatedAt: Date(timeIntervalSince1970: previous.until))
                                 frames.append(.init(from: previous.until, until: a, state: pause))
                             }
                             frames.append(.init(from: a, until: b, state: state(from: a, until: b, upcoming: false)))
                         }
                     } else { frames.append(.init(from: start, until: end, state: state(from: start, until: end, upcoming: false))) }
+                    if !companions.isEmpty { frames = attach(companions, to: frames) }
                     result.occurrences.append(.init(item: .init(occurrenceId: identity.id, supersedes: identity.supersedes, dateKey: day, startPeriod: first.0, endPeriod: last.0), sourceID: first.1, start: start, end: end, reminder: reminder, frames: frames))
                 }
             }
@@ -133,6 +139,65 @@ struct LiveActivityTimeline {
 
     static func instant(day: String, clock: String, zone: TimeZone) -> Double? {
         instant(day: day, clock: clock, zone: zone, formatter: instantFormatter(zone: zone))
+    }
+
+    struct CompanionSpan: Equatable {
+        var start: Double
+        var end: Double
+        var companion: ScheduleLiveActivityAttributes.ContentState.Companion
+    }
+
+    /// Every course of the reader's own timetable as an absolute interval.
+    ///
+    /// Only a display hint, so it is deliberately forgiving: conflicting
+    /// courses are all kept (the earliest wins at render time) and courses
+    /// without a reliable time are skipped instead of counted as omitted.
+    static func companionSpans(_ own: NativeScheduleSnapshot, now: Date, limit: Double) -> [CompanionSpan] {
+        guard let data = own.data, let calendar = own.calendar,
+              let zone = TimeZone(identifier: own.timeZone ?? TimeZone.current.identifier) else { return [] }
+        let formatter = instantFormatter(zone: zone)
+        let byNumber = Dictionary(own.periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
+        let current = now.timeIntervalSince1970
+        var spans: [CompanionSpan] = []
+        for week in calendar.weeks {
+            for (index, day) in week.days.enumerated() {
+                let adjustment = calendar.adjustments[day]
+                if adjustment?.suppressesCourses == true { continue }
+                let sourceDay = adjustment?.sourceDay ?? index + 1
+                let sourceWeek = adjustment?.sourceWeek ?? week.week
+                for cell in data.cells where cell.bigSlot > 0 && cell.day == sourceDay {
+                    for course in cell.courses where course.weekList.isEmpty || course.weekList.contains(sourceWeek) {
+                        guard let first = course.startSlot, let last = course.endSlot, last >= first,
+                              let firstPeriod = byNumber[first], let lastPeriod = byNumber[last],
+                              let start = instant(day: day, clock: firstPeriod.startTime, zone: zone, formatter: formatter),
+                              let end = instant(day: day, clock: lastPeriod.endTime, zone: zone, formatter: formatter),
+                              end > start, end > current, start < limit else { continue }
+                        let span = CompanionSpan(start: start, end: end, companion: .init(
+                            courseName: course.name, teacher: course.teacher ?? "", location: course.location ?? "",
+                            periodLabel: first == last ? "第 \(first) 节" : "第 \(first)–\(last) 节",
+                            startDate: Date(timeIntervalSince1970: start), endDate: Date(timeIntervalSince1970: end)))
+                        if !spans.contains(span) { spans.append(span) }
+                    }
+                }
+            }
+        }
+        return spans.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
+    }
+
+    /// Splits `frames` wherever one of the reader's own courses starts or
+    /// ends, so each resulting frame either has one concurrent course of theirs
+    /// for its whole duration or none at all.
+    static func attach(_ spans: [CompanionSpan], to frames: [LiveActivityOccurrence.Frame]) -> [LiveActivityOccurrence.Frame] {
+        frames.flatMap { frame -> [LiveActivityOccurrence.Frame] in
+            let overlapping = spans.filter { $0.start < frame.until && $0.end > frame.from }
+            guard !overlapping.isEmpty else { return [frame] }
+            let cuts = Set(overlapping.flatMap { [$0.start, $0.end] }.filter { frame.from < $0 && $0 < frame.until })
+            let edges = [frame.from] + cuts.sorted() + [frame.until]
+            return zip(edges, edges.dropFirst()).map { from, until in
+                let active = overlapping.first { $0.start <= from && from < $0.end }
+                return .init(from: from, until: until, state: frame.state.with(companion: active?.companion))
+            }
+        }
     }
 
     private static func instantFormatter(zone: TimeZone) -> DateFormatter {

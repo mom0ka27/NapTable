@@ -95,6 +95,26 @@ struct NativeLiveActivityChecks {
         let adjusted = LiveActivityTimeline.build(fixture(adjusted: true), scope: "adjusted", now: now, lead: 30, perPeriod: false, defaults: defaults)
         precondition(adjusted.occurrences.contains { $0.item.dateKey == "2026-09-23" }, "Adjustment expands actual date")
         precondition(!adjusted.occurrences.contains { $0.item.dateKey == "2026-09-22" })
+        // A followed share carries the reader's concurrent course as its companion.
+        let share = fixture(source: "小明")
+        let mineCourse = NativeScheduleCourse(liveActivitySourceID: "M", name: "有机化学", weeks: "1周", weekList: [1], location: "1教105", startSlot: 2, endSlot: 3)
+        let mine = NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [mineCourse])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei")
+        let merged = LiveActivityTimeline.build(share, own: mine, scope: "share", now: now, lead: 30, perPeriod: false, defaults: defaults)
+        let shared = merged.occurrences[0]
+        let nine = shared.start + 60 * 60
+        precondition(shared.state(at: Date(timeIntervalSince1970: shared.start + 10 * 60))?.companion == nil, "Not merged before the reader's class")
+        precondition(shared.state(at: Date(timeIntervalSince1970: nine))?.companion?.courseName == "有机化学", "Merged while both are in class")
+        precondition(shared.state(at: Date(timeIntervalSince1970: nine))?.sourceLabel == "小明")
+        precondition(shared.frames.contains { $0.from == nine }, "Frames split where the reader's class starts")
+        precondition(merged.occurrences.map(\.item) == LiveActivityTimeline.build(share, scope: "share", now: now, lead: 30, perPeriod: false, defaults: defaults).occurrences.map(\.item),
+                     "The companion is display-only and never changes the plan")
+        precondition(LiveActivityTimeline.build(snapshot, own: mine, scope: "scope", now: now, lead: 30, perPeriod: false, defaults: defaults)
+            .occurrences.allSatisfy { $0.frames.allSatisfy { $0.state.companion == nil } }, "The reader's own table never companions itself")
+        let encoded = try JSONEncoder().encode(shared.state(at: Date(timeIntervalSince1970: nine)))
+        let decoded = try JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.self, from: encoded)
+        precondition(decoded.companion?.endDate == Date(timeIntervalSince1970: shared.start + 2 * 3600 + 50 * 60), "Companion round-trips through the wire format")
         let fixtureURL = URL(fileURLWithPath: CommandLine.arguments[1])
         let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as! [String: Any]
         for event in ["start", "update", "end"] {
@@ -157,12 +177,12 @@ struct NativeLiveActivityChecks {
         Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
     }
     static func settle() async { for _ in 0..<12 { await Task.yield() }; try? await Task.sleep(nanoseconds: 10_000_000) }
-    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false) -> NativeScheduleSnapshot {
+    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false, source: String? = nil) -> NativeScheduleSnapshot {
         let a = NativeScheduleCourse(liveActivitySourceID: "A", name: name, weeks: "1周", weekList: [1], startSlot: 1, endSlot: conflict ? 3 : 2)
         let b = NativeScheduleCourse(liveActivitySourceID: "B", name: name, weeks: "1周", weekList: [1], startSlot: 2, endSlot: 2)
         let periods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "08:50"), NativeSchedulePeriod(number: 2, startTime: "09:00", endTime: "09:50"), NativeSchedulePeriod(number: 3, startTime: "10:00", endTime: "10:50")]
         return NativeScheduleSnapshot(scheduleScope: "scope", periods: periods,
             data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: conflict ? [a, b] : [a]), NativeScheduleCell(day: 5, bigSlot: 1, courses: conflict ? [a, b] : [a])]),
-            calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]), schoolID: "school", timeZone: "Asia/Taipei")
+            calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]), sourceLabel: source, schoolID: "school", timeZone: "Asia/Taipei")
     }
 }

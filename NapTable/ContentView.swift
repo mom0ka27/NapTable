@@ -105,13 +105,16 @@ struct ContentView: View {
             #endif
             return
         }
-        if updateWidgets, let ownSnapshot = scheduleStore.snapshot(useSharedNotifications: false) {
+        let ownSnapshot = scheduleStore.snapshot(useSharedNotifications: false)
+        if updateWidgets, let ownSnapshot {
             widgetSettings.writePayload(from: ownSnapshot, selectedWeek: store.displayWeek)
         }
         #if os(iOS)
         if snapshot.auth.authenticated,
            snapshot.data?.cells.contains(where: { !$0.courses.isEmpty }) == true {
-            NativeLiveActivityController.shared.accept(snapshot)
+            // While following a share, the reader's own table is passed along
+            // so a class of theirs at the same time shows up next to the share.
+            NativeLiveActivityController.shared.accept(snapshot, own: snapshot.sourceLabel == nil ? nil : ownSnapshot)
         } else {
             NativeLiveActivityController.shared.reset()
         }
