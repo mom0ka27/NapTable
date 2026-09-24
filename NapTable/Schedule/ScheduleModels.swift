@@ -74,6 +74,9 @@ public struct NativeScheduleSemester: Codable, Identifiable, Equatable, Sendable
 
     public var id: String { value }
 
+    /// Followed timetables are keyed `share:<code>` by ScheduleStore.
+    public var isShared: Bool { value.hasPrefix("share:") }
+
     public init(value: String, label: String, current: Bool = false) {
         self.value = value
         self.label = label

@@ -30,6 +30,7 @@ struct NativeScheduleView: View {
     @State private var addCourseContext: AddCourseContext?
     @State private var weekPickerPresented = false
     @State private var freeCoursesPresented = false
+    @State private var semesterPickerPresented = false
     // Horizontal week paging state. The track holds the previous, current and
     // next week so a swipe drags the neighbouring timetable into view instead
     // of replacing the grid in place.
@@ -494,23 +495,14 @@ struct NativeScheduleView: View {
     }
 
     private func semesterMenu(_ result: NativeScheduleResult) -> some View {
-        Menu {
-            ForEach(result.semesters, id: \.value) { semester in
-                Button {
-                    guard semester.value != store.selectedSemester else { return }
-                    Task { await store.selectSemester(semester.value) }
-                } label: {
-                    if semester.value == store.selectedSemester {
-                        Label(semester.label, systemImage: "checkmark")
-                    } else {
-                        Text(semester.label)
-                    }
-                }
-            }
-            Divider()
-            Button("添加课表", systemImage: "plus", action: onAddTable)
+        let selected = result.semesters.first { $0.value == store.selectedSemester }
+        return Button {
+            semesterPickerPresented = true
         } label: {
             HStack(spacing: 6) {
+                if selected?.isShared == true {
+                    SharedTimetableBadge()
+                }
                 Text(semesterTitle(result))
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -525,11 +517,99 @@ struct NativeScheduleView: View {
             // Reserve the available header width regardless of the selected name.
             .frame(maxWidth: .infinity, minHeight: 34)
             .background(Color.appSecondaryGroupedBackground, in: Capsule())
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
         // A source change may also animate the free-time entry below the header.
-        // Keep the menu's anchor and label out of that layout animation.
+        // Keep the anchor and label out of that layout animation.
         .transaction { $0.animation = nil }
         .accessibilityLabel("选择课表")
+        .accessibilityValue(selected.map { $0.isShared ? "共享课表 \($0.label)" : $0.label } ?? "")
+        .popover(isPresented: $semesterPickerPresented, arrowEdge: .top) {
+            semesterPicker(result)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    /// A system Menu puts the checkmark in a leading column only on the
+    /// selected row, so names never line up. This list keeps names flush
+    /// left, marks followed timetables with a badge and the selection on the
+    /// trailing edge.
+    private func semesterPicker(_ result: NativeScheduleResult) -> some View {
+        let own = result.semesters.filter { !$0.isShared }
+        let shared = result.semesters.filter(\.isShared)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                semesterPickerSection("我的课表", own)
+                if !shared.isEmpty {
+                    semesterPickerSection("共享课表", shared)
+                }
+                Divider().padding(.vertical, 4)
+                Button {
+                    semesterPickerPresented = false
+                    onAddTable()
+                } label: {
+                    Label("添加课表", systemImage: "plus")
+                        .font(.body)
+                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+            .padding(8)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 280)
+        .frame(maxHeight: 420)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func semesterPickerSection(_ title: String, _ semesters: [NativeScheduleSemester]) -> some View {
+        if !semesters.isEmpty {
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            ForEach(semesters) { semester in
+                let isSelected = semester.value == store.selectedSemester
+                Button {
+                    semesterPickerPresented = false
+                    guard !isSelected else { return }
+                    Task { await store.selectSemester(semester.value) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if semester.isShared {
+                            SharedTimetableBadge()
+                        }
+                        Text(semester.label)
+                            .font(.body.weight(isSelected ? .semibold : .regular))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .opacity(isSelected ? 1 : 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 40)
+                    .background(
+                        isSelected ? Color.accentColor.opacity(0.12) : .clear,
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                .accessibilityLabel(semester.isShared ? "共享课表 \(semester.label)" : semester.label)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
     }
 
     /// Harmony's schedule surface keeps refresh, editing and presentation
@@ -2924,5 +3004,17 @@ private struct SharedCourseDetailView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
             }
         }
+    }
+}
+
+/// Marks a followed (read-only) timetable next to its name.
+private struct SharedTimetableBadge: View {
+    var body: some View {
+        Image(systemName: "person.2.fill")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: 20, height: 20)
+            .background(Color.accentColor.opacity(0.15), in: Circle())
+            .accessibilityHidden(true)
     }
 }

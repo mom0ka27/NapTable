@@ -303,7 +303,7 @@ final class NativeScheduleStore: ObservableObject {
         let choices = app.tables.map {
             NativeScheduleSemester(value: String($0.id), label: $0.name, current: String($0.id) == selectedSemester)
         } + shares.map {
-            NativeScheduleSemester(value: "share:" + $0.meta.code, label: "共享 · " + $0.name,
+            NativeScheduleSemester(value: "share:" + $0.meta.code, label: $0.name,
                                    current: "share:" + $0.meta.code == selectedSemester)
         }
         let visible = ScheduleProjection(
