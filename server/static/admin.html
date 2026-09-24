@@ -141,7 +141,7 @@
                   <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
                 </summary>
                 <div class="form-grid school-fields">
-                  <label>学校 ID<input id="schoolId" readonly></label>
+                  <label>学校 ID<input id="schoolId" maxlength="80" pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{1,79}"><small>修改后点击下方“更新 ID”单独保存</small></label>
                   <label>学校名称<input id="schoolName" maxlength="80"></label>
                   <label class="wide">备注<textarea id="schoolNote" rows="2" maxlength="240" placeholder="仅供管理员查看"></textarea></label>
                 </div>
@@ -152,7 +152,7 @@
                   </div>
                   <div class="table-head period-head"><span>节次</span><span>开始时间</span><span>结束时间</span><span></span></div>
                   <div id="schoolPeriodList" class="period-list"></div>
-                  <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button><button id="deleteSchoolButton" class="button danger" type="button">删除学校</button></div>
+                  <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button><button id="renameSchoolButton" class="button secondary" type="button" disabled>更新 ID</button><button id="deleteSchoolButton" class="button danger" type="button">删除学校</button></div>
                 </div>
               </details>
 
@@ -270,7 +270,7 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
-      <p class="dialog-copy">学校 ID 创建后不可修改，请使用稳定、简短的英文标识。</p>
+      <p class="dialog-copy">请使用稳定、简短的英文标识。创建后也可以在学校信息中修改 ID。</p>
       <div class="dialog-fields">
         <label>学校 ID<input id="newSchoolId" maxlength="80" placeholder="例如 nju" pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{1,79}" required><small>2–80 位字母、数字、点、下划线或短横线</small></label>
         <label>学校名称<input id="newSchoolName" maxlength="80" placeholder="例如 南京大学" required></label>
@@ -279,6 +279,6 @@
     </form>
   </dialog>
 
-  <script src="/static/admin.js?v=20260923-ui2"></script>
+  <script src="/static/admin.js?v=20260924-school-id"></script>
 </body>
 </html>

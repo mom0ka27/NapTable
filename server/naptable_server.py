@@ -450,6 +450,34 @@ class Store:
             if deleted:
                 self.db.execute("DELETE FROM school_terms WHERE school_id=?", (school_id,))
             return bool(deleted)
+    def rename_school(self, old_id, new_id):
+        if not isinstance(new_id, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", new_id):
+            raise ValueError("invalid school id")
+        with self.lock, self.db:
+            row = self.db.execute("SELECT 1 FROM school_configs WHERE id=?", (old_id,)).fetchone()
+            if not row:
+                return None
+            if old_id != new_id:
+                if self.db.execute("SELECT 1 FROM school_configs WHERE id=?", (new_id,)).fetchone():
+                    raise ValueError("school id already exists")
+                self.db.execute("UPDATE school_configs SET id=?,updated_at=? WHERE id=?", (new_id, now(), old_id))
+                self.db.execute("UPDATE school_terms SET school_id=? WHERE school_id=?", (new_id, old_id))
+                self.db.execute("UPDATE usage_devices SET school_id=? WHERE school_id=?", (new_id, old_id))
+                # Shares retain their frozen timetable, name and scope; only the
+                # reference used by resync and clients changes.
+                self.db.execute("UPDATE shares SET school_id=? WHERE school_id=?", (new_id, old_id))
+                if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='la_devices'").fetchone():
+                    self.db.execute("UPDATE la_devices SET school_id=? WHERE school_id=?", (new_id, old_id))
+                config = self.db.execute("SELECT channels_json FROM apns_config WHERE id=1").fetchone()
+                if config:
+                    channels = json.loads(config[0] or "{}")
+                    for environment in ("production", "sandbox"):
+                        previous = f"{environment}:{old_id}"
+                        if previous in channels:
+                            channels[f"{environment}:{new_id}"] = channels.pop(previous)
+                    self.db.execute("UPDATE apns_config SET channels_json=? WHERE id=1",
+                                    (json.dumps(channels, ensure_ascii=False),))
+            return self.school(self.db.execute("SELECT * FROM school_configs WHERE id=?", (new_id,)).fetchone())
     def save_school(self, value):
         required = value.get("id"), value.get("name")
         if not all(required): raise ValueError("id/name/periods are required")
@@ -753,6 +781,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/admin/calendar/import":
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
                 return self.send_json(200, self.store.import_calendar(self.body()))
+            if re.fullmatch(r"/v1/admin/schools/[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}/rename", path):
+                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
+                body = self.body()
+                if not isinstance(body, dict): return self.send_json(400, {"error": "request body must be an object"})
+                new_id = body.get("id")
+                saved = self.store.rename_school(path.split("/")[4], new_id)
+                if not saved: return self.send_json(404, {"error": "school not found"})
+                if self.live_activity is not None:
+                    config = self.store.apns_config()
+                    self.live_activity.channels = live_activity._channels_from_value(config.get("channels", {}) if config else {})
+                return self.send_json(200, saved)
             if path == "/v1/shares": return self.send_json(201,self.store.create(self.body()))
             if path.startswith("/v1/shares/") and path.endswith("/replace"):
                 code = path[len("/v1/shares/"):-len("/replace")]

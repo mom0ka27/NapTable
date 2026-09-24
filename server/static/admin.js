@@ -154,6 +154,7 @@
     $("editorTitle").textContent = state.school.name;
     $("editorEyebrow").textContent = state.school.id;
     $("schoolId").value = state.school.id;
+    $("renameSchoolButton").disabled = true;
     $("schoolName").value = state.school.name;
     $("schoolNote").value = state.school.note || "";
     $("newTermButton").disabled = false;
@@ -366,7 +367,7 @@
   const saveSchool = async () => {
     const button = $("saveSchoolButton");
     try {
-      const value = { id: $("schoolId").value.trim(), name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), semesterStart: "", periods: periodRows() };
+      const value = { id: state.school.id, name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), semesterStart: "", periods: periodRows() };
       if (!value.id || !value.name) throw new Error("学校 ID 和名称不能为空");
       validatePeriods(value.periods);
       setLoading(button, true);
@@ -378,6 +379,27 @@
       state.term = saved.terms.find(term => term.id === termID) || saved.terms.find(term => term.current) || saved.terms[0] || emptyTerm();
       updateMetrics(); fillSchool();
       notice("学校配置已保存", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
+  const renameSchool = async () => {
+    const oldID = state.school?.id;
+    const newID = $("schoolId").value.trim();
+    if (!oldID || newID === oldID) return;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}$/.test(newID)) return notice("学校 ID 需为 2-80 位字母、数字、点、下划线或短横线", "error");
+    if (!confirm(`确定将学校 ID 从 ${oldID} 改为 ${newID}？已保存的学期、分享和统计关联会随之更新。`)) return;
+    const button = $("renameSchoolButton");
+    setLoading(button, true);
+    try {
+      const saved = await request(`/v1/admin/schools/${encodeURIComponent(oldID)}/rename`, {
+        method: "POST", body: JSON.stringify({ id: newID })
+      });
+      state.schools = state.schools.map(school => school.id === oldID ? saved : school);
+      state.school = saved;
+      const termID = state.term?.id;
+      state.term = saved.terms.find(term => term.id === termID) || saved.terms.find(term => term.current) || saved.terms[0] || emptyTerm();
+      updateMetrics(); fillSchool();
+      notice(`学校 ID 已更新为 ${saved.id}`, "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
@@ -561,6 +583,8 @@
   $("newTermButton").onclick = () => { state.term = emptyTerm(); renderTerms(); fillTerm(); $("termId").focus(); };
   $("saveTermButton").onclick = saveTerm;
   $("saveSchoolButton").onclick = saveSchool;
+  $("renameSchoolButton").onclick = renameSchool;
+  $("schoolId").oninput = () => { $("renameSchoolButton").disabled = $("schoolId").value.trim() === state.school?.id; };
   $("saveCalendarButton").onclick = saveCalendar;
   $("importCalendarButton").onclick = importCalendar;
   $("saveApnsButton").onclick = saveApns;

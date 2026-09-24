@@ -66,3 +66,50 @@ class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
             self.assertEqual(len(reopened.schools()), 2)
         finally:
             reopened.close()
+
+    def test_rename_school_keeps_terms_shares_usage_and_channels(self):
+        share = self.req('POST', '/v1/shares', {'owner': 'A', 'schoolID': 'nju',
+                         'termID': '2026-fall-template', 'courses': [{'name': '数学'}]}, expect=201)
+        self.store.db.execute("INSERT INTO usage_devices VALUES ('device','secret','nju','iOS','26','phone','1',1,'2026','2026')")
+        self.store.db.execute("CREATE TABLE la_devices (device_id TEXT, school_id TEXT)")
+        self.store.db.execute("INSERT INTO la_devices VALUES ('push','nju')")
+        self.store.db.commit()
+        self.store.save_apns_config({'channels': {'production:nju': 'channel-a', 'sandbox:nju': 'channel-b'}})
+        endpoint = '/v1/admin/schools/nju/rename'
+        self.req('POST', endpoint, {'id': 'new-nju'}, expect=403)
+        self.req('POST', endpoint, {'id': 'x'}, self.headers, expect=400)
+        self.req('POST', endpoint, {'id': 'bad/id'}, self.headers, expect=400)
+        self.req('POST', endpoint, {'id': 'new-nju'}, self.headers, expect=200)
+        schools = self.req('GET', '/v1/schools')['schools']
+        self.assertEqual([school['id'] for school in schools], ['new-nju'])
+        self.assertEqual(schools[0]['currentTermID'], '2026-fall-template')
+        self.assertIsNotNone(self.store.find_term('new-nju', '2026-fall-template'))
+        self.assertIsNone(self.store.find_term('nju', '2026-fall-template'))
+        self.assertEqual(self.store.db.execute('SELECT school_id FROM usage_devices').fetchone()[0], 'new-nju')
+        self.assertEqual(self.store.db.execute('SELECT school_id FROM la_devices').fetchone()[0], 'new-nju')
+        self.assertEqual(self.store.apns_config()['channels'], {'production:new-nju': 'channel-a', 'sandbox:new-nju': 'channel-b'})
+        self.assertEqual(self.req('GET', '/v1/shares/' + share['id'])['schoolID'], 'new-nju')
+        self.assertEqual(self.req('GET', '/v1/shares/' + share['id'])['courses'][0]['name'], '数学')
+        self.assertEqual(self.req('POST', '/v1/shares/' + share['id'] + '/resync',
+                         headers={'X-Write-Token': share['writeToken']})['schoolID'], 'new-nju')
+        self.assertEqual(self.req('POST', '/v1/admin/schools/nju/rename', {'id': 'third'}, self.headers, expect=404)['error'], 'school not found')
+        reopened = Store(self.path)
+        try:
+            self.assertEqual([school['id'] for school in reopened.schools()], ['new-nju'])
+        finally:
+            reopened.close()
+
+    def test_rename_rejects_collision_without_changing_any_associations(self):
+        self.req('POST', '/v1/schools/test', {'name': '测试大学', 'periods': [{'start': '08:00', 'end': '08:50'}]}, self.headers)
+        self.req('POST', '/v1/admin/schools/nju/rename', {'id': 'test'}, self.headers, expect=400)
+        self.assertEqual([school['id'] for school in self.store.schools()], ['nju', 'test'])
+        self.assertIsNotNone(self.store.find_term('nju', '2026-fall-template'))
+
+    def test_rename_rolls_back_when_a_related_table_rejects_the_change(self):
+        self.store.db.execute("CREATE TRIGGER fail_school_rename BEFORE UPDATE OF school_id ON school_terms "
+                              "BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        self.store.db.commit()
+        with self.assertRaises(Exception):
+            self.store.rename_school('nju', 'new-nju')
+        self.assertEqual([school['id'] for school in self.store.schools()], ['nju'])
+        self.assertIsNotNone(self.store.find_term('nju', '2026-fall-template'))

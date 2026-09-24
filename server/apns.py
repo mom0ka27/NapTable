@@ -404,7 +404,7 @@ def _frame(kind, flags, stream, payload=b""):
 
 
 class HTTP2Connection:
-    """One TLS + h2 connection, used for sequential request/response pairs."""
+    """One TLS + h2 connection; requests go out as concurrent streams."""
 
     def __init__(self, host, port=443, timeout=10.0, context=None, clock=time.monotonic):
         self.host = host
@@ -417,6 +417,7 @@ class HTTP2Connection:
         self._next_stream = 1
         self._send_window = 65535
         self._max_frame = 16384
+        self._max_streams = 1
         self._unacked = 0
 
     def connect(self):
@@ -438,6 +439,9 @@ class HTTP2Connection:
         self._send_window = 65535
         self._max_frame = 16384
         self._unacked = 0
+        # One stream until APNs states its limit: it may start low and raise
+        # the limit once the first request has authenticated.
+        self._max_streams = 1
         self._last_used = self._clock()
         # `SETTINGS_ENABLE_PUSH = 0`: this client never accepts server pushes.
         self.sock.sendall(_PREFACE + _frame(_SETTINGS, 0, 0, struct.pack(">HI", 0x2, 0)))
@@ -516,76 +520,121 @@ class HTTP2Connection:
         caller must treat that response as unknown, never as a success.
         Raises `APNsNotSentError` only when APNs cannot have processed it.
         """
+        outcome = self.request_many([(method, path, headers, body)])[0]
+        if outcome[0] == "notSent":
+            raise APNsNotSentError(outcome[1])
+        if outcome[0] == "lost":
+            raise APNsError(outcome[1])
+        return outcome[1], outcome[2]
+
+    def request_many(self, requests):
+        """Send `(method, path, headers, body)` requests as concurrent streams.
+
+        Returns one outcome per request, in order:
+
+        * `("response", status, body)` -- APNs answered; `status` is None
+          when the header block could not be read.
+        * `("notSent", reason)` -- APNs cannot have acted on it.
+        * `("lost", reason)` -- written, but the answer never arrived.
+
+        Never raises. A batch costs about one round trip instead of one per
+        request, which is what keeps a bell's worth of pushes on time.
+        """
+        outcomes = [None] * len(requests)
         if self.sock is not None and self._stale():
             self.close()
         if self.sock is None:
             try:
                 self.connect()
             except (APNsError, OSError, ssl.SSLError) as error:
-                raise APNsNotSentError(str(error)) from error
-        if len(body) > self._max_frame:
-            raise APNsNotSentError("request body larger than the negotiated frame size")
-        if len(body) > self._send_window:
-            raise APNsNotSentError("flow control window exhausted")
-        stream = self._next_stream
-        self._next_stream += 2
-        block = encode_headers(
-            [(":method", method), (":scheme", "https"), (":path", path), (":authority", self.host)]
-            + list(headers)
-        )
-        if len(block) > self._max_frame:
-            raise APNsNotSentError("header block larger than the negotiated frame size")
-        packet = _frame(_HEADERS, _FLAG_END_HEADERS, stream, block)
-        packet += _frame(_DATA, _FLAG_END_STREAM, stream, body)
-        try:
-            self.sock.sendall(packet)
-        except (OSError, ssl.SSLError) as error:
-            # The END_STREAM flag is in the last bytes: an incomplete write
-            # leaves a stream APNs never acts on.
-            self.close()
-            raise APNsNotSentError(f"request not fully written: {error}") from error
-        self._send_window -= len(body)
+                return [("notSent", str(error))] * len(requests)
+        queue = list(range(len(requests)))
+        queue.reverse()  # pop() from the end takes requests in order
+        flight = {}  # stream id -> [index, status, body]
 
-        status = None
-        payload = bytearray()
-        while True:
-            kind, flags, frame_stream, data = self._read_frame()
-            if self._control(kind, flags, frame_stream, data):
-                continue
-            if kind == _GOAWAY:
-                last = int.from_bytes(data[:4], "big") & 0x7FFFFFFF
-                self.close()
-                if status is None:
-                    # Streams above the last processed one were never acted on.
-                    if last < stream:
-                        raise APNsNotSentError(f"server sent GOAWAY before stream {stream}")
-                    raise APNsError("server sent GOAWAY before responding")
-                break
-            elif kind == _RST_STREAM and frame_stream == stream:
-                code = int.from_bytes(data[:4], "big")
-                self.close()
-                if code == _REFUSED_STREAM:
-                    raise APNsNotSentError("stream refused before processing")
-                raise APNsError(f"stream reset with code {code}")
-            elif frame_stream == stream and kind == _HEADERS:
-                status = status_from_header_block(data)
-                if flags & _FLAG_END_STREAM:
+        def finish(stream):
+            index, status, body = flight.pop(stream)
+            outcomes[index] = ("response", status, bytes(body))
+
+        def abandon(reason, refused_above=None):
+            # Streams APNs said it never reached are safe to send again.
+            for stream, (index, _, _) in flight.items():
+                safe = refused_above is not None and stream > refused_above
+                outcomes[index] = ("notSent" if safe else "lost", reason)
+            flight.clear()
+            while queue:
+                outcomes[queue.pop()] = ("notSent", reason)
+
+        try:
+            while queue or flight:
+                while queue and len(flight) < self._max_streams:
+                    index = queue[-1]
+                    method, path, headers, body = requests[index]
+                    block = encode_headers(
+                        [(":method", method), (":scheme", "https"), (":path", path), (":authority", self.host)]
+                        + list(headers)
+                    )
+                    if len(body) > self._max_frame or len(block) > self._max_frame:
+                        outcomes[queue.pop()] = ("notSent", "request larger than the negotiated frame size")
+                        continue
+                    if len(body) > self._send_window:
+                        break  # wait for APNs to open the flow control window
+                    queue.pop()
+                    stream = self._next_stream
+                    self._next_stream += 2
+                    packet = _frame(_HEADERS, _FLAG_END_HEADERS, stream, block)
+                    packet += _frame(_DATA, _FLAG_END_STREAM, stream, body)
+                    try:
+                        self.sock.sendall(packet)
+                    except (OSError, ssl.SSLError) as error:
+                        # END_STREAM is in the last bytes: an incomplete write
+                        # leaves a stream APNs never acts on.
+                        outcomes[index] = ("notSent", f"request not fully written: {error}")
+                        raise
+                    self._send_window -= len(body)
+                    flight[stream] = [index, None, bytearray()]
+                kind, flags, frame_stream, data = self._read_frame()
+                if self._control(kind, flags, frame_stream, data):
+                    continue
+                if kind == _GOAWAY:
+                    last = int.from_bytes(data[:4], "big") & 0x7FFFFFFF
+                    self.close()
+                    abandon("server sent GOAWAY before responding", refused_above=last)
                     break
-            elif frame_stream == stream and kind == _DATA:
-                payload += data
-                self._unacked += len(data)
-                if flags & _FLAG_END_STREAM:
-                    break
-        if self._unacked >= 16384 and self.sock is not None:
-            self.sock.sendall(_frame(_WINDOW_UPDATE, 0, 0, struct.pack(">I", self._unacked)))
-            self._unacked = 0
-        self._last_used = self._clock()
-        return status, bytes(payload)
+                entry = flight.get(frame_stream)
+                if entry is None:
+                    continue
+                if kind == _RST_STREAM:
+                    code = int.from_bytes(data[:4], "big")
+                    flight.pop(frame_stream)
+                    outcomes[entry[0]] = ("notSent" if code == _REFUSED_STREAM else "lost",
+                                          "stream refused before processing" if code == _REFUSED_STREAM
+                                          else f"stream reset with code {code}")
+                elif kind == _HEADERS:
+                    entry[1] = status_from_header_block(data)
+                    if flags & _FLAG_END_STREAM:
+                        finish(frame_stream)
+                elif kind == _DATA:
+                    entry[2] += data
+                    self._unacked += len(data)
+                    if flags & _FLAG_END_STREAM:
+                        finish(frame_stream)
+                if self._unacked >= 16384:
+                    self.sock.sendall(_frame(_WINDOW_UPDATE, 0, 0, struct.pack(">I", self._unacked)))
+                    self._unacked = 0
+        except (APNsError, OSError, ValueError, ssl.SSLError) as error:
+            self.close()
+            abandon(f"{error}" or type(error).__name__)
+        if self.sock is not None:
+            self._last_used = self._clock()
+        return outcomes
 
     def _apply_settings(self, data):
         for offset in range(0, len(data) - 5, 6):
             key, value = struct.unpack_from(">HI", data, offset)
-            if key == 0x5:  # SETTINGS_MAX_FRAME_SIZE
+            if key == 0x3:  # SETTINGS_MAX_CONCURRENT_STREAMS
+                self._max_streams = max(1, min(value, 1000))
+            elif key == 0x5:  # SETTINGS_MAX_FRAME_SIZE
                 self._max_frame = max(16384, min(value, 1 << 24))
 
 
@@ -654,36 +703,68 @@ class APNsClient:
              priority=10, expiration=0, collapse_id=None, topic=None):
         """Deliver one push. Returns `{ok, status, reason}` and never raises for
         an APNs-level rejection -- only for a transport failure."""
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-        if len(body) > MAX_PAYLOAD:
-            return {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
-        topic = topic or f"{self.bundle_id}.push-type.liveactivity"
-        headers = [
-            ("authorization", "bearer " + self.authorization()),
-            ("apns-topic", topic),
-            ("apns-push-type", push_type),
-            ("apns-priority", str(priority)),
-            ("apns-expiration", str(int(expiration))),
-        ]
-        if collapse_id:
-            headers.append(("apns-collapse-id", collapse_id[:64]))
-        path = "/3/device/" + device_token
-        # A failed write may already have reached APNs. Never replay a start.
+        return self.push_many([{"device_token": device_token, "payload": payload, "push_type": push_type,
+                                "priority": priority, "expiration": expiration, "collapse_id": collapse_id,
+                                "topic": topic}], environment=environment)[0]
+
+    def push_many(self, notifications, environment="production"):
+        """Deliver several pushes as concurrent streams on one connection.
+
+        Each notification is a dict with `device_token` and `payload`, plus the
+        optional `push` arguments. Returns one result per notification, in order.
+        A request APNs certainly never acted on is tried once more on a fresh
+        connection; one whose answer was lost is not, since it may be a start.
+        """
+        results = [None] * len(notifications)
+        requests, positions = [], []
+        for position, item in enumerate(notifications):
+            body = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":")).encode()
+            if len(body) > MAX_PAYLOAD:
+                results[position] = {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
+                continue
+            headers = [
+                ("authorization", "bearer " + self.authorization()),
+                ("apns-topic", item.get("topic") or f"{self.bundle_id}.push-type.liveactivity"),
+                ("apns-push-type", item.get("push_type") or "liveactivity"),
+                ("apns-priority", str(item.get("priority") or 10)),
+                ("apns-expiration", str(int(item.get("expiration") or 0))),
+            ]
+            if item.get("collapse_id"):
+                headers.append(("apns-collapse-id", item["collapse_id"][:64]))
+            requests.append(("POST", "/3/device/" + item["device_token"], headers, body))
+            positions.append(position)
+        if not requests:
+            return results
         with self._request_locks[environment]:
-            try:
-                connection = self._connection(environment)
-            except (APNsError, OSError, ssl.SSLError) as error:
-                return {"ok": False, "status": 0, "reason": str(error), "certainty": "notSent"}
-            try:
-                status, response = connection.request("POST", path, headers, body)
-            except (APNsError, OSError, ssl.SSLError) as error:
-                connection.close()
-                return {"ok": False, "status": 0, "reason": f"TransportError: {error}", "certainty": "notSent" if isinstance(error, APNsNotSentError) else "unknown"}
+            outcomes = self._send_many(environment, requests)
+            retry = [k for k, outcome in enumerate(outcomes) if outcome[0] == "notSent"]
+            if retry:
+                again = self._send_many(environment, [requests[k] for k in retry], reset=True)
+                for k, outcome in zip(retry, again):
+                    outcomes[k] = outcome
+        for position, outcome in zip(positions, outcomes):
+            results[position] = self._result(outcome)
+        return results
+
+    def _send_many(self, environment, requests, reset=False, purpose="device"):
+        try:
+            connection = self._connection(environment, reset=reset, purpose=purpose)
+        except (APNsError, OSError, ssl.SSLError) as error:
+            return [("notSent", str(error))] * len(requests)
+        return connection.request_many(requests)
+
+    @staticmethod
+    def _result(outcome):
+        if outcome[0] == "notSent":
+            return {"ok": False, "status": 0, "reason": f"TransportError: {outcome[1]}", "certainty": "notSent"}
+        if outcome[0] == "lost":
+            return {"ok": False, "status": 0, "reason": f"TransportError: {outcome[1]}", "certainty": "unknown"}
+        _, status, response = outcome
         reason = ""
         if response:
             try:
                 reason = json.loads(response.decode("utf-8")).get("reason", "")
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, AttributeError):
                 reason = response[:200].decode("utf-8", "replace")
         if status is None:
             return {"ok": False, "status": 0, "reason": "MissingHTTPStatus", "certainty": "unknown"}
@@ -691,48 +772,55 @@ class APNsClient:
 
     def broadcast(self, channel_id, payload, environment="production", priority=10,
                   expiration=0, collapse_id=None, topic=None):
-        with self._broadcast_locks[environment]:
-            """Broadcast one Live Activity update to a channel.
+        """Broadcast one Live Activity update to a channel.
 
-            Broadcast requests use APNs' broadcast endpoint rather than the device
-            endpoint. The payload must be identical for every activity subscribed
-            to the channel; callers should put only a compact boundary signal in
-            ``content-state`` and let the widget resolve local timetable data.
-            """
-            channel_id = str(channel_id or "").strip()
+        Broadcast requests use APNs' broadcast endpoint rather than the device
+        endpoint. The payload must be identical for every activity subscribed
+        to the channel; callers should put only a compact boundary signal in
+        ``content-state`` and let the widget resolve local timetable data.
+        """
+        return self.broadcast_many([{"channel_id": channel_id, "payload": payload, "priority": priority,
+                                     "expiration": expiration, "collapse_id": collapse_id, "topic": topic}],
+                                   environment=environment)[0]
+
+    def broadcast_many(self, broadcasts, environment="production"):
+        """Send several channel broadcasts as concurrent streams on the
+        broadcast connection. A boundary update or end is safe to repeat, so a
+        lost answer is retried once as well as a request never sent."""
+        results = [None] * len(broadcasts)
+        requests, positions = [], []
+        for position, item in enumerate(broadcasts):
+            channel_id = str(item.get("channel_id") or "").strip()
             if not channel_id:
-                return {"ok": False, "status": 0, "reason": "MissingChannelID"}
-            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+                results[position] = {"ok": False, "status": 0, "reason": "MissingChannelID"}
+                continue
+            body = json.dumps(item["payload"], ensure_ascii=False, separators=(",", ":")).encode()
             if len(body) > MAX_PAYLOAD:
-                return {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
+                results[position] = {"ok": False, "status": 0, "reason": "PayloadTooLarge"}
+                continue
             headers = [
                 ("authorization", "bearer " + self.authorization()),
                 ("apns-channel-id", channel_id),
                 ("apns-push-type", "liveactivity"),
-                ("apns-priority", str(priority)),
-                ("apns-expiration", str(int(expiration))),
+                ("apns-priority", str(item.get("priority") or 10)),
+                ("apns-expiration", str(int(item.get("expiration") or 0))),
             ]
-            if collapse_id:
-                headers.append(("apns-collapse-id", collapse_id[:64]))
-            path = "/4/broadcasts/apps/" + (topic or self.bundle_id)
-            for attempt in (0, 1):
-                connection = self._connection(environment, reset=attempt == 1, purpose="broadcast")
-                try:
-                    status, response = connection.request("POST", path, headers, body)
-                    break
-                except (APNsError, OSError, ssl.SSLError) as error:
-                    connection.close()
-                    if attempt:
-                        return {"ok": False, "status": 0, "reason": f"TransportError: {error}"}
-            reason = ""
-            if response:
-                try:
-                    reason = json.loads(response.decode("utf-8")).get("reason", "")
-                except (ValueError, UnicodeDecodeError):
-                    reason = response[:200].decode("utf-8", "replace")
-            if status is None:
-                return {"ok": False, "status": 0, "reason": "MissingHTTPStatus", "certainty": "unknown"}
-            return {"ok": status == 200, "status": status, "reason": reason, "certainty": "accepted" if status == 200 else "rejected"}
+            if item.get("collapse_id"):
+                headers.append(("apns-collapse-id", item["collapse_id"][:64]))
+            requests.append(("POST", "/4/broadcasts/apps/" + (item.get("topic") or self.bundle_id), headers, body))
+            positions.append(position)
+        if not requests:
+            return results
+        with self._broadcast_locks[environment]:
+            outcomes = self._send_many(environment, requests, purpose="broadcast")
+            retry = [k for k, outcome in enumerate(outcomes) if outcome[0] != "response"]
+            if retry:
+                again = self._send_many(environment, [requests[k] for k in retry], reset=True, purpose="broadcast")
+                for k, outcome in zip(retry, again):
+                    outcomes[k] = outcome
+        for position, outcome in zip(positions, outcomes):
+            results[position] = self._result(outcome)
+        return results
 
     def _channel_call(self, method, suffix, environment="production", body=None, channel_id=None):
         with self._channel_locks[environment]:

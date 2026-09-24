@@ -3,7 +3,7 @@
 The cryptography is pinned to the RFC 6979 known answer vector, and the frame
 layer runs against a fake APNs that speaks real HTTP/2 over a plain socket.
 """
-import base64, json, socket, struct, threading, time, unittest
+import base64, json, select, socket, struct, threading, time, unittest
 from unittest.mock import patch
 
 from server import apns
@@ -226,6 +226,60 @@ def decode_literal_headers(block):
     return headers
 
 
+class MultiplexAPNs(FakeAPNs):
+    """Keeps the connection open, allows `max_streams` concurrent streams and
+    answers each full batch in reverse order, like APNs answering whichever
+    stream finishes first. With `goaway_after_first`, the first connection
+    answers its first stream and then shuts down past it."""
+
+    def __init__(self, max_streams, goaway_after_first=False):
+        super().__init__()
+        self.max_streams = max_streams
+        self.goaway_after_first = goaway_after_first
+        self.connections = 0
+        self.widest = 0
+
+    def _serve(self, sock):
+        self.connections += 1
+        first_connection = self.connections == 1
+        try:
+            self._read(sock, len(apns._PREFACE))
+            sock.sendall(apns._frame(apns._SETTINGS, 0, 0, struct.pack(">HI", 0x3, self.max_streams)))
+            ready = []
+            while True:
+                kind, flags, stream_id, payload = self._frame(sock)
+                if kind == apns._SETTINGS and not flags & 0x1:
+                    sock.sendall(apns._frame(apns._SETTINGS, 0x1, 0))
+                elif kind == apns._HEADERS:
+                    self.requests.append({"headers": decode_literal_headers(payload), "stream": stream_id})
+                elif kind == apns._DATA and flags & 0x1:
+                    ready.append(stream_id)
+                    self.widest = max(self.widest, len(ready))
+                    # Answer a full batch, or a short one once the client stops sending.
+                    if len(ready) < self.max_streams and select.select([sock], [], [], 0.1)[0]:
+                        continue
+                    if self.goaway_after_first and first_connection:
+                        self._answer(sock, ready[0])
+                        sock.sendall(apns._frame(apns._GOAWAY, 0, 0, struct.pack(">II", ready[0], 0)))
+                        # Close gracefully: unread bytes would turn close() into a
+                        # TCP reset that can discard the GOAWAY before it is read.
+                        sock.settimeout(1)
+                        while sock.recv(4096):
+                            pass
+                        return
+                    for stream in reversed(ready):
+                        self._answer(sock, stream)
+                    ready = []
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            sock.close()
+
+    def _answer(self, sock, stream):
+        sock.sendall(apns._frame(apns._HEADERS, 0x4, stream, bytes([0x48, 3]) + b"200"))
+        sock.sendall(apns._frame(apns._DATA, 0x1, stream, json.dumps({"stream": stream}).encode()))
+
+
 class HTTP2Tests(unittest.TestCase):
     def _client(self, server):
         key = apns.ES256Key(VECTOR_KEY)
@@ -357,6 +411,30 @@ class HTTP2Tests(unittest.TestCase):
         self.assertIsNot(client._connection("production"), client._connection("production", purpose="broadcast"))
         self.assertIsNot(client._request_locks["production"], client._broadcast_locks["production"])
 
+    def test_a_batch_shares_one_connection_as_concurrent_streams(self):
+        server = MultiplexAPNs(max_streams=2)
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        self.addCleanup(client.close)
+        tokens = ["t%d" % n for n in range(5)]
+        results = client.push_many([{"device_token": t, "payload": {"aps": {"n": t}}} for t in tokens])
+        self.assertEqual([r["certainty"] for r in results], ["accepted"] * 5)
+        self.assertEqual(server.connections, 1)
+        self.assertEqual(server.widest, 2, "Streams overlap up to the advertised limit, never past it")
+        self.assertEqual([r["headers"][":path"] for r in server.requests], ["/3/device/" + t for t in tokens])
+
+    def test_streams_past_a_goaway_are_resent_on_a_new_connection(self):
+        server = MultiplexAPNs(max_streams=3, goaway_after_first=True)
+        server.start()
+        self.addCleanup(server.close)
+        client = self._patched(self._client(server))
+        self.addCleanup(client.close)
+        results = client.push_many([{"device_token": t, "payload": {"aps": {}}} for t in ("a", "b", "c")])
+        self.assertEqual([r["certainty"] for r in results], ["accepted"] * 3)
+        self.assertEqual(server.connections, 2)
+        self.assertEqual([r["headers"][":path"] for r in server.requests].count("/3/device/a"), 1, "The answered stream is not sent twice")
+
     def test_provider_token_is_reused_until_it_ages_out(self):
         clock = [1_700_000_000.0]
         key = apns.ES256Key(VECTOR_KEY)
@@ -417,9 +495,9 @@ class SubmissionCertaintyTests(unittest.TestCase):
     def test_start_transport_failure_is_not_replayed(self):
         class Connection:
             calls = 0
-            def request(self, *args):
+            def request_many(self, requests):
                 self.calls += 1
-                raise OSError('response lost after send')
+                return [('lost', 'response lost after send')] * len(requests)
             def close(self): pass
         connection = Connection()
         result = self.client(connection).push('abcd', {'aps': {'event': 'start'}})
@@ -429,7 +507,7 @@ class SubmissionCertaintyTests(unittest.TestCase):
 
     def test_empty_body_without_status_is_not_success(self):
         class Connection:
-            def request(self, *args): return None, b''
+            def request_many(self, requests): return [('response', None, b'')] * len(requests)
             def close(self): pass
         result = self.client(Connection()).push('abcd', {'aps': {'event': 'start'}})
         self.assertFalse(result['ok'])
@@ -437,7 +515,30 @@ class SubmissionCertaintyTests(unittest.TestCase):
 
     def test_connection_failure_before_request_is_retryable_not_sent(self):
         class Connection:
-            def request(self, *args): raise apns.APNsNotSentError('connect failed')
+            calls = 0
+            def request_many(self, requests):
+                self.calls += 1
+                return [('notSent', 'connect failed')] * len(requests)
             def close(self): pass
-        result = self.client(Connection()).push('abcd', {'aps': {'event': 'start'}})
+        connection = Connection()
+        result = self.client(connection).push('abcd', {'aps': {'event': 'start'}})
         self.assertEqual(result['certainty'], 'notSent')
+        self.assertEqual(connection.calls, 2, 'Certainly unsent requests get one fresh connection')
+
+    def test_batch_keeps_order_and_only_retries_what_was_never_sent(self):
+        class Connection:
+            batches = []
+            def request_many(self, requests):
+                self.batches.append([path for _, path, _, _ in requests])
+                if len(self.batches) == 1:
+                    return [('response', 200, b''), ('notSent', 'GOAWAY'), ('lost', 'reset'),
+                            ('response', 400, b'{"reason":"BadDeviceToken"}')]
+                return [('response', 200, b'')] * len(requests)
+            def close(self): pass
+        connection = Connection()
+        results = self.client(connection).push_many(
+            [{'device_token': token, 'payload': {'aps': {}}} for token in ('a1', 'b2', 'c3', 'd4')]
+            + [{'device_token': 'e5', 'payload': {'aps': {'blob': 'x' * 5000}}}])
+        self.assertEqual(connection.batches, [['/3/device/a1', '/3/device/b2', '/3/device/c3', '/3/device/d4'], ['/3/device/b2']])
+        self.assertEqual([r.get('certainty') for r in results], ['accepted', 'accepted', 'unknown', 'rejected', None])
+        self.assertEqual((results[3]['reason'], results[4]['reason']), ('BadDeviceToken', 'PayloadTooLarge'))
