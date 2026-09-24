@@ -1,6 +1,6 @@
 # 服务端排程的实时活动提醒
 
-状态：方案（2026-09-24 确认方向），分支 `server-scheduled-reminders`。基线为 `live-activity-v2.md` 与 `live-activity-token-mode.md`；本文未写到的行为沿用现状。实现完成后，现状以 `live-activity-v2.md` 为准，本文只保留设计理由。
+状态：第 1 步（服务端）已实现，第 2、3 步未开始；分支 `server-scheduled-reminders`。基线为 `live-activity-v2.md` 与 `live-activity-token-mode.md`；本文未写到的行为沿用现状。实现完成后，现状以 `live-activity-v2.md` 为准，本文只保留设计理由。
 
 ## 1. 目标
 
@@ -30,26 +30,28 @@
   "revision": 12,
   "own": {
     "scope": "<本机课表的 scheduleScope>",
-    "periods": [{"number": 1, "start": "08:00", "end": "08:45"}],
+    "schoolID": "<可选：学校 ID，用于判断能否走学校频道>",
+    "periods": [{"start": "08:00", "end": "08:45"}],
     "semesterStartMonday": "2026-09-07",
     "weekCount": 18,
-    "adjustments": [{"date": "2026-10-01", "kind": "off"}, {"date": "2026-10-11", "kind": "swap", "sourceDate": "2026-10-08"}],
+    "adjustments": [{"date": "2026-10-01", "kind": "off"}, {"date": "2026-10-11", "kind": "swap", "source": "2026-10-08"}],
     "courses": [{"id": "<liveActivitySourceID>", "day": 1, "first": 1, "last": 2, "weeks": [1, 2, 3]}]
   },
-  "follow": {"share": "<分享码>", "scope": "<分享的 scheduleScope>"},
+  "follow": {"share": "<分享码>"},
   "conflicts": {"2026-09-22:3": "<选中的课程 ID>"},
-  "settings": {"leadMinutes": 60, "sharedLeadMinutes": 15, "perPeriod": true, "persistent": false}
+  "settings": {"leadMinutes": 60, "sharedLeadMinutes": 15, "perPeriod": true}
 }
 ```
 
 - `own`：只含时间结构。收起的课（`hidden`）不上传。没有星期或节次的自由课程不上传。手动创建的课表同样上传自己的节次和学期。
-- `follow`：可选，关心共享课表时才有。服务端用分享码读取 `shares` 行（课程、节次、学期、调休都来自分享快照），并登记关注关系。分享码轮换时 `schedule_scope` 不变，服务端按 scope 保持关注。
+- `follow`：可选，关心共享课表时才有，只带分享码（知道分享码才能关注）。服务端用分享码找到 `shares` 行，登记它的 `schedule_scope`；之后按 scope 读取最新的有效分享，所以分享码轮换不影响关注。课程、节次、学期、调休都来自分享快照；分享里没有唯一行 ID 的课、收起的课不排提醒，与客户端一致。
 - `conflicts`：两张课表各自的节次冲突选择，键为 `日期:节次`，含义与现有 `naptable.liveActivity.conflicts.<scope>` 相同。
-- `settings.leadMinutes` 用于自己的课，`sharedLeadMinutes` 用于对方的课，取值都是 15 / 30 / 60。不关心共享课表时忽略 `sharedLeadMinutes`。
+- `settings.leadMinutes` 用于自己的课，`sharedLeadMinutes` 用于对方的课，取值都是 15 / 30 / 60；缺少 `sharedLeadMinutes` 时两边都用 `leadMinutes`。不关心共享课表时忽略 `sharedLeadMinutes`。「课间也保留」只影响手机上的显示，不上传。
 - 所有日期和时刻一律按 UTC+8 解释，上传内容不带时区。
 - 服务端严格校验：未知键返回 400；节次必须有序且不重叠；课程数、周数、调休条数都有上限。
 - `revision` 必须单调递增：旧 revision 返回 409；同一 revision 内容相同则幂等。
-- 响应返回 revision、未解决的冲突和不可排程的原因，供设置页显示。
+- 响应为 `{revision, pushMode, following, conflicts, omitted, pendingCount}`：`conflicts` 是从今天到学期末（最多 200 天）主导课表的节次冲突，每项 `{id: "日期:节次", date, period, choices: [课程 ID]}`，已选择的也列出；`omitted` 是超过 8 小时等无法排程的次数。
+- `pushMode`：不关心共享课表、带了 `schoolID`，并且上传的节次与这所学校当前的作息完全一致时为 `channel`（订阅学校频道，上下课由公共广播刷新）；其余一律 `token`。
 
 ## 4. 服务端排程
 
@@ -65,7 +67,7 @@
 - occurrence ID 是「某一天的某一次上课」的编号，一个编号对应一个实时活动；服务端与手机靠它防止重复启动、对应推送令牌、记录拆分合并后的替换关系。编号可推算：以「设备 + 来源课程 + 日期 + 节次」（合并时取开场课程）做 UUIDv5，同一节课每次算出的 ID 相同，不需要保存 ID 对照表。重排后键变化的课（拆分、合并）对照已生成的行记录 `supersedes`，规则与现有客户端相同。
 - 引擎按日期计算，每次只算指定的某一天。
 
-引擎的输出只包含时间和结构，不包含课程文字：
+实现：`server/live_activity_schedule.py`。引擎的输出只包含时间和结构，不包含课程文字：
 
 ```json
 {"occurrenceId": "…", "supersedes": [], "dateKey": "2026-09-22", "start": 0, "end": 0, "reminder": 0,
@@ -76,35 +78,34 @@
              "companion": {"table": "share", "course": "…", "first": 3, "last": 3, "phase": "inProgress"}}]}
 ```
 
-`phase` 取 `upcoming`（课前倒计时或课间）或 `inProgress`；`first`/`last` 是这一段对应的节次，用于生成「第 1–2 节」「课间 · 第 3 节」等标签。
+frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase, first, last, start, end}`，课间另有 `break: n`（第 n 节之前的课间）。`phase` 取 `upcoming`（倒计时到 `start`）或 `inProgress`（进行到 `end`）；`first`/`last` 用于生成「第 1–2 节」标签，有 `break` 时显示「课间 · 第 n 节」。`day` 是这门课所在的日期，客户端据此找到当天的调休说明。所有时刻都是 Unix 秒。
 
 ### 4.2 存储
 
-- `la_timetables`：每台设备一行，永久保存上传的原文、revision 和摘要（每台几 KB）。
-- `la_occurrences`：只存需要发送的行，范围是 UTC+8 的「今天 + 明天」。字段为设备、occurrence ID、`fire_at`、结束时间、pushMode、frames 的 JSON、状态（`pending` / `local` / `submitting` / `submitted` / `submissionUnknown` / `expired` / `cancelled` / `superseded`）、尝试次数和下次尝试时间，在 `(state, fire_at)` 上建索引。它取代现有的 `la_start_jobs`，发送、重试和防重复的语义保持不变。一万台设备约 10 万行。
-- `la_follows`：设备与分享 scope 的对应关系。
-- 生成时机：设备上传课表时生成「今天 + 明天」；每天 UTC+8 0:00 的夜间任务为所有设备生成新的「明天」，并清理前一天的行。服务端启动时若当天的夜间任务还没跑过，立即补跑。多留一天，是为了夜间任务失败时第二天的提醒仍然在库里。
+- `la_timetables`：每台设备一行，永久保存上传的原文、revision、摘要、`push_mode`、频道用的学校与作息版本，以及关注的分享 scope 和上次读到的分享 `updated_at`（每台几 KB）。
+- `la_start_jobs`：沿用现有的启动任务表，由引擎生成的行标记 `engine=1`，并新增 `day`（UTC+8 日期）和 `refresh`（令牌模式的 `refreshAt` / `alertAt`）两列。只存「今天 + 明天」。`payload` 在生成时拼好，发送时只改 `timestamp`，频道模式再填入频道 ID。状态沿用现有取值，新增 `local`（手机本地负责）。
+- `la_v2_meta`：记录夜间任务最近一次完成的日期。
+- 生成时机：设备上传课表时生成「今天 + 明天」；每天 UTC+8 0:00 之后的第一轮夜间任务（每 30 秒检查一次）为所有设备重建「今天 + 明天」，删除结束超过一天的行，并为走频道的作息版本续期广播承诺。服务端启动时如果当天还没跑过，会立即补跑。
 
-实测（M5，文件型 SQLite，一万台设备）：整学期展开为 640 万行、3.2 GB，替换一台设备中位 42 ms、p95 206 ms；只展开 14 天为 50 万行、253 MB，替换一台中位 0.7 ms。「今天 + 明天」约 10 万行（估算，未实测）。
+实测（M5，文件型 SQLite WAL，一万台设备，每台每天 5 节课、分节计时）：上传一份课表每台 4.4 ms（含整学期冲突扫描），重建两天 0.5 ms，夜间任务整体 6.4 s（每台一个短事务），库里 15 万行、352 MB。行比较大是因为每行存了完整的启动推送（含所有 frames，约 2 KB）；需要时可以改成发送时现拼。
 
 ### 4.3 重排
 
 以下事件触发重排，只重算「今天 + 明天」：
 
 - 设备上传了新的课表或设置：在上传请求里直接完成；
-- 关注的分享被替换（`replace`）或重新同步（`resync`）：用一条语句把所有关注者标记为待重排，由后台逐台处理，每台单独一个短事务，快要提醒的设备优先；
-- 分享被撤销：同样标记关注者待重排，重排时对方的课全部消失，只保留自己的课；
-- 管理员修改了学校的节次或调休：标记使用这所学校分享的关注者待重排。自己的课表由客户端下次上传时更新。
+- 关注的分享被替换、重新同步、轮换或撤销：后台每 30 秒比较一次每位关注者记下的 `updated_at` 与当前有效分享的 `updated_at`，不一致的逐台重建，每台一个短事务，下一次提醒最近的设备优先。分享代码本身不需要通知实时活动服务。撤销后找不到有效分享，重建时只保留自己的课。
+- 管理员修改学校作息不会影响已发布的分享（分享是冻结快照），发布者重新同步后按上一条处理。自己的课表由客户端下次上传时更新。
 
 重排规则：重算后与已有的行逐条比较，只写入有变化的行。`pending` 和 `local` 的行可以直接替换或删除；已经处于 `submitting`、`submitted`、`submissionUnknown` 的行保留，新结果中 `supersedes` 指向这些行的 occurrence 标记为 `superseded`，不再发送（与现有规则一致）。
 
 ### 4.4 发送
 
-- `starts` 循环每秒查询 `state='pending' AND fire_at<=now` 的行，当场拼出启动推送并批量发送。一批满额时立即继续下一批，不等下一秒。频道模式写入 `input-push-channel`，令牌模式写入 `input-push-token: 1`。
-- 启动推送的 attributes 携带这个活动的全部 frames（只有课程 ID、节次和阶段，不含文字），随活动保存在手机上；小组件按当前时刻选出对应的一段，再按课程 ID 从本地课表取文字。这样客户端不需要提前下载排程也能渲染远程启动的活动。
-- 共享课表的课：启动推送和 update 推送的 `content-state` 带上这一段显示的课程文字（取自分享快照），供手机上还没有这节课内容时直接显示。自己的课不带文字，只带时间标记。
-- 令牌模式的刷新时刻和提醒时刻（`refreshAt` / `alertAt`）由服务端根据 frames 计算。客户端只需上传令牌：`PUT /devices/{id}/activities/{occurrenceId}` 的请求体改为 `{"token": "…"}`。
-- 频道承诺：只要还有设备的排程用到某个作息版本，就每天续期一次（续到 8 天后），不再依赖客户端请求凭证。
+- `starts` 循环沿用现有实现：每秒取 `state='pending' AND fire_at<=now` 的行批量发送。频道模式写入 `input-push-channel`，令牌模式写入 `input-push-token: 1`。（一批满额时立即继续下一批：尚未实现。）
+- 启动推送的 attributes 新增 `frames`，携带这个活动的全部 frames（只有课程 ID、节次和阶段，不含文字），随活动保存在手机上；小组件按当前时刻选出对应的一段，再按课程 ID 从本地课表取文字。这样客户端不需要提前下载排程也能渲染远程启动的活动。
+- 共享课表的课：启动推送的 attributes 新增 `texts`，为 frames 里出现的每门对方课程带上 `{name, teacher, location}`（取自分享快照），供手机上还没有这节课内容时直接显示。自己的课不带文字。推送超过 3900 字节时先去掉 `texts`，frames 保留。
+- 令牌模式的刷新时刻和提醒时刻（`refreshAt` / `alertAt`）由服务端根据 frames 计算。客户端只需上传令牌：`PUT /devices/{id}/activities/{occurrenceId}` 的请求体为 `{"token": "…"}`。已经启动的活动遇到重建时，保留启动记录，但尚未发送的刷新按新的 frames 重排。
+- 频道承诺：上传时续到 8 天后；夜间任务为所有走频道的设备所用的作息版本再续到 8 天后，不再依赖客户端请求凭证。
 
 ## 5. 客户端
 
@@ -123,12 +124,14 @@
 | DELETE | `/devices/{id}/claims/{occurrenceId}` | 新增：交还预约失败的课 |
 | PUT | `/devices/{id}/activities/{occurrenceId}` | 请求体只剩 `token` |
 | DELETE | `/devices/{id}/activities/{occurrenceId}` | 不变 |
-| GET | `/devices/{id}` | 返回 revision、排程统计、冲突和错误 |
+| GET | `/devices/{id}` | 另外返回 `timetableRevision`、`pushMode`、`following` |
 | DELETE | `/devices/{id}` | 不变，同时删除课表和关注关系 |
 | GET | `/broadcast-config` | 删除，频道 ID 随认领结果和启动推送返回 |
 | PUT | `/devices/{id}/plan` 等 | 删除 |
 
-部署顺序：先服务端，后客户端。服务端迁移时，已发出的启动历史从 `la_start_jobs` 迁入 `la_occurrences`，以免旧计划中已经启动的课被新排程重复启动。
+第 1 步保留了旧接口（`plan`、`local-handoff`、`remote-resume`、`foreground-recovery`、`broadcast-config`，以及带 `refreshAt` 的活动令牌上传），现有客户端不受影响；设备一旦上传课表，旧计划中未发出的任务就会取消。旧接口在第 3 步删除。
+
+部署顺序：先服务端，后客户端。旧计划的启动记录留在同一张表里（`engine=0`）；重建时，与旧计划中已发出、结果不明或已交给本地预约（`localTaken`）的任务时间重叠的新课记为 `superseded`，不会被重复启动。
 
 ## 7. 分步实施与验收
 

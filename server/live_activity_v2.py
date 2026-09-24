@@ -16,9 +16,11 @@ from zoneinfo import ZoneInfo
 try:
     from .live_activity_timeline import (DAY, ProtocolError, boundaries, canonical, digest,
         identifier, normalize_schedule, public_state, validate_activity, validate_plan)
+    from . import live_activity_schedule as schedule_engine
 except ImportError:
     from live_activity_timeline import (DAY, ProtocolError, boundaries, canonical, digest,
         identifier, normalize_schedule, public_state, validate_activity, validate_plan)
+    import live_activity_schedule as schedule_engine
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS la_v2_migrations (version INTEGER PRIMARY KEY, applied_at REAL NOT NULL);
@@ -65,7 +67,22 @@ CREATE TABLE IF NOT EXISTS la_token_updates (
  PRIMARY KEY(device, occurrence, fire_at)
 );
 CREATE INDEX IF NOT EXISTS la_token_due ON la_token_updates(state, fire_at, next_attempt);
+CREATE TABLE IF NOT EXISTS la_timetables (
+ device TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL,
+ push_mode TEXT NOT NULL, school TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '',
+ follow_scope TEXT NOT NULL DEFAULT '', follow_seen TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS la_timetable_follow ON la_timetables(follow_scope);
+CREATE TABLE IF NOT EXISTS la_v2_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+# Columns added to `la_start_jobs` when it became the server-built schedule:
+# the UTC+8 day, the token-mode refresh instants, and whether the engine made it.
+SCHEDULE_COLUMNS = (("day", "TEXT NOT NULL DEFAULT ''"), ("refresh", "TEXT NOT NULL DEFAULT ''"),
+                    ("engine", "INTEGER NOT NULL DEFAULT 0"))
+# Rows the engine may still rewrite; anything else is submission history.
+REPLACEABLE = ('pending', 'local', 'cancelled', 'superseded', 'expired')
+
 
 
 class TokenVault:
@@ -113,6 +130,13 @@ class Service:
             if 'alert' not in {row[1] for row in self.db.execute("PRAGMA table_info(la_token_updates)")}:
                 self.db.execute("ALTER TABLE la_token_updates ADD COLUMN alert INTEGER NOT NULL DEFAULT 0")
             self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(4,?)", (self.now(),))
+            # Migration 5: the server builds the schedule from the uploaded timetable.
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(la_start_jobs)")}
+            for name, definition in SCHEDULE_COLUMNS:
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE la_start_jobs ADD COLUMN {name} {definition}")
+            self.db.execute("CREATE INDEX IF NOT EXISTS la_start_day ON la_start_jobs(device,day)")
+            self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(5,?)", (self.now(),))
             self.db.execute("UPDATE la_plan SET state='cancelled',detail='protocol v2 migration' WHERE state='pending'")
             self.db.execute("UPDATE la_devices SET enabled=0,start_token=''")
             self.db.execute("DELETE FROM la_activities")
@@ -201,13 +225,16 @@ class Service:
                     self.db.commit()
                     row = self.db.execute("SELECT * FROM la_v2_devices WHERE id=?", (device,)).fetchone()
             jobs = self.db.execute("SELECT occurrence,state,fire_at,expires_at FROM la_start_jobs WHERE device=? ORDER BY fire_at", (device,)).fetchall()
+            timetable = self.db.execute("SELECT revision,push_mode,follow_scope FROM la_timetables WHERE device=?", (device,)).fetchone()
         plan = json.loads(row['snapshot']) if row['snapshot'] else {}
         return {"deviceID": device, "protocolVersion": 2, "launchMode": row['mode'], "modeRevision": row['mode_revision'],
                 "planRevision": row['revision'], "revoked": bool(row['revoked']), "error": row['error'],
                 "coverageStart": plan.get('coverageStart'), "coverageEndExclusive": plan.get('coverageEndExclusive'),
                 "pendingCount": sum(j['state'] == 'pending' for j in jobs),
                 "hasStartToken": bool(row['token']), "pushConfigured": self.client is not None,
-                "history": [{"occurrenceId": j['occurrence'], "state": j['state'], "end": j['expires_at']} for j in jobs if j['state'] != 'pending']}
+                "history": [{"occurrenceId": j['occurrence'], "state": j['state'], "end": j['expires_at']} for j in jobs if j['state'] != 'pending'],
+                "timetableRevision": timetable['revision'] if timetable else 0,
+                "pushMode": timetable['push_mode'] if timetable else None, "following": bool(timetable and timetable['follow_scope'])}
 
     @staticmethod
     def key(bundle, environment, school, schedule, version, period):
@@ -336,6 +363,7 @@ class Service:
     def forget(self, device):
         with self.transaction() as db:
             db.execute("UPDATE la_v2_devices SET revoked=1,token='',snapshot=NULL WHERE id=?", (device,))
+            db.execute("DELETE FROM la_timetables WHERE device=?", (device,))
             db.execute("UPDATE la_start_jobs SET state='cancelled' WHERE device=? AND state IN ('pending','claimed')", (device,))
             db.execute("DELETE FROM la_activity_tokens WHERE device=?", (device,))
             db.execute("UPDATE la_token_updates SET state='cancelled' WHERE device=? AND state='pending'", (device,))
@@ -378,6 +406,302 @@ class Service:
                 # Validate against the original accepted coverage, not today's clock.
                 events = validate_plan(plan, json.loads(version[0]), plan['coverageStart'])
                 self._materialize(db, row, plan, events)
+
+    # MARK: Server-built schedule
+    #
+    # The device uploads its timetable once; the engine keeps today and
+    # tomorrow (UTC+8) in `la_start_jobs` (`engine=1`). Upload, the midnight
+    # run and a followed share changing each rebuild those two days, writing
+    # only rows that changed.
+
+    TIMETABLE_KEYS = {"revision", "own", "follow", "conflicts", "settings"}
+
+    def _share(self, db, scope=None, code=None):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shares'").fetchone():
+            return None
+        if code is not None:
+            return db.execute("SELECT * FROM shares WHERE code=? AND revoked=0", (code.upper(),)).fetchone()
+        return db.execute("SELECT * FROM shares WHERE schedule_scope=? AND revoked=0 ORDER BY created_at DESC LIMIT 1", (scope,)).fetchone()
+
+    def _parse_timetable(self, body):
+        if not isinstance(body, dict) or not {"revision", "own", "settings"} <= set(body) or set(body) - self.TIMETABLE_KEYS:
+            raise ProtocolError("expected revision, own, settings and optional follow, conflicts")
+        revision = body["revision"]
+        if type(revision) is not int or not 1 <= revision < 2**53:
+            raise ProtocolError("invalid revision")
+        own = schedule_engine.own_table(body["own"])
+        settings = body["settings"]
+        if not isinstance(settings, dict) or set(settings) - {"leadMinutes", "sharedLeadMinutes", "perPeriod"} or "leadMinutes" not in settings:
+            raise ProtocolError("settings carry leadMinutes, sharedLeadMinutes and perPeriod only")
+        for key in ("leadMinutes", "sharedLeadMinutes"):
+            if key in settings and settings[key] not in schedule_engine.LEADS:
+                raise ProtocolError(key + " must be 15, 30 or 60")
+        if not isinstance(settings.get("perPeriod", False), bool):
+            raise ProtocolError("perPeriod must be a boolean")
+        follow = body.get("follow")
+        if follow is not None and (not isinstance(follow, dict) or set(follow) != {"share"} or not isinstance(follow["share"], str)
+                                   or not 1 <= len(follow["share"]) <= 32):
+            raise ProtocolError("follow carries the share code only")
+        conflicts = body.get("conflicts", {})
+        if not isinstance(conflicts, dict) or len(conflicts) > 2000 or not all(
+                isinstance(key, str) and len(key) <= 20 and isinstance(value, str) and len(value) <= 160 for key, value in conflicts.items()):
+            raise ProtocolError("invalid conflicts")
+        return revision, own, settings, follow, conflicts
+
+    def _tables(self, db, row):
+        """(own table, share table, share texts, share row) of a stored timetable."""
+        body = json.loads(row['body'])
+        own = schedule_engine.own_table(body['own'])
+        share = texts = None
+        record = self._share(db, scope=row['follow_scope']) if row['follow_scope'] else None
+        if record is not None:
+            share, texts = schedule_engine.share_table(record)
+        return body, own, share, texts or {}, record
+
+    def _channel_version(self, db, device, own_body):
+        """The school's current version when the own timetable runs on its bells:
+        only then can a channel broadcast drive the activity."""
+        school = own_body.get("schoolID")
+        if not school or not self.client:
+            return None
+        row = db.execute("SELECT s.periods_json,t.timezone FROM school_configs s JOIN school_terms t ON t.school_id=s.id WHERE s.id=? AND t.is_current=1 LIMIT 1", (school,)).fetchone() \
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='school_configs'").fetchone() else None
+        if row is None:
+            return None
+        try:
+            definition = normalize_schedule(json.loads(row['periods_json']), row['timezone'])
+        except ProtocolError:
+            return None
+        if [(period['start'], period['end']) for period in definition['periods']] != [(p['start'], p['end']) for p in own_body['periods']]:
+            return None
+        version = digest(definition)
+        identity = (device['bundle'], device['environment'], school, 'default', version)
+        if db.execute("SELECT 1 FROM la_channels WHERE bundle=? AND environment=? AND school=? AND schedule=? AND version=? AND state='retiring'", identity).fetchone():
+            return None
+        db.execute("INSERT INTO la_schedule_versions VALUES(?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET broadcast_until=MAX(broadcast_until,excluded.broadcast_until)",
+                   (*identity, canonical(definition), self.now() + 8 * DAY))
+        for period in definition['periods']:
+            db.execute("INSERT OR IGNORE INTO la_channels(logical_key,bundle,environment,school,schedule,version,final_period) VALUES(?,?,?,?,?,?,?)",
+                       (self.key(*identity, period['number']), *identity, period['number']))
+        return school, version
+
+    def put_timetable(self, device, body):
+        revision, own, settings, follow, conflicts = self._parse_timetable(body)
+        hashed = digest(body)
+        now = self.now()
+        with self.transaction() as db:
+            row = db.execute("SELECT * FROM la_v2_devices WHERE id=?", (device,)).fetchone()
+            if row['revoked']:
+                raise ProtocolError("device revoked", 409)
+            stored = db.execute("SELECT * FROM la_timetables WHERE device=?", (device,)).fetchone()
+            if stored and (revision < stored['revision'] or (revision == stored['revision'] and hashed != stored['digest'])):
+                raise ProtocolError("timetable revision conflict", 409)
+            if not stored or revision != stored['revision']:
+                scope = seen = ''
+                if follow is not None:
+                    share = self._share(db, code=follow['share'])
+                    if share is None:
+                        raise ProtocolError("followed share not found", 404)
+                    scope, seen = share['schedule_scope'], share['updated_at']
+                channel = None if follow is not None else self._channel_version(db, row, body['own'])
+                db.execute("INSERT INTO la_timetables VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,body=excluded.body,"
+                           "push_mode=excluded.push_mode,school=excluded.school,version=excluded.version,follow_scope=excluded.follow_scope,follow_seen=excluded.follow_seen,updated_at=excluded.updated_at",
+                           (device, revision, hashed, canonical(body), 'channel' if channel else 'token', channel[0] if channel else '', channel[1] if channel else '', scope, seen, now))
+                # Remote starts now come from this schedule; the old plan's pending jobs go.
+                db.execute("UPDATE la_v2_devices SET mode='remote',snapshot=NULL WHERE id=?", (device,))
+                db.execute("UPDATE la_start_jobs SET state='cancelled' WHERE device=? AND engine=0 AND state IN ('pending','claimed','localTaken')", (device,))
+                self._rebuild(db, device)
+            stored = db.execute("SELECT * FROM la_timetables WHERE device=?", (device,)).fetchone()
+            _, own, share, _, _ = self._tables(db, stored)
+            pending = db.execute("SELECT COUNT(*) FROM la_start_jobs WHERE device=? AND engine=1 AND +state='pending'", (device,)).fetchone()[0]
+        # The rest of the term only feeds the settings page: computed outside the write lock.
+        first = schedule_engine.today(now)
+        found, omitted = schedule_engine.conflicts_between(device, first, min((share or own).last_day(), first + timedelta(days=200)),
+                                                           own, share, settings, conflicts, now)
+        return {"revision": revision, "pushMode": stored['push_mode'], "following": bool(stored['follow_scope']),
+                "conflicts": found, "omitted": omitted, "pendingCount": pending}
+
+    def _payload(self, occurrence, stored, texts, scope, channel_key):
+        tokens = channel_key == ''
+        attributes = {"semester": "", "week": 0, "dateKey": occurrence['dateKey'], "protocolVersion": 2,
+                      "scheduleScope": scope, "occurrenceId": occurrence['occurrenceId'], "scheduleVersion": stored['version'],
+                      "reservationStart": occurrence['start'] - 978307200, "reservationEnd": occurrence['end'] - 978307200,
+                      "reminderDate": occurrence['reminder'] - 978307200, "frames": occurrence['frames']}
+        if tokens:
+            attributes['pushMode'] = 'token'
+        # Share courses may travel with their text: the share already lives here.
+        shown = {ref['course'] for frame in occurrence['frames'] for ref in (frame['lead'], frame['companion'])
+                 if ref and ref['table'] == 'share'}
+        if shown:
+            attributes['texts'] = {course: texts[course] for course in sorted(shown) if course in texts}
+        payload = {"aps": {"timestamp": int(self.now()), "event": "start", "attributes-type": "ScheduleLiveActivityAttributes",
+                           "attributes": attributes,
+                           "content-state": public_state(occurrence['dateKey'], None if tokens else occurrence['lastPeriod'], 'upcoming', occurrence['reminder']),
+                           "stale-date": occurrence['end'], "alert": {"title": "课程提醒", "body": "即将上课"}}}
+        if tokens:
+            payload['aps']['input-push-token'] = 1
+        # APNs refuses Live Activity payloads over 4 KB: text goes first, the frames never.
+        if len(canonical(payload).encode()) > 3900:
+            attributes.pop('texts', None)
+        return payload
+
+    def _rebuild(self, db, device, days=None):
+        """Recompute `days` (default today and tomorrow) for one device and write the difference."""
+        stored = db.execute("SELECT * FROM la_timetables WHERE device=?", (device,)).fetchone()
+        owner = db.execute("SELECT * FROM la_v2_devices WHERE id=?", (device,)).fetchone()
+        if stored is None or owner is None or owner['revoked']:
+            return
+        body, own, share, texts, record = self._tables(db, stored)
+        now = self.now()
+        first = schedule_engine.today(now)
+        scope = record['schedule_scope'] if record is not None else body['own']['scope']
+        # Starts from the client-built plan carry other ids; a course they already
+        # started (or the phone reserved) must not start again under its new id.
+        legacy = db.execute("SELECT fire_at,expires_at FROM la_start_jobs WHERE device=? AND engine=0 AND expires_at>? "
+                            "AND state IN ('submitting','submitted','submissionUnknown','localTaken')", (device, now)).fetchall()
+        for day in days or (first, first + timedelta(days=1)):
+            if stored['follow_scope'] and share is None:
+                built, _ = schedule_engine.build_day(device, day, own, None, body['settings'], {}, now)
+            else:
+                built, _ = schedule_engine.build_day(device, day, own, share, body['settings'], body.get('conflicts', {}), now)
+            existing = {row['occurrence']: row for row in db.execute("SELECT * FROM la_start_jobs WHERE device=? AND day=? AND engine=1", (device, day.isoformat()))}
+            fresh = {occurrence['occurrenceId'] for occurrence in built}
+            for occurrence in built:
+                channel_key = '' if stored['push_mode'] == 'token' else self.key(owner['bundle'], owner['environment'], stored['school'], 'default', stored['version'], occurrence['lastPeriod'])
+                payload = canonical(self._payload(occurrence, stored, texts, scope, channel_key))
+                refresh = canonical({"refreshAt": schedule_engine.refresh_at(occurrence), "alertAt": occurrence['alertAt']})
+                old = existing.get(occurrence['occurrenceId'])
+                # A changed course must not start again beside an activity already started for it.
+                started = [row for key, row in existing.items() if key not in fresh and row['state'] not in REPLACEABLE
+                           and row['fire_at'] < occurrence['end'] and row['expires_at'] > occurrence['start']]
+                started += [row for row in legacy if row['fire_at'] < occurrence['end'] and row['expires_at'] > occurrence['start']]
+                if old is None:
+                    db.execute("INSERT INTO la_start_jobs(device,occurrence,revision,scope,channel_key,fire_at,expires_at,payload,state,day,refresh,engine) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)",
+                               (device, occurrence['occurrenceId'], stored['revision'], scope, channel_key, occurrence['reminder'], occurrence['end'], payload,
+                                'superseded' if started else 'pending', day.isoformat(), refresh))
+                elif old['state'] in REPLACEABLE:
+                    state = 'superseded' if started else ('local' if old['state'] == 'local' else 'pending')
+                    if (old['payload'], old['fire_at'], old['expires_at'], old['refresh'], old['state'], old['channel_key']) != (payload, occurrence['reminder'], occurrence['end'], refresh, state, channel_key):
+                        db.execute("UPDATE la_start_jobs SET revision=?,scope=?,channel_key=?,fire_at=?,expires_at=?,payload=?,state=?,refresh=?,attempts=0,next_attempt=0 WHERE device=? AND occurrence=?",
+                                   (stored['revision'], scope, channel_key, occurrence['reminder'], occurrence['end'], payload, state, refresh, device, occurrence['occurrenceId']))
+                elif old['refresh'] != refresh:
+                    # Already started: keep the history, but its refreshes follow the new schedule.
+                    db.execute("UPDATE la_start_jobs SET refresh=? WHERE device=? AND occurrence=?", (refresh, device, occurrence['occurrenceId']))
+                    token = db.execute("SELECT token FROM la_activity_tokens WHERE device=? AND occurrence=?", (device, occurrence['occurrenceId'])).fetchone()
+                    if token:
+                        self._queue_updates(db, device, occurrence['occurrenceId'], occurrence['end'], json.loads(refresh))
+            for key, row in existing.items():
+                if key not in fresh and row['state'] in REPLACEABLE:
+                    db.execute("DELETE FROM la_start_jobs WHERE device=? AND occurrence=?", (device, key))
+
+    def _queue_updates(self, db, device, occurrence, end, refresh):
+        now = self.now()
+        stamps = [stamp for stamp in refresh['refreshAt'] if stamp >= now - 60] + [end]
+        alerts = set(refresh['alertAt'])
+        db.execute("DELETE FROM la_token_updates WHERE device=? AND occurrence=? AND state NOT IN ('sent','sending')", (device, occurrence))
+        for index, stamp in enumerate(stamps):
+            last = index == len(stamps) - 1
+            db.execute("INSERT OR IGNORE INTO la_token_updates(device,occurrence,fire_at,event,expires_at,alert) VALUES(?,?,?,?,?,?)",
+                       (device, occurrence, stamp, 'end' if last else 'update', stamp + 60 if last else stamps[index + 1], int(stamp in alerts)))
+
+    def claim(self, device, value):
+        """Hand the nearest `slots` pending occurrences to the phone's own
+        reservations and return what it needs to reserve them."""
+        if not isinstance(value, dict) or set(value) != {"slots"} or type(value["slots"]) is not int or not 0 <= value["slots"] <= 16:
+            raise ProtocolError("expected slots 0–16")
+        now = self.now()
+        with self.transaction() as db:
+            if db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (device,)).fetchone()['revoked']:
+                raise ProtocolError("device revoked", 409)
+            # A reminder about to fire is safer left to the server than raced.
+            fresh = db.execute("SELECT occurrence FROM la_start_jobs WHERE device=? AND engine=1 AND +state='pending' AND +fire_at>? ORDER BY fire_at LIMIT ?",
+                               (device, now + 30, value['slots'])).fetchall()
+            for row in fresh:
+                db.execute("UPDATE la_start_jobs SET state='local' WHERE device=? AND occurrence=?", (device, row['occurrence']))
+            rows = db.execute("SELECT j.*,c.channel,c.state AS channel_state FROM la_start_jobs j LEFT JOIN la_channels c ON j.channel_key=c.logical_key "
+                              "WHERE j.device=? AND j.engine=1 AND +j.state='local' AND j.expires_at>? ORDER BY j.fire_at", (device, now)).fetchall()
+        claimed = []
+        for row in rows:
+            attributes = json.loads(row['payload'])['aps']['attributes']
+            refresh = json.loads(row['refresh'] or '{}')
+            claimed.append({"occurrenceId": row['occurrence'], "dateKey": row['day'], "reminder": row['fire_at'],
+                            "start": attributes['reservationStart'] + 978307200, "end": row['expires_at'],
+                            "pushMode": attributes.get('pushMode', 'channel'), "scheduleScope": attributes['scheduleScope'],
+                            "scheduleVersion": attributes['scheduleVersion'],
+                            "channel": row['channel'] if row['channel_key'] and row['channel_state'] == 'ready' else None,
+                            "frames": attributes['frames'], "texts": attributes.get('texts', {}),
+                            "alertAt": refresh.get('alertAt', []), "refreshAt": refresh.get('refreshAt', [])})
+        return {"claims": claimed}
+
+    def release(self, device, occurrence):
+        """A reservation the phone could not make goes back to the server."""
+        occurrence = identifier(occurrence)
+        with self.transaction() as db:
+            changed = db.execute("UPDATE la_start_jobs SET state='pending' WHERE device=? AND occurrence=? AND engine=1 AND state='local'", (device, occurrence)).rowcount
+        return {"occurrenceId": occurrence, "released": bool(changed)}
+
+    def register_token(self, device, occurrence, value):
+        """Token mode on a server-built occurrence: the phone sends the token only;
+        the refresh instants come from the schedule."""
+        occurrence = identifier(occurrence)
+        token = value.get("token")
+        if set(value) != {"token"} or not isinstance(token, str) or not 16 <= len(token) <= 512 or any(c not in "0123456789abcdefABCDEF" for c in token):
+            raise ProtocolError("invalid activity push token")
+        sealed = self.vault.seal(token)
+        now = self.now()
+        with self.transaction() as db:
+            if db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (device,)).fetchone()['revoked']:
+                raise ProtocolError("device revoked", 409)
+            row = db.execute("SELECT * FROM la_start_jobs WHERE device=? AND occurrence=? AND engine=1", (device, occurrence)).fetchone()
+            if row is None or row['expires_at'] <= now:
+                raise ProtocolError("unknown or finished occurrence", 404)
+            db.execute("INSERT INTO la_activity_tokens VALUES(?,?,?,?,?,?) ON CONFLICT(device,occurrence) DO UPDATE SET token=excluded.token,day=excluded.day,end_at=excluded.end_at,updated_at=excluded.updated_at",
+                       (device, occurrence, sealed, row['day'], row['expires_at'], now))
+            self._queue_updates(db, device, occurrence, row['expires_at'], json.loads(row['refresh'] or '{"refreshAt": [], "alertAt": []}'))
+            pending = db.execute("SELECT COUNT(*) FROM la_token_updates WHERE device=? AND occurrence=? AND state='pending'", (device, occurrence)).fetchone()[0]
+        return {"occurrenceId": occurrence, "pending": pending}
+
+    def nightly(self):
+        """At UTC+8 midnight (or on start if it was missed) build the new
+        tomorrow for every device, drop finished days and keep channels promised."""
+        now = self.now()
+        day = schedule_engine.today(now).isoformat()
+        with self.lock:
+            done = self.db.execute("SELECT value FROM la_v2_meta WHERE key='nightly'").fetchone()
+            devices = [] if done and done[0] == day else [row[0] for row in self.db.execute(
+                "SELECT t.device FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0")]
+        if done and done[0] == day:
+            return
+        for device in devices:
+            # One short transaction each, so dispatch never waits behind the whole run.
+            with self.transaction() as db:
+                self._rebuild(db, device)
+        with self.transaction() as db:
+            db.execute("DELETE FROM la_start_jobs WHERE engine=1 AND expires_at<?", (now - DAY,))
+            for row in db.execute("SELECT DISTINCT bundle, environment, school, version FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0 AND t.push_mode='channel'").fetchall():
+                db.execute("UPDATE la_schedule_versions SET broadcast_until=MAX(broadcast_until,?) WHERE bundle=? AND environment=? AND school=? AND schedule='default' AND version=?",
+                           (now + 8 * DAY, *row))
+            db.execute("INSERT INTO la_v2_meta VALUES('nightly',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (day,))
+
+    def follow_shares(self):
+        """Rebuild followers whose share was replaced, resynced or revoked since
+        their last build, nearest reminder first."""
+        with self.lock:
+            if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shares'").fetchone():
+                return
+            stale = self.db.execute(
+                "SELECT t.device, COALESCE((SELECT s.updated_at FROM shares s WHERE s.schedule_scope=t.follow_scope AND s.revoked=0 ORDER BY s.created_at DESC LIMIT 1), '') AS current, "
+                "(SELECT MIN(j.fire_at) FROM la_start_jobs j WHERE j.device=t.device AND j.engine=1 AND +j.state='pending') AS next "
+                "FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0 AND t.follow_scope!=''").fetchall()
+        for row in sorted((row for row in stale if row['current'] != self._seen(row['device'])), key=lambda row: row['next'] or float('inf')):
+            with self.transaction() as db:
+                db.execute("UPDATE la_timetables SET follow_seen=? WHERE device=?", (row['current'], row['device']))
+                self._rebuild(db, row['device'])
+
+    def _seen(self, device):
+        with self.lock:
+            row = self.db.execute("SELECT follow_seen FROM la_timetables WHERE device=?", (device,)).fetchone()
+        return row[0] if row else ''
 
     def validate_client(self, client):
         if client is None:
@@ -423,7 +747,11 @@ class Service:
             starts = dict(self.db.execute("SELECT state,COUNT(*) FROM la_start_jobs GROUP BY state").fetchall())
             broadcasts = dict(self.db.execute("SELECT state,COUNT(*) FROM la_v2_broadcasts GROUP BY state").fetchall())
             updates = dict(self.db.execute("SELECT state,COUNT(*) FROM la_token_updates GROUP BY state").fetchall())
-        return {"protocolVersion": 2, "channels": [dict(row) for row in rows], "starts": starts, "broadcasts": broadcasts, "tokenUpdates": updates}
+            timetables = dict(self.db.execute("SELECT push_mode,COUNT(*) FROM la_timetables GROUP BY push_mode").fetchall())
+            following = self.db.execute("SELECT COUNT(*) FROM la_timetables WHERE follow_scope!=''").fetchone()[0]
+            nightly = self.db.execute("SELECT value FROM la_v2_meta WHERE key='nightly'").fetchone()
+        return {"protocolVersion": 2, "channels": [dict(row) for row in rows], "starts": starts, "broadcasts": broadcasts, "tokenUpdates": updates,
+                "timetables": timetables, "following": following, "nightly": nightly[0] if nightly else None}
 
     def drain_legacy(self):
         with self.lock:
@@ -640,7 +968,7 @@ class Service:
     def start(self):
         if self.workers:
             return
-        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('broadcast-plan', self.plan_broadcasts, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1)]:
+        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels' , self.maintain_channels, 60), ('materialize', self.materialize, 60), ('broadcast-plan', self.plan_broadcasts, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1), ('nightly', self.nightly, 30), ('follow-shares', self.follow_shares, 30)]:
             def run(action=action, delay=delay):
                 while not self.stop_event.is_set():
                     try:
@@ -695,8 +1023,16 @@ def handle(handler, service, method, path):
                 result = service.resume_remote(device)
             elif tail == 'foreground-recovery' and method == 'POST':
                 result = service.recovery(device, body())
+            elif tail == 'timetable' and method == 'PUT':
+                result = service.put_timetable(device, body())
+            elif tail == 'claims' and method == 'POST':
+                result = service.claim(device, body())
+            elif len(parts) == 4 and parts[2] == 'claims' and method == 'DELETE':
+                result = service.release(device, parts[3])
             elif len(parts) == 4 and parts[2] == 'activities' and method == 'PUT':
-                result = service.register_activity(device, parts[3], body())
+                value = body()
+                # A token alone registers on the server-built schedule.
+                result = service.register_token(device, parts[3], value) if set(value) == {'token'} else service.register_activity(device, parts[3], value)
             elif len(parts) == 4 and parts[2] == 'activities' and method == 'DELETE':
                 result = service.forget_activity(device, parts[3])
             else:

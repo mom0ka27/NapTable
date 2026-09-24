@@ -1,0 +1,260 @@
+"""The server-built schedule: timetable upload, day rebuilds, claims and pushes."""
+import copy
+import json
+import sqlite3
+import threading
+import unittest
+
+from server.live_activity import LiveActivityService
+from server.live_activity_schedule import instant
+from server.live_activity_timeline import ProtocolError
+from server.live_activity_v2 import Service
+from test_live_activity_v2 import APNs, TestVault
+
+from datetime import date
+
+TUESDAY = date(2026, 9, 22)
+PERIODS = [{"start": "08:00", "end": "08:50"}, {"start": "09:00", "end": "09:50"},
+           {"start": "10:00", "end": "10:50"}, {"start": "11:00", "end": "11:50"}]
+SHARE_COLUMNS = ("code TEXT, schedule_scope TEXT, owner TEXT, revoked INTEGER, created_at TEXT, updated_at TEXT, payload_json TEXT, "
+                 "class_time_list_json TEXT, term_snapshot_json TEXT, semester_start_monday TEXT, adjustments_json TEXT")
+
+
+def at(clock, day=TUESDAY):
+    return instant(day, clock)
+
+
+class ScheduledTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:', check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.addCleanup(self.db.close)
+        self.clock = at("07:00")
+        self.client = APNs()
+        legacy = LiveActivityService(self.db, threading.RLock(), client=self.client, now=lambda: self.clock)
+        self.service = Service(legacy, TestVault())
+        self.db.executescript("CREATE TABLE school_configs(id TEXT, periods_json TEXT); CREATE TABLE school_terms(school_id TEXT,timezone TEXT,is_current INTEGER);"
+                              f"CREATE TABLE shares({SHARE_COLUMNS});")
+        self.db.execute('INSERT INTO school_configs VALUES(?,?)', ('school', json.dumps(PERIODS)))
+        self.db.execute("INSERT INTO school_terms VALUES('school','Asia/Shanghai',1)")
+        self.db.commit()
+        self.id = self.service.register({'installationId': 'installation-1', 'bundleID': self.client.bundle_id,
+                                         'environment': 'sandbox', 'startToken': 'ab12cd34'}, 'persisted-secret')['deviceID']
+        self.body = {"revision": 1, "settings": {"leadMinutes": 30},
+                     "own": {"scope": "own-scope", "schoolID": "school", "periods": PERIODS, "semesterStartMonday": "2026-09-07",
+                             "weekCount": 18, "adjustments": [],
+                             "courses": [{"id": "math", "day": 2, "first": 1, "last": 2, "weeks": []},
+                                         {"id": "english", "day": 3, "first": 3, "last": 3, "weeks": []}]}}
+
+    def jobs(self, state=None):
+        rows = self.db.execute("SELECT * FROM la_start_jobs WHERE device=? AND engine=1 ORDER BY fire_at", (self.id,)).fetchall()
+        return [row for row in rows if state is None or row['state'] == state]
+
+    def upload(self, **changes):
+        body = copy.deepcopy(self.body)
+        body.update(changes)
+        return self.service.put_timetable(self.id, body)
+
+    def share(self, code='SHARE1', scope='share-scope', updated='2026-09-20T00:00:00', courses=None, revoked=0):
+        courses = courses if courses is not None else [
+            {"id": 7, "name": "高数", "teacher": "王", "classroom": "A101", "week_time": 2, "start_time": 1, "time_count": 0, "weeks": []}]
+        self.db.execute("INSERT INTO shares VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (code, scope, 'A', revoked, updated, updated, json.dumps(courses, ensure_ascii=False),
+                         json.dumps([{"start": "09:30", "end": "10:30"}, {"start": "14:00", "end": "15:00"}]),
+                         json.dumps({"weekCount": 18}), "2026-09-07", "[]"))
+        self.db.commit()
+
+    # MARK: Upload
+
+    def test_upload_builds_today_and_tomorrow_on_the_school_channel(self):
+        result = self.upload()
+        self.assertEqual((result['pushMode'], result['pendingCount'], result['conflicts']), ('channel', 2, []))
+        today, tomorrow = self.jobs()
+        self.assertEqual((today['day'], today['fire_at'], today['expires_at']), ("2026-09-22", at("07:30"), at("09:50")))
+        self.assertEqual(tomorrow['day'], "2026-09-23")
+        self.assertTrue(today['channel_key'].endswith(':end-period-2'))
+        attributes = json.loads(today['payload'])['aps']['attributes']
+        self.assertEqual(attributes['frames'][0]['lead']['course'], 'math')
+        self.assertNotIn('texts', attributes)
+        self.assertNotIn('pushMode', attributes)
+        # A mapping the school's bells do not match falls back to per-activity pushes.
+        other = copy.deepcopy(self.body['own'])
+        other['periods'] = [dict(period, start="07:55") if index == 0 else period for index, period in enumerate(PERIODS)]
+        self.assertEqual(self.upload(revision=2, own=other)['pushMode'], 'token')
+        self.assertEqual(json.loads(self.jobs()[0]['payload'])['aps']['input-push-token'], 1)
+
+    def test_upload_is_strict_and_revisioned(self):
+        for broken in ({"settings": {"leadMinutes": 45}}, {"settings": {"leadMinutes": 30, "persistent": True}},
+                       {"timeZone": "Asia/Shanghai"}, {"follow": {"share": "S", "scope": "x"}}):
+            with self.assertRaises(ProtocolError):
+                self.upload(**broken)
+        named = copy.deepcopy(self.body['own'])
+        named['courses'][0]['name'] = '高数'
+        with self.assertRaises(ProtocolError):
+            self.upload(own=named)
+        self.upload()
+        self.upload()
+        with self.assertRaises(ProtocolError) as error:
+            self.upload(settings={"leadMinutes": 60})
+        self.assertEqual(error.exception.status, 409)
+        with self.assertRaises(ProtocolError):
+            self.upload(revision=0)
+
+    def test_rebuild_writes_only_what_changed_and_keeps_history(self):
+        self.upload()
+        today = self.jobs()[0]
+        self.db.execute("UPDATE la_start_jobs SET state='local' WHERE occurrence=?", (today['occurrence'],)); self.db.commit()
+        # A new lead moves the reminder but keeps the occurrence and its claim.
+        self.upload(revision=2, settings={"leadMinutes": 15})
+        moved = self.jobs()[0]
+        self.assertEqual((moved['occurrence'], moved['state'], moved['fire_at']), (today['occurrence'], 'local', at("07:45")))
+        # Once started, a changed course may not start again beside it.
+        self.db.execute("UPDATE la_start_jobs SET state='submitted' WHERE occurrence=?", (today['occurrence'],)); self.db.commit()
+        longer = copy.deepcopy(self.body['own'])
+        longer['courses'][0]['last'] = 3
+        self.upload(revision=3, own=longer)
+        rows = {row['occurrence']: row['state'] for row in self.jobs() if row['day'] == '2026-09-22'}
+        self.assertEqual(rows[today['occurrence']], 'submitted')
+        self.assertEqual(sorted(rows.values()), ['submitted', 'superseded'])
+        # A dropped course leaves no pending start behind.
+        dropped = copy.deepcopy(self.body['own'])
+        dropped['courses'] = dropped['courses'][1:]
+        self.upload(revision=4, own=dropped)
+        self.assertEqual([row['state'] for row in self.jobs() if row['day'] == '2026-09-22'], ['submitted'])
+
+    def test_a_start_from_the_old_plan_is_not_repeated(self):
+        self.db.execute("INSERT INTO la_start_jobs(device,occurrence,revision,scope,channel_key,fire_at,expires_at,payload,state) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (self.id, 'client-uuid', 1, 'own-scope', '', at("06:50"), at("09:50"), '{}', 'submitted'))
+        self.db.commit()
+        self.upload()
+        self.assertEqual([(row['day'], row['state']) for row in self.jobs()], [("2026-09-22", 'superseded'), ("2026-09-23", 'pending')])
+        self.assertEqual(self.db.execute("SELECT state FROM la_start_jobs WHERE occurrence='client-uuid'").fetchone()[0], 'submitted')
+
+    def test_conflicts_are_reported_for_the_term(self):
+        clashing = copy.deepcopy(self.body['own'])
+        clashing['courses'].append({"id": "physics", "day": 2, "first": 2, "last": 2, "weeks": [3]})
+        result = self.upload(own=clashing)
+        self.assertEqual([item['id'] for item in result['conflicts']], ["2026-09-22:2"])
+        self.assertEqual([row['day'] for row in self.jobs()], ["2026-09-23"])
+        resolved = self.upload(revision=2, own=clashing, conflicts={"2026-09-22:2": "physics"})
+        self.assertEqual(len(resolved['conflicts']), 1)
+        self.assertEqual([row['day'] for row in self.jobs()], ["2026-09-22", "2026-09-22", "2026-09-23"])
+
+    # MARK: Following a share
+
+    def test_following_merges_both_tables_with_separate_leads(self):
+        self.share()
+        result = self.upload(follow={"share": "share1"}, settings={"leadMinutes": 60, "sharedLeadMinutes": 15})
+        self.assertEqual((result['pushMode'], result['following']), ('token', True))
+        merged = self.jobs()[0]
+        # Mine 08:00–09:50 reminds at 07:00; theirs 09:30–10:30 joins at 09:15.
+        self.assertEqual((merged['fire_at'], merged['expires_at']), (at("07:00"), at("10:30")))
+        attributes = json.loads(merged['payload'])['aps']['attributes']
+        self.assertEqual(attributes['scheduleScope'], 'share-scope')
+        self.assertEqual(attributes['texts'], {"7": {"name": "高数", "teacher": "王", "location": "A101"}})
+        self.assertEqual(json.loads(merged['refresh'])['alertAt'], [at("09:15")])
+        self.assertNotIn('高数', json.dumps(json.loads(self.db.execute("SELECT body FROM la_timetables").fetchone()[0])))
+        with self.assertRaises(ProtocolError) as error:
+            self.upload(revision=2, follow={"share": "NOPE"})
+        self.assertEqual(error.exception.status, 404)
+
+    def test_a_changed_or_revoked_share_rebuilds_its_followers(self):
+        self.share()
+        self.upload(follow={"share": "SHARE1"}, settings={"leadMinutes": 30, "sharedLeadMinutes": 30})
+        self.service.follow_shares()
+        before = {row['occurrence'] for row in self.jobs()}
+        # The publisher moves the class to the afternoon and rotates the code.
+        self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
+        self.share(code='SHARE2', updated='2026-09-22T06:00:00', courses=[
+            {"id": 7, "name": "高数", "week_time": 2, "start_time": 2, "time_count": 0, "weeks": []}])
+        self.service.follow_shares()
+        today = [row for row in self.jobs() if row['day'] == '2026-09-22']
+        self.assertEqual([(row['fire_at'], row['expires_at']) for row in today], [(at("07:30"), at("09:50")), (at("13:30"), at("15:00"))])
+        self.assertNotEqual({row['occurrence'] for row in self.jobs()}, before)
+        # Revoked for good: only my own courses remain.
+        self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
+        self.service.follow_shares()
+        self.assertEqual([json.loads(row['payload'])['aps']['attributes']['frames'][0]['lead']['table'] for row in self.jobs()], ['own', 'own'])
+        self.service.follow_shares()
+
+    # MARK: Claims, tokens and dispatch
+
+    def test_claims_hand_the_nearest_reminders_to_the_phone(self):
+        self.upload()
+        claimed = self.service.claim(self.id, {"slots": 1})['claims']
+        self.assertEqual([item['dateKey'] for item in claimed], ["2026-09-22"])
+        self.assertEqual(claimed[0]['frames'][0]['lead']['course'], 'math')
+        self.assertEqual(claimed[0]['reminder'], at("07:30"))
+        # Claimed reminders stay with the phone; asking again returns them with the next one.
+        again = self.service.claim(self.id, {"slots": 1})['claims']
+        self.assertEqual([item['dateKey'] for item in again], ["2026-09-22", "2026-09-23"])
+        self.clock = at("07:31")
+        self.service.dispatch_starts()
+        self.assertEqual(self.client.starts, [])
+        # A reservation the phone could not make goes back to the server.
+        self.assertTrue(self.service.release(self.id, claimed[0]['occurrenceId'])['released'])
+        self.service.maintain_channels()
+        self.service.dispatch_starts()
+        self.assertEqual(len(self.client.starts), 1)
+        payload = self.client.starts[0][1]
+        self.assertEqual(payload['aps']['input-push-channel'], payload['aps']['attributes']['broadcastChannel'])
+        # A reminder due within 30 seconds is not worth racing for.
+        self.clock = at("09:30", date(2026, 9, 23)) - 20
+        self.service.release(self.id, again[1]['occurrenceId'])
+        self.assertEqual(self.service.claim(self.id, {"slots": 4})['claims'], [])
+        with self.assertRaises(ProtocolError):
+            self.service.claim(self.id, {"slots": 99})
+
+    def test_a_token_alone_queues_the_scheduled_refreshes(self):
+        self.share()
+        self.upload(follow={"share": "SHARE1"}, settings={"leadMinutes": 60, "sharedLeadMinutes": 15})
+        merged = self.jobs()[0]
+        result = self.service.register_token(self.id, merged['occurrence'], {"token": "abcdef0123456789"})
+        updates = self.db.execute("SELECT fire_at,event,alert FROM la_token_updates WHERE occurrence=? ORDER BY fire_at", (merged['occurrence'],)).fetchall()
+        refresh = json.loads(merged['refresh'])['refreshAt']
+        self.assertEqual([row['fire_at'] for row in updates], refresh + [at("10:30")])
+        self.assertEqual([row['fire_at'] for row in updates if row['alert']], [at("09:15")])
+        self.assertEqual(updates[-1]['event'], 'end')
+        self.assertEqual(result['pending'], len(updates))
+        with self.assertRaises(ProtocolError):
+            self.service.register_token(self.id, 'missing', {"token": "abcdef0123456789"})
+        # The share moves after the start: the refreshes follow, the start stays history.
+        self.db.execute("UPDATE la_start_jobs SET state='submitted' WHERE occurrence=?", (merged['occurrence'],))
+        self.db.execute("UPDATE shares SET updated_at='later', payload_json=?", (json.dumps([
+            {"id": 7, "name": "高数", "week_time": 2, "start_time": 2, "time_count": 0, "weeks": []}]),))
+        self.db.commit()
+        self.service.follow_shares()
+        after = self.db.execute("SELECT fire_at,event,alert FROM la_token_updates WHERE occurrence=? AND state='pending' ORDER BY fire_at", (merged['occurrence'],)).fetchall()
+        self.assertEqual((after[-1]['fire_at'], after[-1]['event']), (at("09:50"), 'end'))
+        self.assertFalse(any(row['alert'] for row in after))
+        self.assertEqual(self.jobs()[0]['state'], 'submitted')
+
+    def test_nightly_builds_the_new_tomorrow_once(self):
+        self.upload()
+        self.service.nightly()
+        self.assertEqual({row['day'] for row in self.jobs()}, {"2026-09-22", "2026-09-23"})
+        # Midnight passes: Thursday appears and Tuesday's finished rows are cleaned a day later.
+        self.clock = instant(date(2026, 9, 23), "00:01")
+        self.service.nightly()
+        self.assertEqual({row['day'] for row in self.jobs()}, {"2026-09-22", "2026-09-23"})
+        self.assertEqual(self.db.execute("SELECT value FROM la_v2_meta WHERE key='nightly'").fetchone()[0], "2026-09-23")
+        self.clock = instant(date(2026, 9, 24), "00:01")
+        self.db.execute("UPDATE la_timetables SET body=?", (json.dumps(dict(self.body, own=dict(self.body['own'], courses=self.body['own']['courses'] + [
+            {"id": "physics", "day": 5, "first": 1, "last": 1, "weeks": []}]))),)); self.db.commit()
+        self.service.nightly()
+        self.assertEqual({row['day'] for row in self.jobs()}, {"2026-09-23", "2026-09-25"})
+        promised = self.db.execute("SELECT broadcast_until FROM la_schedule_versions").fetchone()[0]
+        self.assertEqual(promised, self.clock + 8 * 86400)
+
+    def test_forget_drops_the_timetable(self):
+        self.upload()
+        self.service.forget(self.id)
+        self.assertIsNone(self.db.execute("SELECT 1 FROM la_timetables").fetchone())
+        self.assertEqual({row['state'] for row in self.jobs()}, {'cancelled'})
+        self.service.nightly()
+        with self.assertRaises(ProtocolError):
+            self.upload(revision=2)
+
+
+if __name__ == "__main__":
+    unittest.main()
