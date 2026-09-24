@@ -29,8 +29,8 @@ struct AnyCodable: Codable {
 enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String), missingBaseURL; var errorDescription: String? { switch self { case .invalidResponse: return "服务返回格式错误"; case .server(let v): return v; case .missingBaseURL: return "未配置 NapTable 服务地址" } } }
 
 private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -> [ServiceSchoolConfiguration] {
-    // Only Nanjing University is currently visible in the client.
-    schools.filter { $0.id.caseInsensitiveCompare("nju") == .orderedSame }
+    // Only Nanjing University and Sun Yat-sen University are currently visible in the client.
+    schools.filter { school in ["nju", "sysu"].contains { $0.caseInsensitiveCompare(school.id) == .orderedSame } }
 }
 
 @MainActor final class ScheduleSharingService: ObservableObject {

@@ -95,8 +95,19 @@ final class AppStore: ObservableObject {
         tables.first { $0.id == selectedTableId } ?? tables.first
     }
 
+    /// 当前课表里参与显示的课。隐藏的行留在 `courses` 里，但不进网格、
+    /// 不进小组件和实时活动，也不会被分享出去。
     var currentCourses: [Course] {
-        courses.filter { $0.tableId == selectedTableId }
+        courses.filter { $0.tableId == selectedTableId && !$0.isHidden }
+    }
+
+    /// 导入时让位、被收起来的课。「隐藏的课程」页面用它来恢复。
+    var currentHiddenCourses: [Course] {
+        hiddenCourses(inTable: selectedTableId)
+    }
+
+    func hiddenCourses(inTable id: Int) -> [Course] {
+        courses.filter { $0.tableId == id && $0.isHidden }
     }
 
     var classTimeList: [ClassTime] {
@@ -108,7 +119,13 @@ final class AppStore: ObservableObject {
     }
 
     var maxWeeks: Int {
-        max(1, selectedTable?.termWeekCount ?? settings.weekCount)
+        selectedTable.map(weekCount(of:)) ?? max(1, settings.weekCount)
+    }
+
+    /// 这张课表的学期总周数。学校配置下发的、或者用户在这张课表里改过的，都存在
+    /// `termWeekCount`；老存档没有这个值，退回到以前全局的那个设置。
+    func weekCount(of table: CourseTable) -> Int {
+        max(1, table.termWeekCount ?? settings.weekCount)
     }
 
     /// Classifies this table's courses for one week and resolves the grid
@@ -168,19 +185,44 @@ final class AppStore: ObservableObject {
     /// table the user never filled in is not silently rewritten, but the app can
     /// still work out which week today is in.
     var effectiveSemesterStartMonday: String {
-        let own = semesterStartMonday.trimmingCharacters(in: .whitespacesAndNewlines)
+        effectiveSemesterStartMonday(for: semesterStartMonday)
+    }
+
+    func effectiveSemesterStartMonday(of table: CourseTable) -> String {
+        effectiveSemesterStartMonday(for: table.semesterStartMonday)
+    }
+
+    private func effectiveSemesterStartMonday(for own: String) -> String {
+        let own = own.trimmingCharacters(in: .whitespacesAndNewlines)
         if !own.isEmpty { return own }
         return BundledConfig.fallbackSemesterStartMonday ?? ""
     }
 
     var semesterStartMondayDisplay: String {
-        let value = effectiveSemesterStartMonday
+        Self.semesterStartDisplay(effectiveSemesterStartMonday)
+    }
+
+    func semesterStartMondayDisplay(of table: CourseTable) -> String {
+        Self.semesterStartDisplay(effectiveSemesterStartMonday(of: table))
+    }
+
+    private static func semesterStartDisplay(_ value: String) -> String {
         guard let date = WeekCalculator.parseDay(value) else { return "未设置" }
         let formatter = DateFormatter()
         formatter.calendar = WeekCalculator.calendar
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy 年 M 月 d 日"
         return formatter.string(from: date)
+    }
+
+    /// 今天落在这张课表的第几周；没有开学日期、或者不在学期里时是 `0`。
+    /// 和 `liveWeek` 不同，不拿当前显示的周次兜底——那只对正在看的课表有意义。
+    func liveWeek(of table: CourseTable) -> Int {
+        WeekCalculator.snapshot(
+            for: Date(),
+            semesterStartMonday: effectiveSemesterStartMonday(of: table),
+            maxWeeks: weekCount(of: table)
+        )?.currentWeek ?? 0
     }
 
     var hasAnyData: Bool {
@@ -267,15 +309,26 @@ final class AppStore: ObservableObject {
         scheduleSave()
     }
 
-    func updateSemesterStart(_ value: String) {
-        guard let index = tables.firstIndex(where: { $0.id == selectedTableId }) else { return }
+    /// 学期和节次跟着课表走：不同学校、不同学期各是各的。`tableId` 省略时改当前课表。
+    func updateSemesterStart(_ value: String, tableId: Int? = nil) {
+        let target = tableId ?? selectedTableId
+        guard let index = tables.firstIndex(where: { $0.id == target }) else { return }
         tables[index].semesterStartMonday = value
         scheduleSave()
-        resetWeekToLive()
+        if target == selectedTableId { resetWeekToLive() }
     }
 
-    func updateClassTimeList(_ list: [ClassTime]) {
-        guard let index = tables.firstIndex(where: { $0.id == selectedTableId }) else { return }
+    func updateWeekCount(_ value: Int, tableId: Int? = nil) {
+        let target = tableId ?? selectedTableId
+        guard let index = tables.firstIndex(where: { $0.id == target }) else { return }
+        tables[index].termWeekCount = min(max(value, 1), 40)
+        scheduleSave()
+        if target == selectedTableId { displayWeek = min(max(displayWeek, 1), maxWeeks) }
+    }
+
+    func updateClassTimeList(_ list: [ClassTime], tableId: Int? = nil) {
+        let target = tableId ?? selectedTableId
+        guard let index = tables.firstIndex(where: { $0.id == target }) else { return }
         tables[index].classTimeList = list
         scheduleSave()
     }
@@ -363,6 +416,14 @@ final class AppStore: ObservableObject {
     func updateCourse(_ course: Course) {
         guard let index = courses.firstIndex(where: { $0.id == course.id }) else { return }
         courses[index] = course
+        scheduleSave()
+    }
+
+    /// 收起或恢复一门课。恢复之后它会重新回到原来的时段，
+    /// 和当初让位的那节并排显示。
+    func setCourse(id: Int, hidden: Bool) {
+        guard let index = courses.firstIndex(where: { $0.id == id }) else { return }
+        courses[index].hidden = hidden ? true : nil
         scheduleSave()
     }
 
@@ -461,6 +522,34 @@ final class AppStore: ObservableObject {
         scheduleSave()
         resetWeekToLive()
         return table
+    }
+
+    /// 手动创建向导的最后一步：新建课表，写入学期、节次和课程。
+    /// 同一门课的几个上课时间共用一个 `courseKey`，颜色和编辑都按一门课算。
+    @discardableResult
+    func installManualSchedule(_ draft: ManualScheduleDraft) -> CourseTable {
+        let table = addTable(
+            name: draft.trimmedName,
+            semesterStartMonday: draft.semesterStartMonday,
+            classTimeList: draft.classTimes
+        )
+        if let index = tables.firstIndex(where: { $0.id == table.id }) {
+            tables[index].termWeekCount = min(max(draft.weekCount, 1), 40)
+        }
+        for group in draft.courseRows(tableId: table.id) {
+            let key = nextCourseKey
+            nextCourseKey += 1
+            for row in group {
+                var course = row
+                course.id = nextCourseId
+                nextCourseId += 1
+                course.courseKey = key
+                courses.append(course)
+            }
+        }
+        scheduleSave()
+        resetWeekToLive()
+        return tables.first { $0.id == table.id } ?? table
     }
 
     enum ImportMode: String, CaseIterable, Identifiable {

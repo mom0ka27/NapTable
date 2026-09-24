@@ -169,23 +169,26 @@ struct OnboardingView: View {
 
     private var importStep: some View {
         VStack(alignment: .leading, spacing: 17) {
+            schoolCard("南京大学", glyph: "南", detail: "本科生 · 研究生教务入口")
+            schoolCard("中山大学", glyph: "中", detail: "本科生教务入口")
+
             Button {
-                initialSchool = "南京大学"
+                initialSchool = ImportView.manualRoute
                 showImport = true
             } label: {
                 HStack(spacing: 14) {
-                    Text("南")
-                        .font(.system(.title2, design: .serif).weight(.semibold))
+                    Image(systemName: "square.and.pencil")
+                        .font(.title3.weight(.semibold))
                         .foregroundStyle(colors.accent)
                         .frame(width: 52, height: 52)
                         .background(colors.soft, in: RoundedRectangle(cornerRadius: 16))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("南京大学").font(.headline).foregroundStyle(colors.ink)
-                        Text("本科生 · 研究生教务入口").font(.caption).foregroundStyle(colors.secondary)
+                        Text("学校不在列表里").font(.headline).foregroundStyle(colors.ink)
+                        Text("自己设学期、节次，逐门添加课程").font(.caption).foregroundStyle(colors.secondary)
                     }
                     Spacer(minLength: 4)
-                    Image(systemName: "arrow.up.right").font(.subheadline).foregroundStyle(colors.accent)
+                    Image(systemName: "chevron.right").font(.subheadline).foregroundStyle(colors.accent)
                 }
                 .padding(18)
                 .background(colors.surface, in: RoundedRectangle(cornerRadius: 21))
@@ -193,7 +196,7 @@ struct OnboardingView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 21))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("选择南京大学教务入口并导入课表")
+            .accessibilityLabel("学校不在列表里，手动创建课表")
 
             VStack(alignment: .leading, spacing: 0) {
                 importInstruction("1", title: "选择教务入口", detail: "找到适合你的本科生或研究生系统。", last: false)
@@ -206,7 +209,7 @@ struct OnboardingView: View {
             .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.shield").font(.caption)
-                Text("账号密码仅在学校页面输入。首次使用需成功导入课程，取消或空课表不会完成引导。")
+                Text("账号密码仅在学校页面输入。首次使用需导入或手动添加至少一门课程，取消或空课表不会完成引导。")
                     .font(.caption2).lineSpacing(3)
             }
             .foregroundStyle(colors.secondary)
@@ -223,6 +226,34 @@ struct OnboardingView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private func schoolCard(_ name: String, glyph: String, detail: String) -> some View {
+        Button {
+            initialSchool = name
+            showImport = true
+        } label: {
+            HStack(spacing: 14) {
+                Text(glyph)
+                    .font(.system(.title2, design: .serif).weight(.semibold))
+                    .foregroundStyle(colors.accent)
+                    .frame(width: 52, height: 52)
+                    .background(colors.soft, in: RoundedRectangle(cornerRadius: 16))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(name).font(.headline).foregroundStyle(colors.ink)
+                    Text(detail).font(.caption).foregroundStyle(colors.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.up.right").font(.subheadline).foregroundStyle(colors.accent)
+            }
+            .padding(18)
+            .background(colors.surface, in: RoundedRectangle(cornerRadius: 21))
+            .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 21))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("选择\(name)教务入口并导入课表")
     }
 
     private func importInstruction(_ number: String, title: String, detail: String, last: Bool) -> some View {
@@ -274,7 +305,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
             .disabled(!isImportStep && !basicChecked)
-            Text(isImportStep ? "完成首次导入后，即可进入主界面" : "基础协议为必选，实时通知可稍后决定")
+            Text(isImportStep ? "导入或添加课程后，即可进入主界面" : "基础协议为必选，实时通知可稍后决定")
                 .font(.caption2).foregroundStyle(colors.secondary)
                 .multilineTextAlignment(.center)
         }

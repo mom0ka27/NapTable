@@ -3,14 +3,17 @@ import UniformTypeIdentifiers
 
 /// The Settings tab.
 ///
-/// Five groups, two or three rows each, and never more than two levels deep:
-/// 外观 / 学期与节次 / 桌面与锁屏 / 课表 / 数据与关于. Every row says what it
-/// currently is, so the common case — "did I already set that?" — is answered
-/// without opening it.
+/// Four groups, two or three rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
+/// Every row says what it currently is, so the common case — "did I already
+/// set that?" — is answered without opening it.
+///
+/// 学期、周次和节次时间不在这里：它们是学校给的、跟着每张课表走，所以放在
+/// `CourseTableSettingsView` 里，从「我的课表」点进对应的课表修改。
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
     @ObservedObject private var sharingService = ScheduleSharingService.shared
+    @ObservedObject private var privacyConsent = PrivacyConsent.shared
     @Binding var showImport: Bool
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
@@ -18,10 +21,6 @@ struct SettingsView: View {
     #if os(macOS)
     @Environment(\.dismiss) private var dismiss
     #endif
-    @State private var tableBeingRenamed: CourseTable?
-    @State private var renameText = ""
-    @State private var confirmDeleteTable: CourseTable?
-    @State private var confirmClearCourses = false
     @State private var confirmEraseAll = false
     @State private var exporting = false
     @State private var importingBackup = false
@@ -32,7 +31,6 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 appearanceGroup
-                if store.selectedTable != nil { termGroup }
                 NativeDeviceSettingsContent(
                     scheduleStore: scheduleStore,
                     widgetSettings: widgetSettings
@@ -53,10 +51,6 @@ struct SettingsView: View {
             #endif
             .modifier(SettingsDialogs(
                 store: store,
-                tableBeingRenamed: $tableBeingRenamed,
-                renameText: $renameText,
-                confirmDeleteTable: $confirmDeleteTable,
-                confirmClearCourses: $confirmClearCourses,
                 confirmEraseAll: $confirmEraseAll,
                 exporting: $exporting,
                 importingBackup: $importingBackup,
@@ -94,50 +88,30 @@ struct SettingsView: View {
         }
     }
 
-    private var termGroup: some View {
-        Section {
-            SettingsDestinationRow(
-                title: "学期与周次",
-                detail: weekSummary,
-                systemImage: "calendar.badge.clock"
-            ) {
-                Form { semesterSection }
-                    .navigationTitle("学期与周次")
-                    .appInlineNavigationTitle()
-            }
-
-            SettingsDestinationRow(
-                title: "节次时间",
-                detail: "共 \(store.classTimeList.count) 节" + (isServerManaged ? "（学校提供）" : ""),
-                systemImage: "clock"
-            ) {
-                Form { periodsSection }
-                    .navigationTitle("节次时间")
-                    .appInlineNavigationTitle()
-            }
-        } header: {
-            Text("学期与节次")
-        }
-    }
-
     private var tablesGroup: some View {
         Section {
             SettingsDestinationRow(
                 title: "我的课表",
-                detail: "自己的 \(store.tables.count) 张 · 共享 \(sharingService.sharedSchedules.count) 张",
+                detail: tablesSummary,
                 systemImage: "square.stack"
             ) {
                 MySchedulesView(showImport: $showImport) { tablesSection }
             }
         } header: {
             Text("课表")
+        } footer: {
+            Text("学期、周次和节次时间每张课表各自设置，在「我的课表」里点进对应的课表修改。")
         }
     }
 
     private var dataGroup: some View {
         Section {
-            NavigationLink { PrivacySettingsView() } label: {
-                Label("隐私与数据", systemImage: "hand.raised")
+            SettingsDestinationRow(
+                title: "隐私与数据",
+                detail: privacyConsent.liveAccepted ? "已允许实时通知信息上传" : "只上传基础统计",
+                systemImage: "hand.raised"
+            ) {
+                PrivacySettingsView()
             }
             SettingsDestinationRow(
                 title: "数据与备份",
@@ -166,109 +140,13 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: 学期与周次
-
-    private var isServerManaged: Bool { store.selectedTable?.termID != nil }
-
-    private var weekSummary: String {
-        store.liveWeek > 0 ? "第 \(store.liveWeek) 周 / 共 \(store.maxWeeks) 周" : "还没设置学期开始日期"
-    }
-
-    private var semesterSection: some View {
-        Section {
-            HStack {
-                Text("当前周次")
-                Spacer()
-                Text(store.liveWeek > 0 ? "第 \(store.liveWeek) 周" : "—")
-                    .foregroundStyle(.secondary)
-            }
-
-            if isServerManaged {
-                LabeledContent("第一周的星期一", value: store.semesterStartMondayDisplay)
-                LabeledContent("学期总周数", value: "\(store.maxWeeks) 周")
-            } else {
-                DatePicker(
-                    "第一周的星期一",
-                    selection: Binding(
-                        get: { WeekCalculator.parseDay(store.effectiveSemesterStartMonday) ?? WeekCalculator.monday(of: Date()) },
-                        set: { value in store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: value))) }
-                    ),
-                    displayedComponents: .date
-                )
-                Stepper("学期总周数：\(store.settings.weekCount) 周", value: binding(\.weekCount), in: 1...40)
-                if !store.semesterStartMonday.isEmpty {
-                    Button("清除开学日期", role: .destructive) { store.updateSemesterStart("") }
-                }
-            }
-        } header: {
-            Text("学期")
-        } footer: {
-            if isServerManaged {
-                Text("由学校的学期配置提供，不用自己填。")
-            } else if store.semesterStartMonday.isEmpty, BundledConfig.fallbackSemesterStartMonday != nil {
-                Text("还没填，暂时按内置校历（\(store.semesterStartMondayDisplay)）算。对不上就改掉。")
-            } else {
-                Text("填开学那周的星期一，周次会自动往后推。")
-            }
-        }
-    }
-
-    private var periodsSection: some View {
-        Section {
-            ForEach(Array(store.classTimeList.enumerated()), id: \.offset) { index, time in
-                HStack(spacing: 10) {
-                    Text("第 \(index + 1) 节")
-                        .frame(width: 66, alignment: .leading)
-                    if isServerManaged {
-                        Text(time.start).frame(maxWidth: 80)
-                    } else {
-                        TextField("08:00", text: timeBinding(index, \.start))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 80)
-                    }
-                    Text("–").foregroundStyle(.secondary)
-                    if isServerManaged {
-                        Text(time.end).frame(maxWidth: 80)
-                    } else {
-                        TextField("08:50", text: timeBinding(index, \.end))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 80)
-                    }
-                }
-                .font(.subheadline.monospacedDigit())
-            }
-            .onDelete { offsets in
-                guard !isServerManaged else { return }
-                var list = store.classTimeList
-                list.remove(atOffsets: offsets)
-                store.updateClassTimeList(list)
-            }
-
-            if !isServerManaged {
-                Button {
-                    var list = store.classTimeList
-                    let last = list.last ?? ClassTime(start: "08:00", end: "08:50")
-                    list.append(ClassTime(start: last.end, end: last.end))
-                    store.updateClassTimeList(list)
-                } label: {
-                    Label("加一节", systemImage: "plus")
-                }
-                if !(store.selectedTable?.classTimeList.isEmpty ?? true) {
-                    Button("恢复默认节次时间", role: .destructive) { store.updateClassTimeList([]) }
-                }
-            }
-        } header: {
-            Text("每节课的起止时间")
-        } footer: {
-            if isServerManaged {
-                Text("由学校的学期配置提供，改不了。")
-            } else {
-                Text("24 小时制，如 08:00。左滑可删。")
-            }
-        }
-    }
-
     // MARK: 我的课表
+
+    private var tablesSummary: String {
+        let counts = "自己的 \(store.tables.count) 张 · 共享 \(sharingService.sharedSchedules.count) 张"
+        guard let current = store.selectedTable else { return counts }
+        return "正在使用「\(current.name)」 · " + counts
+    }
 
     private var tablesSection: some View {
         Section {
@@ -277,40 +155,34 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(store.tables) { table in
-                Button {
-                    store.selectTable(table.id)
+                NavigationLink {
+                    CourseTableSettingsView(tableId: table.id)
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(table.name).foregroundStyle(.primary)
-                            Text("\(courseCount(table.id)) 门课程")
+                            Text(tableRowSummary(table))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         if table.id == store.selectedTableId {
-                            Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                            Text("使用中")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
                         }
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
                 .contextMenu {
-                    Button("重命名") { renameText = table.name; tableBeingRenamed = table }
-                    Button("删除", role: .destructive) { confirmDeleteTable = table }
-                }
-                .swipeActions(edge: .trailing) {
-                    Button("删除", role: .destructive) { confirmDeleteTable = table }
-                    Button("重命名") {
-                        renameText = table.name
-                        tableBeingRenamed = table
+                    if table.id != store.selectedTableId {
+                        Button("切换到这张课表") { store.selectTable(table.id) }
                     }
                 }
             }
         } header: {
             Text("自己的课表")
         } footer: {
-            Text("点一下切换，左滑可重命名或删除。")
+            Text("点进去设置学期、周次和节次时间，也可以在里面切换、重命名或删除这张课表。")
         }
     }
 
@@ -348,11 +220,6 @@ struct SettingsView: View {
 
         Section {
             Button(role: .destructive) {
-                confirmClearCourses = true
-            } label: {
-                Label("清空当前课表的课程", systemImage: "eraser")
-            }
-            Button(role: .destructive) {
                 confirmEraseAll = true
             } label: {
                 Label("清除全部本地数据", systemImage: "trash")
@@ -360,7 +227,7 @@ struct SettingsView: View {
         } header: {
             Text("清除")
         } footer: {
-            Text("都无法撤销，清除前先导出备份。")
+            Text("无法撤销，清除前先导出备份。清空某张课表的课程，到那张课表里操作。")
         }
     }
 
@@ -434,27 +301,12 @@ struct SettingsView: View {
         store.courses.filter { $0.tableId == tableId }.count
     }
 
-    private func binding<T>(_ keyPath: WritableKeyPath<AppSettings, T>) -> Binding<T> {
-        Binding(
-            get: { store.settings[keyPath: keyPath] },
-            set: { value in store.updateSettings { $0[keyPath: keyPath] = value } }
-        )
-    }
-
-    private func timeBinding(_ index: Int, _ keyPath: WritableKeyPath<ClassTime, String>) -> Binding<String> {
-        Binding(
-            get: {
-                let list = store.classTimeList
-                guard list.indices.contains(index) else { return "" }
-                return list[index][keyPath: keyPath]
-            },
-            set: { value in
-                var list = store.classTimeList
-                guard list.indices.contains(index) else { return }
-                list[index][keyPath: keyPath] = value
-                store.updateClassTimeList(list)
-            }
-        )
+    private func tableRowSummary(_ table: CourseTable) -> String {
+        var parts = ["\(courseCount(table.id)) 门课程"]
+        if let school = table.schoolID, table.termID != nil { parts.append(school) }
+        let week = store.liveWeek(of: table)
+        if week > 0 { parts.append("第 \(week) 周") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -462,10 +314,6 @@ struct SettingsView: View {
 /// Split out so `SettingsView.body` stays readable.
 private struct SettingsDialogs: ViewModifier {
     let store: AppStore
-    @Binding var tableBeingRenamed: CourseTable?
-    @Binding var renameText: String
-    @Binding var confirmDeleteTable: CourseTable?
-    @Binding var confirmClearCourses: Bool
     @Binding var confirmEraseAll: Bool
     @Binding var exporting: Bool
     @Binding var importingBackup: Bool
@@ -474,43 +322,6 @@ private struct SettingsDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .alert("重命名课表", isPresented: Binding(
-                get: { tableBeingRenamed != nil },
-                set: { if !$0 { tableBeingRenamed = nil } }
-            )) {
-                TextField("名称", text: $renameText)
-                Button("取消", role: .cancel) { tableBeingRenamed = nil }
-                Button("保存") {
-                    if let table = tableBeingRenamed { store.renameTable(table.id, to: renameText) }
-                    tableBeingRenamed = nil
-                }
-            }
-            .confirmationDialog(
-                "删除课表「\(confirmDeleteTable?.name ?? "")」？",
-                isPresented: Binding(
-                    get: { confirmDeleteTable != nil },
-                    set: { if !$0 { confirmDeleteTable = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("删除课表及其课程", role: .destructive) {
-                    if let table = confirmDeleteTable { store.deleteTable(table.id) }
-                    confirmDeleteTable = nil
-                }
-                Button("取消", role: .cancel) { confirmDeleteTable = nil }
-            } message: {
-                Text("这张课表里的课程会一起删掉，无法撤销。")
-            }
-            .confirmationDialog(
-                "清空当前课表的课程？",
-                isPresented: $confirmClearCourses,
-                titleVisibility: .visible
-            ) {
-                Button("清空课程", role: .destructive) { store.deleteAllCourses() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("课表本身保留，里面的课程全部删除，无法撤销。")
-            }
             .confirmationDialog(
                 "清除全部本地数据？",
                 isPresented: $confirmEraseAll,

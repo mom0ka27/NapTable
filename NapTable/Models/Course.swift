@@ -88,6 +88,9 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     /// Stable identity of the course this row belongs to. Imported rows from the
     /// same course share it; hand-written rows get their own.
     var courseKey: Int?
+    /// 导入时让位给同一时段另一节课的行。它留在课表里，但不参与显示、分享和
+    /// 通知，之后可以在「隐藏的课程」里恢复。旧存档没有这个键，所以用可选值。
+    var hidden: Bool?
 
     init(
         id: Int = 0,
@@ -106,7 +109,8 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
         link: String? = nil,
         info: String? = nil,
         color: String? = nil,
-        courseKey: Int? = nil
+        courseKey: Int? = nil,
+        hidden: Bool? = nil
     ) {
         self.id = id
         self.tableId = tableId
@@ -125,7 +129,11 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
         self.info = info
         self.color = color
         self.courseKey = courseKey
+        self.hidden = hidden
     }
+
+    /// 让位给别的课、暂时不显示的行。
+    var isHidden: Bool { hidden == true }
 
     /// `Constant.ADD_MANUALLY`
     var isManual: Bool { importType == ImportKind.manual }

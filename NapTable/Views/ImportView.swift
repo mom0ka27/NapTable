@@ -13,8 +13,10 @@ struct ImportView: View {
     @State private var search = ""
     @State private var webSchool: SchoolConfig?
     @State private var imported: ImportedSchedule?
-    @State private var tableName = ""
     @State private var semesterStart = WeekCalculator.monday(of: Date())
+
+    /// 导航路径里代表「手动创建」的值；传给 `initialSchool` 可以直接打开手动创建向导。
+    static let manualRoute = "manual"
 
     init(requiresImport: Bool = false, initialSchool: String? = nil, onFinish: (() -> Void)? = nil) {
         self.requiresImport = requiresImport
@@ -37,7 +39,8 @@ struct ImportView: View {
                             Label("课表已添加", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(Color.accentColor)
                             LabeledContent("课表", value: imported.name)
-                            LabeledContent("课程", value: "\(imported.courses.count) 门")
+                            // 让位收起来的课不算在里面，否则数字和课表上看到的对不上。
+                            LabeledContent("课程", value: "\(imported.courses.count { !$0.isHidden }) 门")
                         }
                         if imported.termID == nil {
                             Section("学期开始日期") {
@@ -59,19 +62,23 @@ struct ImportView: View {
                                 }
                             }
                             if schools.isEmpty {
-                                Text(requiresImport ? "未找到学校，请修改搜索条件。" : "未找到学校，可以手动创建课表。")
+                                Text("未找到学校，可以手动创建课表。")
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        if !requiresImport {
-                            Section { NavigationLink("其他学校 / 手动创建", value: "manual") }
+                        Section {
+                            NavigationLink(value: Self.manualRoute) {
+                                Label("其他学校 / 手动创建", systemImage: "square.and.pencil")
+                            }
+                        } footer: {
+                            Text("学校不在列表里，就自己设好学期和节次，再逐门添加课程。")
                         }
                     }
                     .searchable(text: $search, prompt: "搜索学校")
                 }
             }
             .navigationDestination(for: String.self) { name in
-                if name == "manual" { manualForm(school: nil) }
+                if name == Self.manualRoute { manualForm(school: nil) }
                 else { routes(for: name) }
             }
             .navigationTitle(imported == nil ? "选择学校" : "导入完成")
@@ -116,41 +123,24 @@ struct ImportView: View {
                     }
                 }
             }
-            if !requiresImport {
-                Section { NavigationLink("手动创建课表") { manualForm(school: name) } }
-            }
+            Section { NavigationLink("手动创建课表") { manualForm(school: name) } }
         }
         .navigationTitle(name)
         .appInlineNavigationTitle()
     }
 
+    /// 学校不在列表里，或者列表里的学校想自己填：一步步设好学期、节次，再逐门加课。
     private func manualForm(school: String?) -> some View {
-        Form {
-            Section("课表信息") {
-                TextField("课表名称", text: $tableName)
-                DatePicker("第一周星期一", selection: $semesterStart, displayedComponents: .date)
-            }
-            Section {
-                Button("创建课表") {
-                    store.addTable(name: tableName, semesterStartMonday: WeekCalculator.format(WeekCalculator.monday(of: semesterStart)))
-                    dismiss()
-                }
-                .disabled(tableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            } footer: {
-                Text("创建后，长按课表空白处添加课程。")
-            }
-        }
-        .navigationTitle("手动创建")
-        .appInlineNavigationTitle()
-        .onAppear {
-            if tableName.isEmpty { tableName = school.map { "\($0)课表" } ?? "我的课表" }
+        ManualScheduleWizard(school: school, requiresCourses: requiresImport) {
+            onFinish?()
+            dismiss()
         }
     }
 }
 
 extension SchoolConfig {
     var schoolName: String {
-        ["南京大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
+        ["南京大学", "中山大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
             .first { title.hasPrefix($0) } ?? title
     }
 }
@@ -161,9 +151,29 @@ extension SchoolConfig {
 struct ImportedScheduleForm: View {
     let schedule: ImportedSchedule
     @Binding var mode: AppStore.ImportMode
+    /// 同一时段撞在一起的课。空数组表示这次导入没有冲突。
+    var conflicts: [ImportConflictGroup] = []
+    /// 每组选中保留的那一节：组 id -> `ImportedSchedule.courses` 下标。
+    @Binding var conflictChoice: [Int: Int]
+    /// 只有部分周次重叠的那几节怎么处理：`courses` 下标 -> 处理方式。
+    @Binding var conflictDispositions: [Int: ImportConflictDisposition]
     @State private var availableModes: [AppStore.ImportMode] = []
 
     @EnvironmentObject private var store: AppStore
+
+    init(
+        schedule: ImportedSchedule,
+        mode: Binding<AppStore.ImportMode>,
+        conflicts: [ImportConflictGroup] = [],
+        conflictChoice: Binding<[Int: Int]> = .constant([:]),
+        conflictDispositions: Binding<[Int: ImportConflictDisposition]> = .constant([:])
+    ) {
+        self.schedule = schedule
+        _mode = mode
+        self.conflicts = conflicts
+        _conflictChoice = conflictChoice
+        _conflictDispositions = conflictDispositions
+    }
 
     var body: some View {
         List {
@@ -174,6 +184,30 @@ struct ImportedScheduleForm: View {
                 LabeledContent("课程条数", value: "\(schedule.courses.count)")
                 if let start = schedule.semesterStartMonday, !start.isEmpty {
                     LabeledContent("学期开始", value: start)
+                }
+                if !conflicts.isEmpty {
+                    Label("\(conflicts.count) 处时间冲突待处理", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            // 教务可能把同一门课导出两遍，学生也可能真的选到同一时段的两门课。
+            // 课表能并排画出来，但到底上哪节只有用户知道，所以写库之前先问清楚。
+            ForEach(conflicts) { group in
+                Section {
+                    ForEach(group.members) { member in
+                        conflictRow(group: group, member: member)
+                    }
+                    if let kept = conflictChoice[group.id] {
+                        ForEach(ImportConflictFinder.membersNeedingDisposition(in: group, keeping: kept)) { member in
+                            dispositionRows(group: group, member: member, keeping: kept)
+                        }
+                    }
+                } header: {
+                    Text("时间冲突 · \(group.title)")
+                } footer: {
+                    Text(conflictChoice[group.id] == nil
+                         ? "请选择这个时段保留哪一节。"
+                         : "没选中的课会被收起来，课表里看不到，之后可以在设置里恢复。")
                 }
             }
             Section("导入到") {
@@ -222,6 +256,67 @@ struct ImportedScheduleForm: View {
                 mode = .newTable
             }
         }
+    }
+
+    /// 周次只是部分重叠时，整节收起来会连不冲突的周次一起抹掉，所以在这里
+    /// 多问一句，而不是替用户决定。
+    @ViewBuilder
+    private func dispositionRows(
+        group: ImportConflictGroup, member: ImportConflictGroup.Member, keeping kept: Int
+    ) -> some View {
+        if let keeper = group.members.first(where: { $0.id == kept }) {
+            let overlap = ImportConflictFinder.overlappingWeeks(member.course, keeping: keeper.course)
+            let rest = ImportConflictFinder.remainingWeeks(member.course, keeping: keeper.course)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("「\(member.course.name)」只有 \(WeekSeries.summary(overlap)) 和保留的这节撞在一起")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("其余的 \(WeekSeries.summary(rest)) 本来可以照常上课")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            ForEach(ImportConflictDisposition.allCases) { option in
+                let picked = conflictDispositions[member.id] == option
+                Button {
+                    conflictDispositions[member.id] = option
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: picked ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(picked ? Color.accentColor : .secondary)
+                        Text(option.title).foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conflictRow(group: ImportConflictGroup, member: ImportConflictGroup.Member) -> some View {
+        let picked = conflictChoice[group.id] == member.id
+        Button {
+            conflictChoice[group.id] = member.id
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: picked ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(picked ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(member.course.name)
+                        .foregroundStyle(.primary)
+                    let subtitle = member.subtitle
+                    if !subtitle.isEmpty {
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(member.weeksText).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var canAppend: Bool {

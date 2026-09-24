@@ -79,6 +79,7 @@ bash tests/check-live-activity.sh
 bash tests/check-chinese-calendar.sh
 bash tests/check-calendar-adjustment.sh
 bash tests/check-sharing.sh
+bash tests/check-import-conflicts.sh
 ```
 
 服务端测试：
@@ -91,7 +92,6 @@ python3 -m unittest tests.test_term_authority tests.test_shares tests.test_serve
 Debug 模拟器可以通过环境变量直接打开指定入口：
 
 - `SIMCTL_CHILD_NAPTABLE_DEBUG_SHEET=editor|weekPicker|free|detail`
-- `SIMCTL_CHILD_NAPTABLE_DEBUG_DEVICE=1`
 
 ## 跨平台注意事项
 

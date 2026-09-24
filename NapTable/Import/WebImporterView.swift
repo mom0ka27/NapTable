@@ -31,6 +31,10 @@ struct WebImporterView: View {
     /// Bumped to ask the web view to run its extractor again.
     @State private var extractToken = 0
     @State private var mode: AppStore.ImportMode
+    /// 撞车的时段选了哪一节：组 id -> `parsed.courses` 下标。每次重新解析清空。
+    @State private var conflictChoice: [Int: Int] = [:]
+    /// 只有部分周次重叠的那几节怎么处理：`parsed.courses` 下标 -> 处理方式。
+    @State private var conflictDispositions: [Int: ImportConflictDisposition] = [:]
 
     /// `initialMode` is the destination chosen on the import hub. Without it the
     /// sheet always started on `.replaceCurrent`, which made the hub's
@@ -52,7 +56,11 @@ struct WebImporterView: View {
         NavigationStack {
             Group {
                 if let parsed {
-                    ImportedScheduleForm(schedule: parsed, mode: $mode)
+                    ImportedScheduleForm(
+                        schedule: parsed, mode: $mode,
+                        conflicts: conflicts, conflictChoice: $conflictChoice,
+                        conflictDispositions: $conflictDispositions
+                    )
                 } else {
                     browser
                 }
@@ -74,16 +82,23 @@ struct WebImporterView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(parsed == nil ? "取消" : "返回") {
-                        if parsed == nil { dismiss() } else { self.parsed = nil }
+                        if parsed == nil {
+                            dismiss()
+                        } else {
+                            self.parsed = nil
+                            conflictChoice = [:]
+                            conflictDispositions = [:]
+                        }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if let parsed {
                         Button("导入") {
-                            onFinish(parsed, mode)
+                            onFinish(resolved(parsed), mode)
                             dismiss()
                         }
-                        .disabled(requiresCourses && parsed.courses.isEmpty)
+                        // 冲突没选完就导入，等于替用户随便留一节，所以先拦住。
+                        .disabled((requiresCourses && parsed.courses.isEmpty) || hasUnresolvedConflicts)
                     } else {
                         Button("重新解析") { retry() }
                             .disabled(state == .importing)
@@ -91,6 +106,31 @@ struct WebImporterView: View {
                 }
             }
         }
+    }
+
+    /// 同一时段撞在一起的课。下标指向 `parsed.courses`，所以每次重新解析都要
+    /// 连同 `conflictChoice` 一起作废。
+    private var conflicts: [ImportConflictGroup] {
+        ImportConflictFinder.groups(in: parsed?.courses ?? [])
+    }
+
+    /// 还没选保留哪一节，或者部分重叠的那几节还没说怎么处理。
+    private var hasUnresolvedConflicts: Bool {
+        conflicts.contains { group in
+            guard let kept = conflictChoice[group.id] else { return true }
+            return ImportConflictFinder.membersNeedingDisposition(in: group, keeping: kept)
+                .contains { conflictDispositions[$0.id] == nil }
+        }
+    }
+
+    /// 写库之前把没选中的那几节收起来。
+    private func resolved(_ schedule: ImportedSchedule) -> ImportedSchedule {
+        var value = schedule
+        value.courses = ImportConflictFinder.apply(
+            keeping: conflictChoice, dispositions: conflictDispositions,
+            to: schedule.courses, groups: conflicts
+        )
+        return value
     }
 
     private var browser: some View {
@@ -201,6 +241,8 @@ struct WebImporterView: View {
                 case .success(let schedule):
                     state = .finished
                     statusMessage = "已解析 \(schedule.courses.count) 条课程安排"
+                    conflictChoice = [:]
+                    conflictDispositions = [:]
                     parsed = schedule
                 case .failure(let error):
                     state = .failed
@@ -287,6 +329,24 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
         let controller = WKUserContentController()
         controller.add(coordinator, name: "SnackbarJSChannel")
         controller.add(coordinator, name: "NapTableBridge")
+        if coordinator.school.serviceSchoolID == "sysu" {
+            controller.add(coordinator, name: "NapTableRoute")
+            controller.addUserScript(WKUserScript(source: """
+            (() => {
+              const report = () => window.webkit.messageHandlers.NapTableRoute.postMessage(location.href);
+              for (const method of ['pushState', 'replaceState']) {
+                const original = history[method];
+                history[method] = function(...args) {
+                  const result = original.apply(this, args);
+                  report();
+                  return result;
+                };
+              }
+              addEventListener('popstate', report);
+              addEventListener('hashchange', report);
+            })();
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         configuration.userContentController = controller
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
 
@@ -321,6 +381,10 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
         observation?.invalidate()
         observation = nil
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "SnackbarJSChannel")
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "NapTableBridge")
+        if school.serviceSchoolID == "sysu" {
+            webView?.configuration.userContentController.removeScriptMessageHandler(forName: "NapTableRoute")
+        }
     }
 
     // MARK: WKNavigationDelegate
@@ -329,7 +393,12 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
         let url = webView.url?.absoluteString ?? ""
         guard state.wrappedValue != .importing, state.wrappedValue != .finished else { return }
         state.wrappedValue = .loaded
-        guard !didStartExtraction.wrappedValue else { return }
+        checkTarget(url)
+    }
+
+    private func checkTarget(_ url: String) {
+        guard state.wrappedValue != .importing, state.wrappedValue != .finished,
+              !didStartExtraction.wrappedValue else { return }
         if matches(url, pattern: school.targetURL) {
             didStartExtraction.wrappedValue = true
             // `startExtraction` owns the `delayTime` wait so that `preExtractJS`
@@ -355,6 +424,10 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "NapTableRoute", let url = message.body as? String {
+            if state.wrappedValue == .loaded { checkTarget(url) }
+            return
+        }
         if let text = message.body as? String {
             statusMessage.wrappedValue = text
         }
@@ -402,6 +475,11 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
     /// the stable prefix can be matched.
     private func matches(_ url: String, pattern: String) -> Bool {
         guard !pattern.isEmpty else { return false }
+        if school.serviceSchoolID == "sysu",
+           let page = URLComponents(string: url), let target = URLComponents(string: pattern) {
+            let path = page.path.replacingOccurrences(of: "/+", with: "/", options: .regularExpression)
+            return page.scheme == target.scheme && page.host == target.host && path == target.path
+        }
         if let star = pattern.firstIndex(of: "*") {
             return url.hasPrefix(String(pattern[pattern.startIndex..<star]))
         }

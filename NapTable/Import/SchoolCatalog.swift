@@ -27,7 +27,7 @@ struct SchoolConfig: Identifiable, Equatable, Hashable {
     /// All login/import routes of one university share its server configuration.
     var serviceSchoolID: String {
         let host = URL(string: initialURL)?.host?.lowercased() ?? ""
-        for id in ["nju", "seu", "ucas"] {
+        for id in ["nju", "seu", "ucas", "sysu"] {
             if host == "\(id).edu.cn" || host.hasSuffix(".\(id).edu.cn") { return id }
         }
         return pinyin
@@ -41,7 +41,7 @@ struct SchoolConfig: Identifiable, Equatable, Hashable {
 /// the binary keeps first-run imports working offline and removes the only
 /// network dependency of the import screen.
 enum SchoolCatalog {
-    static let all: [SchoolConfig] = builtIn.filter { $0.serviceSchoolID == "nju" }
+    static let all: [SchoolConfig] = builtIn.filter { ["nju", "sysu"].contains($0.serviceSchoolID) }
 
     // Keep other importers available for future re-enabling.
     private static let builtIn: [SchoolConfig] = [
@@ -301,6 +301,24 @@ enum SchoolCatalog {
                 ClassTime(start: "21:05", end: "21:50"),
             ],
             semesterStartMonday: "2026-08-31"
+        ),
+        SchoolConfig(
+            title: "中山大学本科生教务系统",
+            pinyin: "zhongshandaxuebenkejiaowu",
+            summary: "登录教务系统后读取当前学期课表",
+            pageTitle: "教务系统登录",
+            initialURL: "https://jwxt.sysu.edu.cn/jwxt/api/sso/cas/login?pattern=student-login",
+            redirectURL: "",
+            // 教务首页进入课表后才自动解析；页面实际地址也可能带双斜杠。
+            targetURL: "https://jwxt.sysu.edu.cn/jwxt/yd/classSchedule",
+            preExtractJS: "",
+            delayTime: 1,
+            extractJS: SchoolCatalog.sysuExtractJS,
+            bannerContent: nil,
+            bannerAction: nil,
+            bannerURL: nil,
+            classTimeList: nil,
+            semesterStartMonday: nil
         ),
     ]
 }

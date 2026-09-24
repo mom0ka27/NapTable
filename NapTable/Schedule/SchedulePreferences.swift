@@ -26,6 +26,7 @@ final class NativeSchedulePreferences: ObservableObject {
     /// Whether the week grid and the day picker include 周六/周日.
     @Published var showWeekend: Bool { didSet { persist() } }
     @Published var showDateHeader: Bool { didSet { persist() } }
+    @Published var showFreeTimeCourses: Bool { didSet { persist() } }
     @Published var defaultView: String { didSet { persist() } }
     @Published var density: String { didSet { persist() } }
     @Published var backgroundPath: String { didSet { loadBackgroundImage(); persist() } }
@@ -42,6 +43,7 @@ final class NativeSchedulePreferences: ObservableObject {
         static let showWeeks = "nativeSchedule.showWeeks"
         static let showWeekend = "nativeSchedule.showWeekend"
         static let showDateHeader = "nativeSchedule.showDateHeader"
+        static let showFreeTimeCourses = "nativeSchedule.showFreeTimeCourses"
         static let defaultView = "nativeSchedule.defaultView"
         static let density = "nativeSchedule.density"
         static let backgroundPath = "nativeSchedule.backgroundPath"
@@ -55,6 +57,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeeks = defaults.object(forKey: Key.showWeeks) as? Bool ?? true
         showWeekend = defaults.object(forKey: Key.showWeekend) as? Bool ?? true
         showDateHeader = defaults.object(forKey: Key.showDateHeader) as? Bool ?? true
+        showFreeTimeCourses = defaults.object(forKey: Key.showFreeTimeCourses) as? Bool ?? true
         let savedView = defaults.string(forKey: Key.defaultView) ?? "week"
         defaultView = Self.viewOptions.contains(savedView) ? savedView : "week"
         let savedDensity = defaults.string(forKey: Key.density) ?? "comfortable"
@@ -90,6 +93,8 @@ final class NativeSchedulePreferences: ObservableObject {
         var showWeeks: Bool
         var showWeekend: Bool
         var showDateHeader: Bool
+        /// Optional so backups made before this preference existed still decode.
+        var showFreeTimeCourses: Bool? = nil
         var defaultView: String
         var density: String
         // Retained for decoding older backups; fixed grid heights ignore it.
@@ -105,6 +110,7 @@ final class NativeSchedulePreferences: ObservableObject {
             showWeeks: showWeeks,
             showWeekend: showWeekend,
             showDateHeader: showDateHeader,
+            showFreeTimeCourses: showFreeTimeCourses,
             defaultView: defaultView,
             density: density,
             rowHeight: 44,
@@ -123,6 +129,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeeks = snapshot.showWeeks
         showWeekend = snapshot.showWeekend
         showDateHeader = snapshot.showDateHeader
+        showFreeTimeCourses = snapshot.showFreeTimeCourses ?? true
         defaultView = Self.viewOptions.contains(snapshot.defaultView) ? snapshot.defaultView : "week"
         density = Self.densityOptions.contains(snapshot.density) ? snapshot.density : "comfortable"
         backgroundOpacity = min(0.5, max(0.05, snapshot.backgroundOpacity))
@@ -147,6 +154,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeeks = true
         showWeekend = true
         showDateHeader = true
+        showFreeTimeCourses = true
         defaultView = "week"
         density = "comfortable"
         backgroundPath = ""
@@ -185,6 +193,7 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(showWeeks, forKey: Key.showWeeks)
         defaults.set(showWeekend, forKey: Key.showWeekend)
         defaults.set(showDateHeader, forKey: Key.showDateHeader)
+        defaults.set(showFreeTimeCourses, forKey: Key.showFreeTimeCourses)
         defaults.set(Self.viewOptions.contains(defaultView) ? defaultView : "week", forKey: Key.defaultView)
         defaults.set(Self.densityOptions.contains(density) ? density : "comfortable", forKey: Key.density)
         defaults.set(backgroundPath, forKey: Key.backgroundPath)

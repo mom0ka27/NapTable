@@ -16,7 +16,6 @@ struct NativeScheduleView: View {
     @ObservedObject private var store: NativeScheduleStore
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
     private let onAddTable: () -> Void
-    private let onWidgets: () -> Void
     private let onLogin: () -> Void
     private let showsWatch: Bool
     private let onWatch: () -> Void
@@ -30,7 +29,6 @@ struct NativeScheduleView: View {
     @State private var addCourseContext: AddCourseContext?
     @State private var weekPickerPresented = false
     @State private var freeCoursesPresented = false
-    @State private var semesterPickerPresented = false
     // Horizontal week paging state. The track holds the previous, current and
     // next week so a swipe drags the neighbouring timetable into view instead
     // of replacing the grid in place.
@@ -52,21 +50,19 @@ struct NativeScheduleView: View {
     init(
         store: NativeScheduleStore,
         onLogin: @escaping () -> Void = {},
-        onWidgets: @escaping () -> Void = {},
         onAddTable: @escaping () -> Void = {},
         showsWatch: Bool = false,
         onWatch: @escaping () -> Void = {}
     ) {
         _store = ObservedObject(wrappedValue: store)
         self.onAddTable = onAddTable
-        self.onWidgets = onWidgets
         self.onLogin = onLogin
         self.showsWatch = showsWatch
         self.onWatch = onWatch
     }
 
     private var showsFreeTimeEntry: Bool {
-        store.result != nil && !weeklyFreeCourses().isEmpty
+        preferences.showFreeTimeCourses && store.result != nil && !weeklyFreeCourses().isEmpty
     }
 
     var body: some View {
@@ -496,12 +492,39 @@ struct NativeScheduleView: View {
 
     private func semesterMenu(_ result: NativeScheduleResult) -> some View {
         let selected = result.semesters.first { $0.value == store.selectedSemester }
-        return Button {
-            semesterPickerPresented = true
+        let own = result.semesters.filter { !$0.isShared }
+        let shared = result.semesters.filter(\.isShared)
+        let selection = Binding(
+            get: { store.selectedSemester },
+            set: { value in
+                guard value != store.selectedSemester else { return }
+                Task { await store.selectSemester(value) }
+            }
+        )
+        return Menu {
+            // An inline Picker lets the system draw the checkmark column, so
+            // every name lines up whether or not it is selected.
+            Picker("课表", selection: selection) {
+                Section("我的课表") {
+                    ForEach(own) { Text($0.label).tag($0.value) }
+                }
+                if !shared.isEmpty {
+                    Section("共享课表") {
+                        ForEach(shared) {
+                            Label($0.label, systemImage: "person.2").tag($0.value)
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+            Divider()
+            Button("添加课表", systemImage: "plus", action: onAddTable)
         } label: {
             HStack(spacing: 6) {
                 if selected?.isShared == true {
-                    SharedTimetableBadge()
+                    Image(systemName: "person.2.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Text(semesterTitle(result))
                     .font(.subheadline.weight(.semibold))
@@ -517,99 +540,12 @@ struct NativeScheduleView: View {
             // Reserve the available header width regardless of the selected name.
             .frame(maxWidth: .infinity, minHeight: 34)
             .background(Color.appSecondaryGroupedBackground, in: Capsule())
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
         // A source change may also animate the free-time entry below the header.
-        // Keep the anchor and label out of that layout animation.
+        // Keep the menu's anchor and label out of that layout animation.
         .transaction { $0.animation = nil }
         .accessibilityLabel("选择课表")
         .accessibilityValue(selected.map { $0.isShared ? "共享课表 \($0.label)" : $0.label } ?? "")
-        .popover(isPresented: $semesterPickerPresented, arrowEdge: .top) {
-            semesterPicker(result)
-                .presentationCompactAdaptation(.popover)
-        }
-    }
-
-    /// A system Menu puts the checkmark in a leading column only on the
-    /// selected row, so names never line up. This list keeps names flush
-    /// left, marks followed timetables with a badge and the selection on the
-    /// trailing edge.
-    private func semesterPicker(_ result: NativeScheduleResult) -> some View {
-        let own = result.semesters.filter { !$0.isShared }
-        let shared = result.semesters.filter(\.isShared)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                semesterPickerSection("我的课表", own)
-                if !shared.isEmpty {
-                    semesterPickerSection("共享课表", shared)
-                }
-                Divider().padding(.vertical, 4)
-                Button {
-                    semesterPickerPresented = false
-                    onAddTable()
-                } label: {
-                    Label("添加课表", systemImage: "plus")
-                        .font(.body)
-                        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-            }
-            .padding(8)
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 280)
-        .frame(maxHeight: 420)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    @ViewBuilder
-    private func semesterPickerSection(_ title: String, _ semesters: [NativeScheduleSemester]) -> some View {
-        if !semesters.isEmpty {
-            Text(title)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-            ForEach(semesters) { semester in
-                let isSelected = semester.value == store.selectedSemester
-                Button {
-                    semesterPickerPresented = false
-                    guard !isSelected else { return }
-                    Task { await store.selectSemester(semester.value) }
-                } label: {
-                    HStack(spacing: 8) {
-                        if semester.isShared {
-                            SharedTimetableBadge()
-                        }
-                        Text(semester.label)
-                            .font(.body.weight(isSelected ? .semibold : .regular))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: "checkmark")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .opacity(isSelected ? 1 : 0)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 40)
-                    .background(
-                        isSelected ? Color.accentColor.opacity(0.12) : .clear,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
-                .accessibilityLabel(semester.isShared ? "共享课表 \(semester.label)" : semester.label)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
     }
 
     /// Harmony's schedule surface keeps refresh, editing and presentation
@@ -618,8 +554,6 @@ struct NativeScheduleView: View {
     private func scheduleToolsMenu(_ result: NativeScheduleResult) -> some View {
         Menu {
             Section("课表") {
-                Button("刷新课表", systemImage: "arrow.clockwise") { refresh() }
-                    .disabled(isLoading)
                 Button("选择周次", systemImage: "calendar") { weekPickerPresented = true }
                 Button("添加课程", systemImage: "plus") {
                     presentAddCourse(
@@ -629,14 +563,11 @@ struct NativeScheduleView: View {
                     )
                 }
                 .disabled(store.isReadOnly)
-                if !weeklyFreeCourses().isEmpty {
+                if showsFreeTimeEntry {
                     Button("自由时间", systemImage: "clock.badge.checkmark") {
                         freeCoursesPresented = true
                     }
                 }
-            }
-            Section("设置") {
-                Button("课表与设备设置", systemImage: "slider.horizontal.3", action: onWidgets)
             }
             Section("分享") {
                 Button("分享当前课表", systemImage: "square.and.arrow.up") {
@@ -2309,6 +2240,7 @@ struct NativeCourseEditorSheet: View {
     @State private var saving = false
     @State private var errorMessage: String?
     @State private var hiddenCourses: [(String, String)] = []
+    @State private var confirmingDelete = false
 
     init(selection: SelectedCourse?, store: NativeScheduleStore, defaultDay: Int = 1, defaultWeek: Int = 1, defaultStartSlot: Int = 1) {
         self.selection = selection
@@ -2371,15 +2303,12 @@ struct NativeCourseEditorSheet: View {
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         if canRestoreOriginalCourse, let sourceKey = selection?.course.sourceKey {
-                            Button("使用教务安排") { restoreOriginal(sourceKey: sourceKey) }
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.cpuBrand)
-                                .disabled(saving)
-                        }
-                        if selection != nil {
-                            Button("删除", role: .destructive) { deleteCourse() }
-                                .font(.caption.weight(.semibold))
-                                .disabled(saving)
+                            Button { restoreOriginal(sourceKey: sourceKey) } label: {
+                                Label("使用教务安排", systemImage: "arrow.uturn.backward")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .foregroundStyle(Color.cpuBrand)
+                            .disabled(saving)
                         }
                     }
                     .padding(.horizontal, 4)
@@ -2479,12 +2408,44 @@ struct NativeCourseEditorSheet: View {
                     selectedWeeks = [defaultWeek]
                 }
             }
+            // 删除从表单中段挪到导航栏：一直可见，红色图标也比灰蓝的文字按钮显眼。
+            // 删除和保存同组，删除在左、保存仍留在最右角；误触由确认弹窗兜底。
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "保存中" : "保存") { saveCourse() }
-                        .disabled(saving)
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        Label("取消", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                    }
                 }
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    if selection != nil {
+                        Button(role: .destructive) { confirmingDelete = true } label: {
+                            Label("删除课程", systemImage: "trash")
+                                .labelStyle(.iconOnly)
+                        }
+                        .tint(.red)
+                        .foregroundStyle(.red)
+                        .disabled(saving)
+                    }
+                    Button { saveCourse() } label: {
+                        if saving {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("保存", systemImage: "checkmark")
+                                .labelStyle(.iconOnly)
+                                .font(.body.weight(.semibold))
+                        }
+                    }
+                    .disabled(saving)
+                }
+            }
+            .confirmationDialog("删除这门课程？", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("删除", role: .destructive) { deleteCourse() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(selection?.course.customId != nil
+                     ? "这门自定义课程会被移除。"
+                     : "这门教务课程会从课表中隐藏，之后可以在“已编辑课程”里恢复。")
             }
         }
     }
@@ -2538,23 +2499,50 @@ struct NativeCourseEditorSheet: View {
 
     @ViewBuilder
     private func courseStatusCard(_ course: NativeScheduleCourse) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(course.orphaned ? "这门课的安排需要核对" : statusTitle(for: course))
-                .font(.subheadline.weight(.semibold))
-            Text(statusMessage(for: course))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if course.orphaned {
+        // 这张卡片和下面的字段卡片共用 14pt 的左右内边距，图标徽章沿用设置页
+        // 的品牌色圆角底，需要核对的课程换成橙色以示区分。
+        let needsCheck = course.orphaned
+        let tint = needsCheck ? Color.orange : Color.cpuBrand
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: statusIcon(for: course))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 28, height: 28)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(needsCheck ? "这门课的安排需要核对" : statusTitle(for: course))
+                        .font(.subheadline.weight(.semibold))
+                    Text(statusMessage(for: course))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            if needsCheck {
+                Divider()
                 Text("继续用自己的安排，可保留为自定义课程；以教务为准，可选择“使用教务安排”。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("保留为自定义课程") { saveCourse(keepAsCustom: true) }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(tint)
                     .disabled(saving)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    private func statusIcon(for course: NativeScheduleCourse) -> String {
+        if course.orphaned { return "exclamationmark.triangle.fill" }
+        if course.custom { return "square.and.pencil" }
+        if course.sourceKey != nil { return "pencil" }
+        return "building.columns"
     }
 
     private func statusTitle(for course: NativeScheduleCourse) -> String {
@@ -3004,17 +2992,5 @@ private struct SharedCourseDetailView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
             }
         }
-    }
-}
-
-/// Marks a followed (read-only) timetable next to its name.
-private struct SharedTimetableBadge: View {
-    var body: some View {
-        Image(systemName: "person.2.fill")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 20, height: 20)
-            .background(Color.accentColor.opacity(0.15), in: Circle())
-            .accessibilityHidden(true)
     }
 }

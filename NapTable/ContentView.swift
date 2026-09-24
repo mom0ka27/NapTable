@@ -16,7 +16,6 @@ struct ContentView: View {
     @StateObject private var themeSettings = NativeThemeSettings.shared
     @State private var showImport = false
     @State private var showSettings = false
-    @State private var showDeviceSettings = false
 
     var body: some View {
         Group {
@@ -31,10 +30,6 @@ struct ContentView: View {
             ImportView()
                 .environmentObject(store)
                 .environmentObject(scheduleStore)
-                .preferredColorScheme(store.settings.appearance.colorScheme)
-        }
-        .sheet(isPresented: $showDeviceSettings) {
-            NativeDeviceSettingsView(scheduleStore: scheduleStore, widgetSettings: widgetSettings)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
         }
         // Schedule edits update both companion surfaces. Caring changes only
@@ -65,16 +60,6 @@ struct ContentView: View {
             NativeLiveActivityController.shared.foreground()
             #endif
         }
-        #if DEBUG
-        // A headless simulator cannot tap the header menu, so the debug hook
-        // opens the device settings directly. Same idea as the surface's
-        // `NAPTABLE_DEBUG_SHEET`.
-        .task {
-            guard ProcessInfo.processInfo.environment["NAPTABLE_DEBUG_DEVICE"] != nil else { return }
-            try? await Task.sleep(for: .milliseconds(700))
-            showDeviceSettings = true
-        }
-        #endif
     }
 
     /// The surface brings its own header, so it only has to be told about the
@@ -91,7 +76,7 @@ struct ContentView: View {
                         .buttonStyle(.borderedProminent)
                 }
             } else {
-                NativeScheduleView(store: scheduleStore, onWidgets: { showDeviceSettings = true }, onAddTable: { showImport = true })
+                NativeScheduleView(store: scheduleStore, onAddTable: { showImport = true })
                     .tint(themeSettings.brandColor)
             }
         }

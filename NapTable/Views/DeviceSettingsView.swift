@@ -9,60 +9,7 @@ import UIKit
 import AppKit
 #endif
 
-/// The compact settings sheet reachable from the timetable header.
-///
-/// It is a shortcut, not a second settings tree: every row here opens the same
-/// screen the Settings tab opens, so there is only one place per setting.
-struct NativeDeviceSettingsView: View {
-    @ObservedObject var scheduleStore: NativeScheduleStore
-    @ObservedObject var widgetSettings: NativeWidgetSettings
-    @ObservedObject private var themeSettings = NativeThemeSettings.shared
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    SettingsDestinationRow(
-                        title: "主题与外观",
-                        detail: themeSettings.theme.title,
-                        systemImage: "paintpalette"
-                    ) {
-                        Form { GlobalThemeSettingsSection() }
-                            .navigationTitle("主题与外观")
-                            .appInlineNavigationTitle()
-                    }
-                    SettingsDestinationRow(
-                        title: "课表显示",
-                        detail: "打开时的视图、卡片密度和背景图",
-                        systemImage: "calendar"
-                    ) {
-                        Form { ScheduleSettingsSection() }
-                            .navigationTitle("课表显示")
-                            .appInlineNavigationTitle()
-                    }
-                } header: {
-                    Text("外观")
-                }
-
-                NativeDeviceSettingsContent(
-                    scheduleStore: scheduleStore,
-                    widgetSettings: widgetSettings
-                )
-            }
-            .navigationTitle("快捷设置")
-            .appInlineNavigationTitle()
-            .toolbar {
-                ToolbarItem(placement: .appTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-        .tint(themeSettings.brandColor)
-    }
-}
-
-/// The widget / Live Activity rows, shared by the Settings tab and the header shortcut.
+/// The widget / Live Activity rows, shown in the Settings tab.
 struct NativeDeviceSettingsContent: View {
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
@@ -136,6 +83,7 @@ struct ScheduleSettingsSection: View {
             }
             Toggle("显示周末", isOn: $preferences.showWeekend)
             Toggle("显示日期栏", isOn: $preferences.showDateHeader)
+            Toggle("显示自由时间课程", isOn: $preferences.showFreeTimeCourses)
         } header: {
             Text("布局")
         }
