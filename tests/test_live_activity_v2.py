@@ -32,9 +32,15 @@ class APNs:
         self.starts.append((token, payload, kwargs))
         if self.on_push: self.on_push()
         return self.result
+    def push_many(self, items, environment='production'):
+        self.batches = getattr(self, 'batches', []) + [len(items)]
+        return [self.push(item.pop('device_token'), item.pop('payload'), environment=environment, **item) for item in items]
     def broadcast(self, channel, payload, **kwargs):
         self.broadcasts.append((channel, payload, kwargs))
         return self.result
+    def broadcast_many(self, items, environment='production'):
+        self.broadcast_batches = getattr(self, 'broadcast_batches', []) + [len(items)]
+        return [self.broadcast(item.pop('channel_id'), item.pop('payload'), environment=environment, **item) for item in items]
 
 
 class V2Tests(unittest.TestCase):
@@ -201,6 +207,7 @@ class V2Tests(unittest.TestCase):
         self.service.plan_broadcasts(); self.service.dispatch_broadcasts()
         received = {channel: payload['aps']['event'] for channel, payload, _ in self.client.broadcasts}
         self.assertEqual(received[self.config['channels']['2']], 'end')
+        self.assertEqual(self.client.broadcast_batches, [len(received)], 'Every channel at the bell leaves in one batch')
         self.assertEqual(received[self.config['channels']['4']], 'update')
         self.assertNotIn(self.config['channels']['1'], received)
 
@@ -355,6 +362,27 @@ class TokenModeTests(unittest.TestCase):
         self.assertEqual(payload['aps']['attributes']['pushMode'], 'token')
         self.assertEqual(self.job()['state'], 'submitted')
 
+    def test_token_plan_places_the_readers_own_courses_by_instant(self):
+        from server.live_activity_timeline import public_state
+        schedule = normalize_schedule(self.periods, 'Asia/Taipei')
+        own = dict(occurrenceId='own-1', supersedes=[], dateKey='2026-09-22', start=self.end + 600, end=self.end + 4200)
+        self.plan.update(pushMode='token', items=[self.plan['items'][0], own])
+        events = validate_plan(self.plan, schedule, self.clock)
+        self.assertEqual([(e['start'], e['end'], e['fireAt']) for e in events],
+                         [(self.start, self.end, self.start - 1800), (own['start'], own['end'], self.end)])
+        for bad in (dict(own, startPeriod=1), dict(own, end=own['start']), dict(own, start='soon'), dict(own, dateKey='2026-02-30'),
+                    dict(own, start=self.start + 60), dict(own, courseName='private')):
+            with self.assertRaises(ProtocolError): validate_plan(dict(self.plan, items=[self.plan['items'][0], bad]), schedule, self.clock)
+        with self.assertRaises(ProtocolError): validate_plan(dict(self.plan, pushMode='channel'), schedule, self.clock)
+        with self.assertRaises(ProtocolError): validate_plan({k: v for k, v in self.plan.items() if k != 'pushMode'}, schedule, self.clock)
+        self.service.replace_plan(self.id, self.plan)
+        row = self.db.execute("SELECT * FROM la_start_jobs WHERE occurrence='own-1'").fetchone()
+        payload = json.loads(row['payload'])['aps']
+        self.assertEqual((row['channel_key'], row['fire_at'], row['expires_at']), ('', self.end, own['end']))
+        self.assertEqual(payload['content-state'], public_state('2026-09-22', None, 'upcoming', self.end))
+        self.assertEqual(payload['attributes']['reservationStart'], own['start'] - 978307200)
+        self.assertEqual(payload['alert'], {'title': '课程提醒', 'body': '即将上课'})
+
     def test_activity_registration_validation(self):
         result = self.service.register_activity(self.id, 'occurrence-1', self.activity())
         self.assertEqual(result, {'occurrenceId': 'occurrence-1', 'pending': 3})
@@ -375,6 +403,49 @@ class TokenModeTests(unittest.TestCase):
         self.service.forget(self.id)
         with self.assertRaises(ProtocolError) as error: self.service.register_activity(self.id, 'occurrence-1', self.activity())
         self.assertEqual(error.exception.status, 409)
+
+    def test_alert_refreshes_sound_the_course_reminder(self):
+        from server.live_activity_timeline import validate_activity
+        for bad in ([self.start + 1], 'soon', [self.end], ['x'], [self.start] * 17):
+            with self.assertRaises(ProtocolError): validate_activity(self.activity(alertAt=bad), self.clock)
+        self.assertEqual(validate_activity(self.activity(), self.clock)['alertAt'], [], 'alertAt is optional')
+        self.service.register_activity(self.id, 'occurrence-1', self.activity(alertAt=[self.middle]))
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT fire_at,alert FROM la_token_updates ORDER BY fire_at')],
+                         [(self.start, 0), (self.middle, 1), (self.end, 0)])
+        self.clock = self.start; self.service.dispatch_token_updates()
+        self.assertNotIn('alert', self.client.starts[-1][1]['aps'])
+        self.clock = self.middle; self.service.dispatch_token_updates()
+        aps = self.client.starts[-1][1]['aps']
+        self.assertEqual((aps['event'], aps['alert']), ('update', {'title': '课程提醒', 'body': '即将上课'}))
+        self.clock = self.end; self.service.dispatch_token_updates()
+        self.assertNotIn('alert', self.client.starts[-1][1]['aps'])
+
+    def test_a_reminder_superseded_while_still_current_rides_on_the_replacement(self):
+        self.service.register_activity(self.id, 'occurrence-1', self.activity(alertAt=[self.start]))
+        # Held back past the next refresh (a retry), yet its window has not closed.
+        self.db.execute('UPDATE la_token_updates SET expires_at=? WHERE fire_at=?', (self.end, self.start)); self.db.commit()
+        self.clock = self.middle; self.service.dispatch_token_updates()
+        self.assertEqual(len(self.client.starts), 1)
+        self.assertEqual(self.client.starts[0][1]['aps']['timestamp'], self.middle)
+        self.assertIn('alert', self.client.starts[0][1]['aps'])
+
+    def test_older_token_table_gains_the_alert_column(self):
+        self.db.execute('DROP TABLE la_token_updates')
+        self.db.execute("""CREATE TABLE la_token_updates (device TEXT NOT NULL, occurrence TEXT NOT NULL, fire_at REAL NOT NULL,
+            event TEXT NOT NULL, expires_at REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt REAL NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '', PRIMARY KEY(device, occurrence, fire_at))""")
+        self.db.execute("INSERT INTO la_token_updates(device,occurrence,fire_at,event,expires_at) VALUES('d','o',1,'update',2)"); self.db.commit()
+        Service(self.legacy, TestVault())
+        self.assertEqual(self.db.execute("SELECT alert FROM la_token_updates").fetchone()[0], 0, 'existing refreshes stay silent')
+        self.assertIsNotNone(self.db.execute('SELECT 1 FROM la_v2_migrations WHERE version=4').fetchone())
+
+    def test_refreshes_due_at_one_bell_leave_as_one_batch(self):
+        for n in range(5):
+            self.service.register_activity(self.id, 'occurrence-%d' % n, self.activity(token='%02x' % n * 16))
+        self.clock = self.start; self.client.batches = []
+        self.service.dispatch_token_updates()
+        self.assertEqual(self.client.batches, [5], 'A bell costs one round trip, not five')
+        self.assertEqual(sorted(token for token, _, _ in self.client.starts), sorted('%02x' % n * 16 for n in range(5)))
 
     def test_replacement_only_touches_unsent_refreshes(self):
         self.service.register_activity(self.id, 'occurrence-1', self.activity())

@@ -30,8 +30,11 @@ struct DisplaySnapshotChecks {
 
         // 默认值：升级上来的用户布局不变
         let fresh = makePreferences("fresh")
-        expect(fresh.showWeekend && fresh.showLocation && fresh.showTeacher && fresh.showWeeks,
+        expect(fresh.showWeekend && fresh.showLocation && fresh.showTeacher && fresh.showWeeks && fresh.showFreeTimeCourses,
                "新装默认全部显示")
+        fresh.showFreeTimeCourses = false
+        let reloaded = NativeSchedulePreferences(defaults: UserDefaults(suiteName: "naptable.checks.fresh")!)
+        expect(!reloaded.showFreeTimeCourses, "自由时间开关持久化")
         expect(fresh.visibleDays == Array(1...7), "默认排满七天")
         expect(fresh.visibleDays(adjustedDays: [6]) == Array(1...7), "显示周末时仍保留七天")
 
@@ -50,6 +53,7 @@ struct DisplaySnapshotChecks {
         source.showWeeks = false
         source.showWeekend = false
         source.showDateHeader = false
+        source.showFreeTimeCourses = false
         source.defaultView = "day"
         source.density = "compact"
         source.backgroundOpacity = 0.33
@@ -64,6 +68,7 @@ struct DisplaySnapshotChecks {
         target.apply(restored)
         expect(!target.showLocation && !target.showTeacher && !target.showWeeks, "卡片开关已还原")
         expect(!target.showWeekend && !target.showDateHeader, "周末与日期栏开关已还原")
+        expect(!target.showFreeTimeCourses, "自由时间开关已还原")
         expect(target.defaultView == "day" && target.density == "compact", "视图与密度已还原")
         expect(target.makeSnapshot().rowHeight == 44, "备份行高固定为 44")
         expect(abs(target.backgroundOpacity - 0.33) < 0.0001, "背景不透明度已还原")
@@ -88,6 +93,16 @@ struct DisplaySnapshotChecks {
         expect(clamped.density == "comfortable", "未知密度回落到舒适")
         expect(clamped.makeSnapshot().rowHeight == 44, "旧备份行高不会改变固定布局")
         expect(clamped.backgroundOpacity == 0.5, "不透明度被夹到上限")
+
+        // 旧版显示设置备份没有新字段，恢复后仍默认显示自由时间课程。
+        var oldBackup = try! JSONSerialization.jsonObject(with: json) as! [String: Any]
+        oldBackup.removeValue(forKey: "showFreeTimeCourses")
+        let oldSnapshot = try! decoder.decode(
+            NativeSchedulePreferences.DisplaySnapshot.self,
+            from: JSONSerialization.data(withJSONObject: oldBackup)
+        )
+        target.apply(oldSnapshot)
+        expect(target.showFreeTimeCourses, "旧显示设置备份默认显示自由时间课程")
 
         // 备份里没有背景图时，保留本机现有的那张
         let keeper = makePreferences("keeper")

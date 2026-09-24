@@ -102,6 +102,7 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         var keys: [String: String] = [:]
         var requests: [URLRequest] = []
         var olderServer = false
+        var alertsRefused = false
         let service = LiveActivityPushService(controller: controller, defaults: defaults,
             credentials: .init(read: { keys[$0] }, write: { keys[$0] = $1 }, remove: { keys[$0] = nil }), baseURL: URL(string: "https://example.invalid")) { request in
                 requests.append(request)
@@ -110,6 +111,9 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
                 if path.hasSuffix("local-handoff") { return response(request, ["launchMode": "local", "history": []]) }
                 if path.hasSuffix("remote-resume") || path.contains("/activities/") {
                     if olderServer { return response(request, ["error": "not found"], status: 404) }
+                    if alertsRefused, let data = request.httpBody, String(decoding: data, as: UTF8.self).contains("alertAt") {
+                        return response(request, ["error": "expected token, dateKey, refreshAt and end only"], status: 400)
+                    }
                     return response(request, path.contains("/activities/") ? ["pending": 2] : ["launchMode": "remote", "history": []])
                 }
                 if path.hasSuffix("/plan") { return response(request, ["launchMode": "remote", "pendingCount": 1]) }
@@ -130,6 +134,9 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         for _ in 0..<3 { await settle() }
         precondition(calls("local-handoff").isEmpty && calls("remote-resume").isEmpty, "A fresh device stays remote while following")
         precondition(calls("/plan").count == 1 && body(calls("/plan")[0])["pushMode"] as? String == "token", "The share's plan goes up in token mode")
+        let items = body(calls("/plan")[0])["items"] as! [[String: Any]]
+        precondition(items.allSatisfy { Set($0.keys) == ["occurrenceId", "supersedes", "dateKey", "start", "end"] },
+                     "Token-mode items are placed by instant, so the reader's own courses fit")
         let mapping = requests.first { $0.url!.path.hasSuffix("broadcast-config") }!
         precondition(URLComponents(url: mapping.url!, resolvingAgainstBaseURL: true)!.queryItems!.contains(URLQueryItem(name: "deviceID", value: defaults.string(forKey: "naptable.liveActivity.deviceID")))
                      && mapping.value(forHTTPHeaderField: "X-Device-Secret") != nil, "The mapping is requested as the registered installation")
@@ -144,9 +151,11 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         for _ in 0..<2 { await settle() }
         precondition(activityCalls().count == 1 && activityCalls()[0].httpMethod == "PUT" && activityCalls()[0].url!.path.hasSuffix("/activities/" + occurrence.item.occurrenceId))
         let uploaded = body(activityCalls()[0])
-        precondition(Set(uploaded.keys) == ["token", "dateKey", "refreshAt", "end"] && uploaded["token"] as? String == String(repeating: "ab", count: 16))
+        precondition(Set(uploaded.keys) == ["token", "dateKey", "refreshAt", "end", "alertAt"] && uploaded["token"] as? String == String(repeating: "ab", count: 16))
+        precondition(uploaded["alertAt"] as? [Double] == [occurrence.start], "The reader's own class reminds an hour ahead, inside the running activity")
         precondition(uploaded["dateKey"] as? String == "2026-09-22" && uploaded["end"] as? Double == occurrence.end)
-        precondition(uploaded["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 3600], "Class start and the reader's own class start")
+        precondition(uploaded["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 3600, occurrence.start + 110 * 60],
+                     "Class start (the reader's own countdown opens with it), their class joining and taking over")
         controller.accept(share, own: timetable(scope: "own", first: 2, last: 3)); controller.foreground()
         for _ in 0..<2 { await settle() }
         precondition(activityCalls().count == 1, "An unchanged rebuild sends nothing")
@@ -154,13 +163,21 @@ enum ScheduleServiceError: Error { case missingBaseURL, invalidResponse, server(
         for _ in 0..<2 { await settle() }
         precondition(activityCalls().count == 2 && body(activityCalls()[1])["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 50 * 60],
                      "The reader's own edit moves the companion boundary")
+        precondition(body(activityCalls()[1])["alertAt"] == nil, "A course starting with the share needs no second reminder")
         remote.deliverPushToken(Data(repeating: 0xcd, count: 16))
         for _ in 0..<2 { await settle() }
         precondition(activityCalls().count == 3 && body(activityCalls()[2])["token"] as? String == String(repeating: "cd", count: 16), "A rotated token is uploaded")
+        // A server predating alertAt still gets the refreshes.
+        alertsRefused = true
+        controller.accept(share, own: timetable(scope: "own", first: 2, last: 3))
+        for _ in 0..<2 { await settle() }
+        precondition(activityCalls().count == 5 && body(activityCalls()[3])["alertAt"] != nil && body(activityCalls()[4])["alertAt"] == nil
+                     && body(activityCalls()[4])["refreshAt"] as? [Double] == [occurrence.start, occurrence.start + 3600, occurrence.start + 110 * 60],
+                     "Refused reminders are dropped, the refreshes are resent")
         // No longer following: the activity ends, its refreshes are withdrawn and iOS 26 reserves locally.
         controller.accept(timetable(scope: "own", first: 2, last: 3), own: nil)
         for _ in 0..<3 { await settle() }
-        precondition(activityCalls().count == 4 && activityCalls()[3].httpMethod == "DELETE", "Unfollowing withdraws the token activity")
+        precondition(activityCalls().count == 6 && activityCalls()[5].httpMethod == "DELETE", "Unfollowing withdraws the token activity")
         precondition(controller.pushMode == "channel" && calls("local-handoff").count == 1 && defaults.bool(forKey: "naptable.liveActivity.v2.handoff"))
         precondition(pending("own").count == 1 && pending("own")[0].pushType == .channel("three"), "The reader's own table reserves on the channel")
         // Following again: local reservations go first, then the server resumes remote starts.

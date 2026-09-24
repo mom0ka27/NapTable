@@ -108,8 +108,13 @@ def validate_plan(plan, schedule, now):
         blocks.append((a, b))
     events, seen = [], set()
     periods = schedule["periods"]
+    # A followed share also reminds the reader of their own courses, which sit on
+    # another school's bells: token mode may place an occurrence by its instants.
+    shapes = [{"occurrenceId", "supersedes", "dateKey", "startPeriod", "endPeriod"}]
+    if plan.get("pushMode") == "token":
+        shapes.append({"occurrenceId", "supersedes", "dateKey", "start", "end"})
     for item in items:
-        if not isinstance(item, dict) or set(item) != {"occurrenceId", "supersedes", "dateKey", "startPeriod", "endPeriod"}:
+        if not isinstance(item, dict) or set(item) not in shapes:
             raise ProtocolError("invalid occurrence; display fields are forbidden")
         occurrence = identifier(item["occurrenceId"])
         if occurrence in seen:
@@ -120,10 +125,20 @@ def validate_plan(plan, schedule, now):
         for value in item["supersedes"]:
             if identifier(value) == occurrence:
                 raise ProtocolError("occurrence cannot supersede itself")
-        first = integer(item["startPeriod"], 1, len(periods))
-        last = integer(item["endPeriod"], first, len(periods))
-        a = timestamp(item["dateKey"], periods[first - 1]["start"], schedule["timeZone"])
-        b = timestamp(item["dateKey"], periods[last - 1]["end"], schedule["timeZone"])
+        if "start" in item:
+            try:
+                if not isinstance(item["dateKey"], str) or date.fromisoformat(item["dateKey"]).isoformat() != item["dateKey"]:
+                    raise ValueError()
+            except ValueError:
+                raise ProtocolError("invalid dateKey")
+            a, b = instant(item["start"]), instant(item["end"])
+            if b <= a:
+                raise ProtocolError("occurrence must end after it starts")
+        else:
+            first = integer(item["startPeriod"], 1, len(periods))
+            last = integer(item["endPeriod"], first, len(periods))
+            a = timestamp(item["dateKey"], periods[first - 1]["start"], schedule["timeZone"])
+            b = timestamp(item["dateKey"], periods[last - 1]["end"], schedule["timeZone"])
         if b <= start or a >= end:
             raise ProtocolError("occurrence outside coverage")
         events.append(dict(item, start=a, end=b))
@@ -143,8 +158,9 @@ def validate_plan(plan, schedule, now):
 
 
 def validate_activity(value, now):
-    """Per-activity refresh times for token mode. Times only: no course field is accepted."""
-    if not isinstance(value, dict) or set(value) != {"token", "dateKey", "refreshAt", "end"}:
+    """Per-activity refresh times for token mode. Times only: no course field is accepted.
+    `alertAt` (optional) names the refreshes that also sound the course reminder."""
+    if not isinstance(value, dict) or set(value) - {"alertAt"} != {"token", "dateKey", "refreshAt", "end"}:
         raise ProtocolError("expected token, dateKey, refreshAt and end only")
     token = value["token"]
     if not isinstance(token, str) or not 16 <= len(token) <= 512 or any(c not in "0123456789abcdefABCDEF" for c in token):
@@ -167,7 +183,10 @@ def validate_activity(value, now):
         previous = stamp
     if end - min(refresh + [now]) > 8 * 3600:
         raise ProtocolError("activity exceeds eight hours")
-    return {"token": token, "day": day, "refreshAt": refresh, "end": end}
+    alerts = value.get("alertAt", [])
+    if not isinstance(alerts, list) or len(alerts) > 16 or any(type(stamp) not in (int, float) or stamp not in refresh for stamp in alerts):
+        raise ProtocolError("alertAt must be refresh instants")
+    return {"token": token, "day": day, "refreshAt": refresh, "end": end, "alertAt": alerts}
 
 
 def public_state(day, period, phase, stamp):

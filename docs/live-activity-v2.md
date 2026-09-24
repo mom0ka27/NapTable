@@ -27,10 +27,10 @@
 | POST | `/devices/{id}/remote-resume` | 幂等切回 remote（仅 iOS 26 关心共享课表时调用，客户端先结束全部本地活动）；`localTaken` 任务改为 cancelled 以便新计划重新物化，已提交历史不变；revoked 409 |
 | POST | `/devices/{id}/foreground-recovery` | `{occurrenceId}`；仅未提交任务返回一次 `mayStart=true` |
 | DELETE | `/devices/{id}` | 幂等墓碑；取消未提交任务，保留防重历史；关闭时离线撤销持久重试，成功前不清凭据 |
-| PUT | `/devices/{id}/activities/{occurrenceId}` | 令牌模式：`{token, dateKey, refreshAt, end}`，严格键集合；幂等替换令牌和未发送的刷新，已发送的保留；revoked 409；local/remote 模式都接受 |
+| PUT | `/devices/{id}/activities/{occurrenceId}` | 令牌模式：`{token, dateKey, refreshAt, end}`，可选 `alertAt`（`refreshAt` 的子集，最多 16 个），此外严格键集合；幂等替换令牌和未发送的刷新，已发送的保留；revoked 409；local/remote 模式都接受 |
 | DELETE | `/devices/{id}/activities/{occurrenceId}` | 令牌模式：幂等取消该活动所有未发送刷新 |
 
-计划严格包含：`protocolVersion=2`、`planRevision`、`scheduleScope`、`schoolID`、`scheduleId`、`scheduleVersion`、`coverageStart`、`coverageEndExclusive`、`leadMinutes`、`items`、`busyIntervals`。每个 item 仅含 `occurrenceId`、`supersedes`、`dateKey`、`startPeriod`、`endPeriod`。busy interval 为 `{start,end}`。可选 `pushMode`（`channel` / `token`，缺省即 `channel`）；客户端只在令牌模式发送，频道模式请求体与 digest 与旧版逐字节相同。服务器拒绝额外展示字段、重叠、无效时区、非法节次、超过 8 小时的实例。当前快照最大 200 天 / 10,000 项；客户端展开未来 180 天，接受覆盖区间 181 天。
+计划严格包含：`protocolVersion=2`、`planRevision`、`scheduleScope`、`schoolID`、`scheduleId`、`scheduleVersion`、`coverageStart`、`coverageEndExclusive`、`leadMinutes`、`items`、`busyIntervals`。每个 item 仅含 `occurrenceId`、`supersedes`、`dateKey`、`startPeriod`、`endPeriod`。令牌模式的 item 也可以改用 `start`、`end`（Unix 秒）代替两个节次：关心共享课表时自己的课也要提醒，而自己的课按自己学校的作息，无法用对方的节次表示；客户端在令牌模式下一律按时间发送，服务端两种形状都接受，`fireAt` 规则不变。busy interval 为 `{start,end}`。可选 `pushMode`（`channel` / `token`，缺省即 `channel`）；客户端只在令牌模式发送，频道模式请求体与 digest 与旧版逐字节相同。服务器拒绝额外展示字段、重叠、无效时区、非法节次、超过 8 小时的实例。当前快照最大 200 天 / 10,000 项；客户端展开未来 180 天，接受覆盖区间 181 天。
 
 ### 时间编码
 
@@ -44,17 +44,17 @@
 规格见 `live-activity-token-mode.md`。提醒快照是共享课表（`sourceLabel != nil`）时 `pushMode = token`，其余一律频道模式；模式随 `scheduleScope` 切换，同一 scope 内不混用。
 
 - iOS 18 与 iOS 26 相同：不做本地预约，计划带 `pushMode: "token"` 上传，服务端 start 写 `"input-push-token": 1`、不引用频道，也不延长广播承诺。原因：官方文档只保证 push-to-start 会唤醒 App 下发更新令牌，没有说明本地预约（pending）何时下发令牌。iOS 26 设备若已交接为 local，先结束本地活动再调用 `remote-resume`；取消关心后重新 `local-handoff` 并本地预约。iOS 26 同样订阅 `pushToStartTokenUpdates`。
-- App 订阅每个令牌活动的 `pushTokenUpdates`（请求后、`activityUpdates`、每次前台/后台刷新补订阅），把 `refreshAt`（除第一帧外所有帧的开始，加帧间空档的起点）和 `end` PUT 到上面的端点。App Group 小账本按 occurrence 记录上次被接受的摘要，内容不变不重复上传；活动结束或 occurrence 消失时尽力 DELETE。
-- 服务端 `la_activity_tokens` 以 Fernet 保存令牌，`la_token_updates` 每个时间点一条 update、`end` 一条 end。`token-updates` 循环同一活动只发最新到期的一条，过期不发；410 / `BadDeviceToken` / `DeviceTokenNotForTopic` 删除令牌并取消后续；408/429/5xx/结果不明在有效期内退避重试（update 幂等，可以重发）。
-- 拿不到令牌时只靠 App 前台/后台本地更新，令牌活动的本地更新把 `staleDate` 设为下一个刷新时刻。旧服务端对带 `pushMode` 的计划回 400、对新端点（含 `remote-resume`）回 404：客户端本次会话回落频道模式，设置页提示「服务端尚不支持共享课表的实时刷新」。部署顺序仍是先服务端后客户端。
+- App 订阅每个令牌活动的 `pushTokenUpdates`（请求后、`activityUpdates`、每次前台/后台刷新补订阅），把 `refreshAt`（除第一帧外所有帧的开始，加帧间空档的起点，加提醒时刻）和 `end` PUT 到上面的端点。合并活动里开场之后才加入的课（任一张课表），在它单独提醒时本该提醒的时刻（开课前提前显示时间，被前一门课下课截断）列入 `alertAt`；与开场同时或更早就到提醒时刻的课不重复提醒。只在非空时发送；旧服务端以 400「expected token, dateKey, refreshAt and end only」拒收时，本次会话去掉 `alertAt` 重发，只丢提醒、不丢刷新。App Group 小账本按 occurrence 记录上次被接受的摘要，内容不变不重复上传；活动结束或 occurrence 消失时尽力 DELETE。
+- 服务端 `la_activity_tokens` 以 Fernet 保存令牌，`la_token_updates` 每个时间点一条 update、`end` 一条 end。`token-updates` 循环同一活动只发最新到期的一条，过期不发；`alert=1` 的 update 附带与 start 相同的 `alert`（「课程提醒 / 即将上课」），被仍在有效期内的更新刷新取代时提醒转到取代它的那一条；410 / `BadDeviceToken` / `DeviceTokenNotForTopic` 删除令牌并取消后续；408/429/5xx/结果不明在有效期内退避重试（update 幂等，可以重发）。
+- 拿不到令牌时只靠 App 前台/后台本地更新，令牌活动的本地更新把 `staleDate` 设为下一个刷新时刻。旧服务端对带 `pushMode` 的计划回 400、对新端点（含 `remote-resume`）回 404：客户端本次会话回落频道模式，设置页提示「服务端尚不支持共享课表的实时刷新，暂时只提醒共享课表的课」。只认识 `pushMode`、不认识按时间 item 的服务端会以 400「invalid occurrence」拒收，客户端同样回落。部署顺序仍是先服务端后客户端。
 
 ## 调度与存储
 
 `live_activity_timeline.py` 保存纯验证/时间线；`live_activity_v2.py` 保存 SQLite 仓储、版本频道、生命周期与独立工作循环。旧 `live_activity.py` 仅提供旧表审计/短期排空与配置接入，不产生新 v1 任务。
 
-显式可重复迁移新增 `la_v2_migrations`、`la_v2_devices`、`la_schedule_versions`、`la_channels`、`la_start_jobs`、`la_v2_broadcasts`，迁移版本 3 新增令牌模式的 `la_activity_tokens`、`la_token_updates`，保留旧表。旧客户端接口返回 426；认证撤销仍保留。既有日期频道广播排空 3 天，不再创建旧频道。旧已提交活动在最多 8 小时排空前阻止迁移设备的本地交接完成。
+显式可重复迁移新增 `la_v2_migrations`、`la_v2_devices`、`la_schedule_versions`、`la_channels`、`la_start_jobs`、`la_v2_broadcasts`，迁移版本 3 新增令牌模式的 `la_activity_tokens`、`la_token_updates`，迁移版本 4 给 `la_token_updates` 加 `alert` 列（旧行为 0），保留旧表。旧客户端接口返回 426；认证撤销仍保留。既有日期频道广播排空 3 天，不再创建旧频道。旧已提交活动在最多 8 小时排空前阻止迁移设备的本地交接完成。
 
-SQLite 短 `BEGIN IMMEDIATE` 事务共同保护计划替换、撤销、交接和提交意图。一个进程共享序列化 DB 连接，网络在写事务外；数据库旁的进程锁禁止第二个 v2 调度器启动。频道维护、物化、start、broadcast 分别运行；APNs device/broadcast 连接按环境加锁，管理连接使用独立锁。本版不宣称多进程或高并发容量。
+SQLite 短 `BEGIN IMMEDIATE` 事务共同保护计划替换、撤销、交接和提交意图。一个进程共享序列化 DB 连接，网络在写事务外；数据库旁的进程锁禁止第二个 v2 调度器启动。频道维护、物化、start、broadcast 分别运行；APNs device/broadcast 各用一条连接、按环境加锁，同一批请求以 HTTP/2 多路复用并发发送；管理连接使用独立锁。本版不宣称多进程或高并发容量。
 
 start 的提交意图在网络前落盘。明确拒绝的 408/429/5xx 在期限内退避；传输或响应不明进入 `submissionUnknown`，不自动重发。重启将遗留 submitting 转为 unknown。计划重传、token 轮换、关闭及交接均不能清除提交历史。APNs 缺少明确 HTTP 状态不视为 200。
 

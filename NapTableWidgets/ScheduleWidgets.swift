@@ -522,12 +522,13 @@ private struct ScheduleLiveActivityPairEntry {
     }
 
     static func own(_ companion: ScheduleLiveActivityAttributes.ContentState.Companion) -> Self {
-        let interval = min(companion.startDate, companion.endDate)...companion.endDate
+        let interval = companion.countdownInterval
+        let inProgress = companion.phase == .inProgress
         return Self(tag: "我", isOwn: true, courseName: companion.courseName,
                     detail: detail(location: companion.location, teacher: companion.teacher, period: companion.periodLabel),
-                    inProgress: true, timer: interval,
+                    inProgress: inProgress, timer: interval,
                     showsHours: interval.upperBound.timeIntervalSince(interval.lowerBound) >= 3600,
-                    progress: companion.endDate > companion.startDate ? interval : nil)
+                    progress: inProgress && companion.endDate > companion.startDate ? companion.startDate...companion.endDate : nil)
     }
 
     private static func detail(location: String, teacher: String, period: String?) -> String {
@@ -976,9 +977,11 @@ private extension ScheduleLiveActivityAttributes.ContentState {
     var phaseTitle: String { phase == .inProgress ? "正在上课" : "即将上课" }
 
     /// 自己也在上课时，标题说两边的关系；否则就是这节课的状态。
+    /// 两边都在上课才说「同时在上课」；有一边在课间或还没开始，就报对方这节课的状态。
     var islandTitle: String {
-        guard companion != nil else { return phaseTitle }
-        return phase == .inProgress ? "同时在上课" : "\(normalizedSourceLabel ?? "对方")即将上课"
+        guard let companion else { return phaseTitle }
+        if phase == .inProgress && companion.phase == .inProgress { return "同时在上课" }
+        return "\(normalizedSourceLabel ?? "对方")\(phaseTitle)"
     }
 
     var hasNextCourse: Bool {

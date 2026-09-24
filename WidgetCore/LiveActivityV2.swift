@@ -3,12 +3,19 @@ import Foundation
 
 /// v2 uses explicit Unix seconds throughout; legacy attributes retain their Date codec.
 nonisolated struct LiveActivityPlan: Codable, Equatable {
+    /// Placed either by the school's periods (channel mode, where the final
+    /// period names the channel) or, in token mode, by its own instants: a
+    /// followed share also reminds the reader of their own courses, which run
+    /// on their school's bells rather than the share's. Only one pair is set,
+    /// so the other never reaches the wire.
     struct Item: Codable, Equatable {
         var occurrenceId: String
         var supersedes: [String]
         var dateKey: String
-        var startPeriod: Int
-        var endPeriod: Int
+        var startPeriod: Int? = nil
+        var endPeriod: Int? = nil
+        var start: Double? = nil
+        var end: Double? = nil
     }
     struct BusyInterval: Codable, Equatable { var start: Double; var end: Double }
     var protocolVersion = 2
@@ -53,6 +60,9 @@ nonisolated struct LiveActivityOccurrence: Codable, Equatable {
     var end: Double
     var reminder: Double
     var frames: [Frame]
+    /// Reminders after the start: a course of either table joining a merged
+    /// activity already on screen sounds the same 课程提醒 its own start would.
+    var alerts: [Double]? = nil
 
     func state(at date: Date) -> ScheduleLiveActivityAttributes.ContentState? {
         let instant = date.timeIntervalSince1970
@@ -61,12 +71,17 @@ nonisolated struct LiveActivityOccurrence: Codable, Equatable {
 
     /// When the display changes after the activity first renders: every frame
     /// start but the first (class start, per-period breaks, the reader's own
-    /// course joining or leaving), plus the end of a frame followed by a gap.
-    /// Token mode asks the server for a push at each of these. Instants more
-    /// than a minute before `now` are dropped, as the server refuses them.
+    /// course joining or leaving), plus the end of a frame followed by a gap,
+    /// plus every reminder. Token mode asks the server for a push at each of
+    /// these. Instants more than a minute before `now` are dropped, as the
+    /// server refuses them.
     func refreshAt(after now: Double = -.infinity) -> [Double] {
         let gaps = zip(frames, frames.dropFirst()).filter { $0.until != $1.from }.map { $0.0.until }
-        return Set(frames.dropFirst().map(\.from) + gaps).filter { $0 >= now - 60 && $0 < end }.sorted()
+        return Set(frames.dropFirst().map(\.from) + gaps + (alerts ?? [])).filter { $0 >= now - 60 && $0 < end }.sorted()
+    }
+    /// The refreshes that also sound the reminder, under the same cut-off.
+    func alertAt(after now: Double = -.infinity) -> [Double] {
+        (alerts ?? []).filter { $0 >= now - 60 && $0 < end }.sorted()
     }
 }
 
@@ -77,6 +92,8 @@ nonisolated struct LiveActivityTokenRegistration: Equatable {
     var token: String
     var dateKey: String
     var refreshAt: [Double]
+    /// The refreshes that also sound the course reminder.
+    var alertAt: [Double] = []
     var end: Double
     /// Built from the unfiltered refresh list, so boundaries passing by do not
     /// make an unchanged registration look new.

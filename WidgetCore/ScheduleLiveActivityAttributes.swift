@@ -18,45 +18,64 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         /// When the reader is in class at the same moment, their own course
         /// rides along so the island can show both instead of hiding one.
         public struct Companion: Codable, Hashable {
+            /// `.inProgress` counts down to `endDate`; `.upcoming` is the
+            /// break inside a multi-period course (分节计时) and counts down
+            /// to `startDate`, the next period.
+            public let phase: Phase
             public let courseName: String
             public let teacher: String
             public let location: String
             public let periodLabel: String?
             public let startDate: Date
             public let endDate: Date
+            /// When this state began: the period's start, or the break's.
+            public let updatedAt: Date
 
-            public init(courseName: String, teacher: String = "", location: String = "",
-                        periodLabel: String? = nil, startDate: Date, endDate: Date) {
+            public init(phase: Phase = .inProgress, courseName: String, teacher: String = "", location: String = "",
+                        periodLabel: String? = nil, startDate: Date, endDate: Date, updatedAt: Date? = nil) {
+                self.phase = phase
                 self.courseName = courseName
                 self.teacher = teacher
                 self.location = location
                 self.periodLabel = periodLabel
                 self.startDate = startDate
                 self.endDate = endDate
+                self.updatedAt = updatedAt ?? startDate
+            }
+
+            /// Same rule as the main course's: a valid range even when a
+            /// render lands after the deadline.
+            public var countdownInterval: ClosedRange<Date> {
+                let deadline = phase == .inProgress ? endDate : startDate
+                return min(updatedAt, deadline)...deadline
             }
 
             private enum CodingKeys: String, CodingKey {
-                case courseName, teacher, location, periodLabel, startDate, endDate
+                case phase, courseName, teacher, location, periodLabel, startDate, endDate, updatedAt
             }
 
             public init(from decoder: Decoder) throws {
                 let values = try decoder.container(keyedBy: CodingKeys.self)
+                phase = try values.decodeIfPresent(Phase.self, forKey: .phase) ?? .inProgress
                 courseName = try values.decodeIfPresent(String.self, forKey: .courseName) ?? ""
                 teacher = try values.decodeIfPresent(String.self, forKey: .teacher) ?? ""
                 location = try values.decodeIfPresent(String.self, forKey: .location) ?? ""
                 periodLabel = try values.decodeIfPresent(String.self, forKey: .periodLabel)
                 startDate = Date(timeIntervalSince1970: try values.decode(Double.self, forKey: .startDate))
                 endDate = Date(timeIntervalSince1970: try values.decode(Double.self, forKey: .endDate))
+                updatedAt = try values.decodeIfPresent(Double.self, forKey: .updatedAt).map(Date.init(timeIntervalSince1970:)) ?? startDate
             }
 
             public func encode(to encoder: Encoder) throws {
                 var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(phase, forKey: .phase)
                 try values.encode(courseName, forKey: .courseName)
                 try values.encode(teacher, forKey: .teacher)
                 try values.encode(location, forKey: .location)
                 try values.encodeIfPresent(periodLabel, forKey: .periodLabel)
                 try values.encode(startDate.timeIntervalSince1970, forKey: .startDate)
                 try values.encode(endDate.timeIntervalSince1970, forKey: .endDate)
+                try values.encode(updatedAt.timeIntervalSince1970, forKey: .updatedAt)
             }
         }
 

@@ -116,12 +116,99 @@ struct NativeLiveActivityChecks {
         precondition(shared.state(at: Date(timeIntervalSince1970: nine))?.sourceLabel == "小明")
         precondition(shared.frames.contains { $0.from == nine }, "Frames split where the reader's class starts")
         precondition(merged.occurrences.map(\.item) == LiveActivityTimeline.build(share, scope: "share", now: now, lead: 30, perPeriod: false, defaults: defaults).occurrences.map(\.item),
-                     "The companion is display-only and never changes the plan")
+                     "Without merging (channel fallback) the companion is display-only and never changes the plan")
         precondition(LiveActivityTimeline.build(snapshot, own: mine, scope: "scope", now: now, lead: 30, perPeriod: false, defaults: defaults)
             .occurrences.allSatisfy { $0.frames.allSatisfy { $0.state.companion == nil } }, "The reader's own table never companions itself")
         let encoded = try JSONEncoder().encode(shared.state(at: Date(timeIntervalSince1970: nine)))
         let decoded = try JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.self, from: encoded)
         precondition(decoded.companion?.endDate == Date(timeIntervalSince1970: shared.start + 2 * 3600 + 50 * 60), "Companion round-trips through the wire format")
+        // 分节计时 splits the reader's own course exactly like the shared one.
+        let pairedCourse = NativeScheduleCourse(liveActivitySourceID: "P", name: "有机化学", weeks: "1周", weekList: [1], location: "1教105", startSlot: 1, endSlot: 2)
+        let paired = NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [pairedCourse])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei")
+        let split = LiveActivityTimeline.build(share, own: paired, scope: "share", now: now, lead: 30, perPeriod: true, defaults: defaults).occurrences[0]
+        let inFirst = split.state(at: Date(timeIntervalSince1970: split.start + 10 * 60))?.companion
+        precondition(inFirst?.phase == .inProgress && inFirst?.endDate == Date(timeIntervalSince1970: split.start + 50 * 60),
+                     "Per-period companion counts down to the end of the current period")
+        let breakTime = Date(timeIntervalSince1970: split.start + 55 * 60)
+        let onBreak = split.state(at: breakTime)
+        precondition(onBreak?.phase == .upcoming && onBreak?.companion?.phase == .upcoming, "Both rows are on break together")
+        precondition(onBreak?.companion?.periodLabel == "课间 · 第 2 节" && onBreak?.companion?.countdownInterval.upperBound == Date(timeIntervalSince1970: split.start + 60 * 60),
+                     "The reader's break counts down to their next period")
+        precondition(split.refreshAt(after: now.timeIntervalSince1970).contains(split.start + 50 * 60), "Token mode refreshes at the reader's own bells")
+        let whole = LiveActivityTimeline.build(share, own: paired, scope: "share", now: now, lead: 30, perPeriod: false, defaults: defaults).occurrences[0]
+        let unsplit = whole.state(at: breakTime)?.companion
+        precondition(unsplit?.phase == .inProgress && unsplit?.endDate == Date(timeIntervalSince1970: whole.start + 110 * 60),
+                     "Without 分节计时 the reader's course stays one piece")
+        let breakWire = try JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.self, from: JSONEncoder().encode(onBreak))
+        precondition(breakWire.companion == onBreak?.companion, "Companion phase and origin round-trip")
+        let legacy = try JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.Companion.self,
+            from: Data(#"{"courseName":"旧","startDate":1790000000,"endDate":1790003000}"#.utf8))
+        precondition(legacy.phase == .inProgress && legacy.updatedAt == legacy.startDate, "A companion encoded before phases decodes as in class")
+        // Merged: the reader's own courses are reminded too.
+        let wednesdayCourse = NativeScheduleCourse(liveActivitySourceID: "W", name: "物理化学", weeks: "1周", weekList: [1], location: "2教201", startSlot: 1, endSlot: 1)
+        let both = NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [mineCourse]), NativeScheduleCell(day: 3, bigSlot: 1, courses: [wednesdayCourse])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei")
+        let union = LiveActivityTimeline.build(share, own: both, mergesOwn: true, scope: "union", now: now, lead: 30, perPeriod: false, defaults: defaults)
+        precondition(union.occurrences.count == 3, "Tuesday merged, the reader's Wednesday alone, the share's Friday alone")
+        let tuesday = union.occurrences[0]
+        precondition(tuesday.start == shared.start && tuesday.end == shared.start + 170 * 60 && tuesday.reminder == shared.start - 1800,
+                     "Overlapping courses become one occurrence spanning both")
+        precondition(tuesday.item.startPeriod == nil && tuesday.item.start == tuesday.start && tuesday.item.end == tuesday.end, "Merged items are placed by instant")
+        let itemBody = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tuesday.item)) as! [String: Any]
+        precondition(Set(itemBody.keys) == ["occurrenceId", "supersedes", "dateKey", "start", "end"], "A timed item carries no periods")
+        let periodBody = try JSONSerialization.jsonObject(with: JSONEncoder().encode(shared.item)) as! [String: Any]
+        precondition(Set(periodBody.keys) == ["occurrenceId", "supersedes", "dateKey", "startPeriod", "endPeriod"], "A period item is unchanged")
+        func at(_ occurrence: LiveActivityOccurrence, _ minutes: Double) -> ScheduleLiveActivityAttributes.ContentState? {
+            occurrence.state(at: Date(timeIntervalSince1970: occurrence.start + minutes * 60))
+        }
+        precondition(at(tuesday, -10)?.phase == .upcoming && at(tuesday, -10)?.sourceLabel == "小明", "The share's reminder opens the merged activity")
+        precondition(at(tuesday, 40)?.companion?.phase == .upcoming && at(tuesday, 40)?.companion?.courseName == "有机化学",
+                     "The reader's course counts down beside the share before it starts")
+        precondition(at(tuesday, 70)?.companion?.phase == .inProgress && at(tuesday, 70)?.sourceLabel == "小明")
+        let alone = at(tuesday, 120)
+        precondition(alone?.courseName == "有机化学" && alone?.sourceLabel == nil && alone?.companion == nil && alone?.phase == .inProgress,
+                     "After the share's class the reader's own course leads")
+        precondition(tuesday.refreshAt() == [tuesday.start, tuesday.start + 1800, tuesday.start + 3600, tuesday.start + 110 * 60])
+        precondition(tuesday.alertAt() == [tuesday.start + 1800], "The reader's course reminds 30 minutes ahead inside the running activity")
+        precondition(tuesday.alertAt(after: tuesday.start + 1900).isEmpty, "A reminder already past is not sent")
+        let wednesday = union.occurrences[1]
+        precondition(wednesday.item.dateKey == "2026-09-23" && wednesday.start - wednesday.reminder == 1800, "The reader's own course gets its own reminder")
+        precondition(at(wednesday, -10)?.phase == .upcoming && at(wednesday, -10)?.courseName == "物理化学" && at(wednesday, -10)?.sourceLabel == nil)
+        precondition(wednesday.alertAt().isEmpty && union.occurrences[2].alertAt().isEmpty, "A course alone reminds with its own start")
+        let together = LiveActivityTimeline.build(share, own: NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [wednesdayCourse])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei"), mergesOwn: true, scope: "together", now: now, lead: 30, perPeriod: false, defaults: defaults).occurrences[0]
+        precondition(together.alertAt().isEmpty, "Starting together, the one start reminder covers both")
+        let friday = union.occurrences[2]
+        precondition(friday.item.dateKey == "2026-09-25" && friday.frames.allSatisfy { $0.state.companion == nil })
+        precondition(LiveActivityTimeline.build(share, own: both, mergesOwn: true, scope: "union", now: now, lead: 30, perPeriod: false, defaults: defaults)
+            .occurrences.map(\.item.occurrenceId) == union.occurrences.map(\.item.occurrenceId), "Rebuilding keeps merged identities")
+        let tuesdayOnly = LiveActivityTimeline.build(share, own: mine, mergesOwn: true, scope: "union", now: now, lead: 30, perPeriod: false, defaults: defaults)
+        precondition(tuesdayOnly.occurrences[0].item.occurrenceId == tuesday.item.occurrenceId, "A course leaving keeps the opening course's activity")
+        precondition(LiveActivityTimeline.build(snapshot, own: both, mergesOwn: true, scope: "scope", now: now, lead: 30, perPeriod: false, defaults: defaults)
+            .occurrences.allSatisfy { $0.item.startPeriod != nil }, "The reader's own table never merges with itself")
+        // A chain of overlapping courses longer than one activity hands over at a frame boundary.
+        let longPeriods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "12:00"), NativeSchedulePeriod(number: 2, startTime: "14:00", endTime: "18:00")]
+        let longShare = NativeScheduleSnapshot(scheduleScope: "long", periods: longPeriods,
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [
+                NativeScheduleCourse(liveActivitySourceID: "X", name: "上午", weeks: "1周", weekList: [1], startSlot: 1, endSlot: 1),
+                NativeScheduleCourse(liveActivitySourceID: "Y", name: "下午", weeks: "1周", weekList: [1], startSlot: 2, endSlot: 2)])]),
+            calendar: share.calendar, sourceLabel: "小明", schoolID: "school", timeZone: "Asia/Taipei")
+        let bridge = NativeScheduleSnapshot(scheduleScope: "own", periods: [NativeSchedulePeriod(number: 1, startTime: "11:00", endTime: "15:00")],
+            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [
+                NativeScheduleCourse(liveActivitySourceID: "Z", name: "中午", weeks: "1周", weekList: [1], startSlot: 1, endSlot: 1)])]),
+            calendar: share.calendar, timeZone: "Asia/Taipei")
+        let chained = LiveActivityTimeline.build(longShare, own: bridge, mergesOwn: true, scope: "long", now: now, lead: 30, perPeriod: false, defaults: defaults).occurrences
+        precondition(chained.count == 2 && chained[0].end == chained[1].start && chained[1].reminder == chained[1].start,
+                     "The second activity takes over exactly where the first ends")
+        precondition(chained.allSatisfy { $0.end - $0.reminder <= 8 * 3600 } && chained[1].end == shared.start + 10 * 3600)
+        precondition(chained[0].alertAt() == [shared.start + 150 * 60, shared.start + 330 * 60] && chained[1].alertAt().isEmpty,
+                     "Each course joining the chain reminds as it would alone: the reader's at 10:30, the share's afternoon at 13:30")
+        let legacyOccurrence = try JSONDecoder().decode(LiveActivityOccurrence.self, from: JSONEncoder().encode(wednesday).replacingAlerts())
+        precondition(legacyOccurrence.alerts == nil, "An occurrence stored before reminders decodes")
         let fixtureURL = URL(fileURLWithPath: CommandLine.arguments[1])
         let wire = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as! [String: Any]
         for event in ["start", "update", "end"] {
@@ -207,8 +294,10 @@ struct NativeLiveActivityChecks {
         reserved.deliverPushToken(Data([0xab, 0xcd, 0x01])); await settle()
         var registrations = follower.tokenRegistrations().registrations
         precondition(announcements == 2 && registrations.count == 1 && registrations[0].token == "abcd01" && registrations[0].dateKey == "2026-09-22")
-        precondition(registrations[0].refreshAt == [opening.start, opening.start + 3600] && registrations[0].end == opening.end,
-                     "Refresh at class start and where the reader's own class joins")
+        precondition(follower.mergesOwnCourses && opening.end == opening.start + 170 * 60, "Following a share merges the reader's own courses")
+        precondition(registrations[0].refreshAt == [opening.start, opening.start + 1800, opening.start + 3600, opening.start + 110 * 60] && registrations[0].end == opening.end,
+                     "Refresh at class start, where the reader's class counts down, joins, and takes over")
+        precondition(registrations[0].alertAt == [opening.start + 1800], "The registration carries the reader's reminder")
         let reservations = Set(live.map(\.id))
         follower.accept(followed, own: mine); follower.foreground(); await settle()
         precondition(announcements == 2 && Set(live.map(\.id)) == reservations, "An unchanged rebuild announces nothing")
@@ -224,7 +313,7 @@ struct NativeLiveActivityChecks {
         precondition(reserved.content.staleDate == Date(timeIntervalSince1970: opening.start), "A local update goes stale at the next display change, not the end")
         // An older server refused token mode: channel for the rest of the session.
         follower.disableTokenMode(); await settle()
-        precondition(follower.pushMode == "channel" && follower.tokenNotice == "服务端尚不支持共享课表的实时刷新")
+        precondition(follower.pushMode == "channel" && follower.tokenNotice == "服务端尚不支持共享课表的实时刷新，暂时只提醒共享课表的课" && !follower.mergesOwnCourses)
         let fallback = live.filter { $0.id != reserved.id }
         precondition(live.contains { $0.id == reserved.id } && fallback.count == 1 && fallback[0].pushType == .channel("two") && fallback[0].attributes.pushMode == nil,
                      "The rest reserve on the channel; the active one finishes")
@@ -244,5 +333,14 @@ struct NativeLiveActivityChecks {
         return NativeScheduleSnapshot(scheduleScope: scope, periods: periods,
             data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: conflict ? [a, b] : [a]), NativeScheduleCell(day: 5, bigSlot: 1, courses: conflict ? [a, b] : [a])]),
             calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]), sourceLabel: source, schoolID: "school", timeZone: "Asia/Taipei")
+    }
+}
+
+private extension Data {
+    /// The same JSON with `alerts` removed, as stored by an older build.
+    func replacingAlerts() -> Data {
+        var object = try! JSONSerialization.jsonObject(with: self) as! [String: Any]
+        object["alerts"] = nil
+        return try! JSONSerialization.data(withJSONObject: object)
     }
 }

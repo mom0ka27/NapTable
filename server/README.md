@@ -70,6 +70,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 1. 在页面输入启动服务时设置的 `NAPTABLE_ADMIN_TOKEN`。
 2. 在「学校配置」点击「新增学校」即可创建并保存，随后维护该校共用的节次时间；「删除学校」会同时删除学期配置，已有分享快照保留。
 3. 新增学期，只填写第一周周一、总周数，并将正在使用的学期设为当前学期。
+   已添加学校的 ID 可在「学校信息与节次」中修改，单独点击「更新 ID」确认；服务端会同步迁移学期、使用统计、分享关联和旧通知设备。已有分享的课程与时间快照不变；v2 已提交的通知与旧频道保持原标识直至自然排空，客户端需同步新学校 ID 后获取新的频道映射。
 4. 在「统一调休」维护所有学校共用的放假、补班日期；「导入国务院安排」可直接拉取当年的官方放假安排，补班日需要自己选定上哪天的课。
 5. 在「APNs 推送」保存凭据，服务端会按客户端签发的作息映射自动维护版本和最终节次频道。
 6. 在「使用统计」查看近 30 天各学校的使用设备数，并选择学校查看系统版本、设备型号分布。基础统计独立于实时通知注册，只有同意基础隐私协议的新版客户端才会上报。
@@ -99,7 +100,7 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
 
-关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量上限：逐设备推送（start 与令牌 update）每环境共用一条连接串行发送，吞吐约为 1 / 往返时延；公共广播走独立连接，不会被逐设备推送挡住；令牌模式推送量约为关心用户数 × 每天 12 条，集中在上下课时刻。几百人以内延迟可忽略，上千人同一时刻需要连接池或提前发送。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
+关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间；其中需要响「课程提醒」的时刻另列在 `alertAt`），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
 ## 分享课表
 

@@ -67,6 +67,8 @@ final class LiveActivityPushService: ObservableObject {
     private var cachedSchool: String?
     private var mappingFetchedAt = Date.distantPast
     private var serverHistory: Set<String> = []
+    /// The server refused `alertAt`: refresh without reminders for this session.
+    private var alertsUnsupported = false
     private var controller: NativeLiveActivityController { owner }
     private var group: UserDefaults { UserDefaults(suiteName: NextWidgetConfiguration.appGroup) ?? defaults }
     var deviceID: String? { defaults.string(forKey: Self.deviceKey) }
@@ -302,7 +304,9 @@ final class LiveActivityPushService: ObservableObject {
         defaults.set(try JSONEncoder().encode(plan), forKey: Self.planKey)
         let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as! [String: Any]
         let (code, response) = try await send("/devices/\(device)/plan", method: "PUT", body: body)
-        if plan.pushMode != nil, Self.refusesTokenMode(status: code, error: response["error"] as? String) { controller.disableTokenMode(); return }
+        if plan.pushMode != nil, Self.refusesTokenMode(status: code, error: response["error"] as? String) || Self.refusesTimedItems(status: code, error: response["error"] as? String) {
+            controller.disableTokenMode(); return
+        }
         guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
         guard current(captured, scope: scope) else { return }
         status = token == nil ? .waitingForToken : .ready(pending: response["pendingCount"] as? Int ?? 0, nextFireAt: nil)
@@ -310,6 +314,15 @@ final class LiveActivityPushService: ObservableObject {
     /// An older server answers token mode with its strict-plan 400 or an unknown-route 404.
     static func refusesTokenMode(status: Int, error: String?) -> Bool {
         status == 404 || (status == 400 && error?.hasPrefix("expected complete v2 plan") == true)
+    }
+    /// A server that knows token mode but not items placed by instant (the
+    /// reader's own courses) refuses them as a malformed occurrence.
+    static func refusesTimedItems(status: Int, error: String?) -> Bool {
+        status == 400 && error?.hasPrefix("invalid occurrence") == true
+    }
+    /// A server predating `alertAt` refuses any key beyond the four it knows.
+    static func refusesAlerts(status: Int, error: String?) -> Bool {
+        status == 400 && error?.hasPrefix("expected token, dateKey, refreshAt and end only") == true
     }
     /// Token mode: PUT each activity whose token or refresh times changed since
     /// the last accepted upload, DELETE the ones that are gone. A failure retries
@@ -322,8 +335,15 @@ final class LiveActivityPushService: ObservableObject {
             for registration in registrations {
                 let digest = SHA256.hash(data: Data(registration.signature.utf8)).map { String(format: "%02x", $0) }.joined()
                 guard uploaded[registration.occurrenceId] != digest else { continue }
-                let (code, response) = try await send("/devices/\(device)/activities/\(registration.occurrenceId)", method: "PUT", body: [
-                    "token": registration.token, "dateKey": registration.dateKey, "refreshAt": registration.refreshAt, "end": registration.end])
+                var body: [String: Any] = ["token": registration.token, "dateKey": registration.dateKey, "refreshAt": registration.refreshAt, "end": registration.end]
+                if !alertsUnsupported, !registration.alertAt.isEmpty { body["alertAt"] = registration.alertAt }
+                var (code, response) = try await send("/devices/\(device)/activities/\(registration.occurrenceId)", method: "PUT", body: body)
+                if body["alertAt"] != nil, Self.refusesAlerts(status: code, error: response["error"] as? String) {
+                    // Still worth refreshing: only the extra reminder is lost.
+                    alertsUnsupported = true
+                    body["alertAt"] = nil
+                    (code, response) = try await send("/devices/\(device)/activities/\(registration.occurrenceId)", method: "PUT", body: body)
+                }
                 if Self.refusesTokenMode(status: code, error: response["error"] as? String) { controller.disableTokenMode(); return }
                 guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
                 uploaded[registration.occurrenceId] = digest

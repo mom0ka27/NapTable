@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS la_token_updates (
  device TEXT NOT NULL, occurrence TEXT NOT NULL, fire_at REAL NOT NULL,
  event TEXT NOT NULL, expires_at REAL NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
  attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '',
+ alert INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(device, occurrence, fire_at)
 );
 CREATE INDEX IF NOT EXISTS la_token_due ON la_token_updates(state, fire_at, next_attempt);
@@ -108,6 +109,10 @@ class Service:
             self.db.executescript(SCHEMA)
             self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(2,?)", (self.now(),))
             self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(3,?)", (self.now(),))
+            # A refresh may also sound the course reminder (a course joining a merged activity).
+            if 'alert' not in {row[1] for row in self.db.execute("PRAGMA table_info(la_token_updates)")}:
+                self.db.execute("ALTER TABLE la_token_updates ADD COLUMN alert INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("INSERT OR IGNORE INTO la_v2_migrations VALUES(4,?)", (self.now(),))
             self.db.execute("UPDATE la_plan SET state='cancelled',detail='protocol v2 migration' WHERE state='pending'")
             self.db.execute("UPDATE la_devices SET enabled=0,start_token=''")
             self.db.execute("DELETE FROM la_activities")
@@ -281,7 +286,7 @@ class Service:
                 "attributes": {"semester": "", "week": 0, "dateKey": event['dateKey'], "protocolVersion": 2,
                     "scheduleScope": plan['scheduleScope'], "occurrenceId": event['occurrenceId'], "scheduleVersion": plan['scheduleVersion'],
                     "reservationStart": event['start'] - 978307200, "reservationEnd": event['end'] - 978307200, "reminderDate": event['fireAt'] - 978307200},
-                "content-state": public_state(event['dateKey'], event['startPeriod'], 'upcoming', event['fireAt']),
+                "content-state": public_state(event['dateKey'], event.get('startPeriod'), 'upcoming', event['fireAt']),
                 "stale-date": event['end'], "alert": {"title": "课程提醒", "body": "即将上课"}}}
             if tokens:
                 payload['aps']['input-push-token'] = 1
@@ -343,6 +348,7 @@ class Service:
         activity = validate_activity(value, now)
         sealed = self.vault.seal(activity['token'])
         stamps = activity['refreshAt'] + [activity['end']]
+        alerts = set(activity['alertAt'])
         with self.transaction() as db:
             if db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (device,)).fetchone()['revoked']:
                 raise ProtocolError("device revoked", 409)
@@ -351,8 +357,8 @@ class Service:
             db.execute("DELETE FROM la_token_updates WHERE device=? AND occurrence=? AND state NOT IN ('sent','sending')", (device, occurrence))
             for index, stamp in enumerate(stamps):
                 last = index == len(stamps) - 1
-                db.execute("INSERT OR IGNORE INTO la_token_updates(device,occurrence,fire_at,event,expires_at) VALUES(?,?,?,?,?)",
-                           (device, occurrence, stamp, 'end' if last else 'update', stamp + 60 if last else stamps[index + 1]))
+                db.execute("INSERT OR IGNORE INTO la_token_updates(device,occurrence,fire_at,event,expires_at,alert) VALUES(?,?,?,?,?,?)",
+                           (device, occurrence, stamp, 'end' if last else 'update', stamp + 60 if last else stamps[index + 1], int(stamp in alerts)))
             pending = db.execute("SELECT COUNT(*) FROM la_token_updates WHERE device=? AND occurrence=? AND state='pending'", (device, occurrence)).fetchone()[0]
         return {"occurrenceId": occurrence, "pending": pending}
 
@@ -445,12 +451,27 @@ class Service:
         for row in rows:
             self.owner._dispatch_broadcast(dict(row), int(self.now()))
 
+    def _push_all(self, items):
+        """Send `(environment, notification)` pairs, one concurrent batch per
+        environment, and return the results in the order given."""
+        results = [None] * len(items)
+        for environment in sorted({environment for environment, _ in items}):
+            positions = [k for k, (env, _) in enumerate(items) if env == environment]
+            try:
+                batch = self.client.push_many([items[k][1] for k in positions], environment=environment)
+            except Exception:
+                batch = [{"ok": False, "status": 0, "certainty": "unknown", "reason": "transport failure"}] * len(positions)
+            for k, result in zip(positions, batch):
+                results[k] = result
+        return results
+
     def dispatch_starts(self):
         if not self.client:
             return
         now = self.now()
         with self.lock:
             candidates = self.db.execute("SELECT device,occurrence FROM la_start_jobs WHERE state='pending' AND fire_at<=? AND next_attempt<=? ORDER BY fire_at LIMIT 100", (now, now)).fetchall()
+        claimed = []
         for candidate in candidates:
             with self.transaction() as db:
                 row = db.execute("SELECT j.*,d.token,d.environment,d.bundle,d.mode,d.revoked,c.channel,c.state AS channel_state FROM la_start_jobs j JOIN la_v2_devices d ON j.device=d.id LEFT JOIN la_channels c ON j.channel_key=c.logical_key WHERE j.device=? AND j.occurrence=? AND j.state='pending'", tuple(candidate)).fetchone()
@@ -474,11 +495,11 @@ class Service:
             if row['channel_key']:
                 payload['aps']['input-push-channel'] = row['channel']
                 payload['aps']['attributes']['broadcastChannel'] = row['channel']
-            try:
-                # APNs keeps it for a phone that is offline at the reminder, until the course ends.
-                result = self.client.push(token, payload, environment=row['environment'], expiration=int(row['expires_at']), topic=row['bundle'] + '.push-type.liveactivity')
-            except Exception:
-                result = {"ok": False, "status": 0, "certainty": "unknown", "reason": "transport failure"}
+            # APNs keeps it for a phone that is offline at the reminder, until the course ends.
+            claimed.append((row, {"device_token": token, "payload": payload, "expiration": int(row['expires_at']),
+                                  "topic": row['bundle'] + '.push-type.liveactivity'}))
+        # Every intent is on disk before the first byte goes out; the batch then costs one round trip.
+        for (row, _), result in zip(claimed, self._push_all([(row['environment'], item) for row, item in claimed])):
             status = result.get('status', 0)
             state = 'terminal'
             if result.get('ok') and status == 200:
@@ -517,6 +538,7 @@ class Service:
         with self.transaction() as db:
             db.execute("UPDATE la_v2_broadcasts SET state='expired' WHERE state='pending' AND fire_at<?", (now - 60,))
             rows = db.execute("SELECT b.*,c.channel,c.environment,c.bundle,v.definition FROM la_v2_broadcasts b JOIN la_channels c ON b.channel_key=c.logical_key JOIN la_schedule_versions v ON c.bundle=v.bundle AND c.environment=v.environment AND c.school=v.school AND c.schedule=v.schedule AND c.version=v.version WHERE b.state='pending' AND b.fire_at<=? AND b.next_attempt<=? AND c.bundle=? ORDER BY b.fire_at DESC LIMIT 200", (now, now, self.client.bundle_id)).fetchall()
+        claimed = []
         for row in rows:
             today = datetime.fromtimestamp(now, ZoneInfo(json.loads(row['definition'])['timeZone'])).date().isoformat()
             if row['day'] != today:
@@ -529,12 +551,20 @@ class Service:
                     db.execute("UPDATE la_v2_broadcasts SET state='superseded' WHERE channel_key=? AND fire_at=?", (row['channel_key'], row['fire_at']))
                     continue
                 changed = db.execute("UPDATE la_v2_broadcasts SET state='sending' WHERE channel_key=? AND fire_at=? AND state='pending'", (row['channel_key'], row['fire_at'])).rowcount
-            if not changed:
-                continue
+            if changed:
+                claimed.append(row)
+        # A bell touches every channel of every school at once: one batch per environment.
+        results = [None] * len(claimed)
+        for environment in sorted({row['environment'] for row in claimed}):
+            positions = [k for k, row in enumerate(claimed) if row['environment'] == environment]
             try:
-                result = self.client.broadcast(row['channel'], json.loads(row['payload']), environment=row['environment'], expiration=0, topic=row['bundle'])
+                batch = self.client.broadcast_many([{"channel_id": claimed[k]['channel'], "payload": json.loads(claimed[k]['payload']),
+                    "expiration": 0, "topic": claimed[k]['bundle']} for k in positions], environment=environment)
             except Exception:
-                result = {'ok': False}
+                batch = [{'ok': False}] * len(positions)
+            for k, result in zip(positions, batch):
+                results[k] = result
+        for row, result in zip(claimed, results):
             with self.transaction() as db:
                 db.execute("UPDATE la_channels SET error=? WHERE logical_key=?", ('' if result.get('ok') else str(result.get('reason') or 'broadcast failed')[:200], row['channel_key']))
                 if result.get('status') == 410 or result.get('reason') in ('ChannelNotFound', 'BadChannelId', 'BadChannelID'):
@@ -551,11 +581,14 @@ class Service:
             db.execute("UPDATE la_token_updates SET state='expired' WHERE state='pending' AND fire_at<=? AND expires_at<=?", (now, now))
             due = db.execute("SELECT * FROM la_token_updates WHERE state='pending' AND fire_at<=? ORDER BY fire_at LIMIT 200", (now,)).fetchall()
             # Like the broadcasts: only the newest due refresh of an activity is worth sending.
-            latest = {}
+            latest, alerting = {}, set()
             for row in due:
                 activity = (row['device'], row['occurrence'])
                 if activity in latest:
                     db.execute("UPDATE la_token_updates SET state='superseded' WHERE device=? AND occurrence=? AND fire_at=?", (*activity, latest[activity]['fire_at']))
+                    if latest[activity]['alert']:
+                        # A reminder still inside its window is carried by the refresh replacing it.
+                        alerting.add(activity)
                 latest[activity] = row
             claimed = []
             for (device, occurrence), row in latest.items():
@@ -568,18 +601,28 @@ class Service:
                 if owner['bundle'] != self.client.bundle_id:
                     continue
                 db.execute("UPDATE la_token_updates SET state='sending',attempts=attempts+1 WHERE device=? AND occurrence=? AND fire_at=?", (device, occurrence, row['fire_at']))
-                claimed.append((row, owner))
-        for row, owner in claimed:
-            activity = (row['device'], row['occurrence'], row['fire_at'])
+                claimed.append((row, owner, bool(row['alert']) or (device, occurrence) in alerting))
+        items, sendable = [], []
+        for row, owner, alert in claimed:
             stamp = int(row['fire_at'])
             aps = {"timestamp": stamp, "event": row['event'], "content-state": {"broadcastDateKey": owner['day'],
                    "broadcastTimestamp": stamp, "updatedAt": stamp, "startDate": stamp, "endDate": stamp}}
             aps.update({"dismissal-date": stamp} if row['event'] == 'end' else {"stale-date": stamp + 60})
+            if alert and row['event'] == 'update':
+                # The same reminder a start carries: a course joined an activity already on screen.
+                aps['alert'] = {"title": "课程提醒", "body": "即将上课"}
             try:
-                result = self.client.push(self.vault.open(owner['token']), {"aps": aps}, environment=owner['environment'], push_type="liveactivity", priority=10,
-                    expiration=int(row['expires_at']), collapse_id=row['occurrence'][:64], topic=owner['bundle'] + '.push-type.liveactivity')
+                token = self.vault.open(owner['token'])
             except Exception:
-                result = {"ok": False, "status": 0, "certainty": "unknown", "reason": "transport failure"}
+                token = None
+            sendable.append(token is not None)
+            if token is not None:
+                items.append((owner['environment'], {"device_token": token, "payload": {"aps": aps}, "push_type": "liveactivity", "priority": 10,
+                    "expiration": int(row['expires_at']), "collapse_id": row['occurrence'][:64], "topic": owner['bundle'] + '.push-type.liveactivity'}))
+        sent = iter(self._push_all(items))
+        for (row, owner, _), ok in zip(claimed, sendable):
+            activity = (row['device'], row['occurrence'], row['fire_at'])
+            result = next(sent) if ok else {"ok": False, "status": 0, "certainty": "notSent", "reason": "token key unavailable"}
             status, reason = result.get('status', 0), str(result.get('reason') or '')
             with self.transaction() as db:
                 if result.get('ok') and status == 200:

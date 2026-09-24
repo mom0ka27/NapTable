@@ -92,8 +92,16 @@ final class NativeLiveActivityController: ObservableObject {
         guard #available(iOS 18.0, *), currentScheduleMetadata?.sourceLabel != nil, !tokenModeUnsupported else { return "channel" }
         return "token"
     }
+    /// Following a share also reminds the reader of their own courses. Those
+    /// run on their own school's bells, so the server must place them by
+    /// instant: only a token-mode plan can, or iOS 17, which plans nothing.
+    var mergesOwnCourses: Bool {
+        guard currentScheduleMetadata?.sourceLabel != nil else { return false }
+        if #available(iOS 18.0, *) { return pushMode == "token" }
+        return true
+    }
     var tokenNotice: String? {
-        tokenModeUnsupported && currentScheduleMetadata?.sourceLabel != nil ? "服务端尚不支持共享课表的实时刷新" : nil
+        tokenModeUnsupported && currentScheduleMetadata?.sourceLabel != nil ? "服务端尚不支持共享课表的实时刷新，暂时只提醒共享课表的课" : nil
     }
 
     func setEnabled(_ requested: Bool) {
@@ -155,7 +163,7 @@ final class NativeLiveActivityController: ObservableObject {
         task?.cancel()
         guard isEnabled else { status = .disabled; return }
         guard let scope = snapshot.scheduleScope else { status = .unavailable("课表缺少稳定身份，请重新打开课表。"); return }
-        let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, scope: scope, now: now(), lead: leadMinutes, perPeriod: perPeriod, defaults: defaults)
+        let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, mergesOwn: mergesOwnCourses, scope: scope, now: now(), lead: leadMinutes, perPeriod: perPeriod, defaults: defaults)
         conflicts = built.conflicts
         omitted = built.omitted
         let value = LiveActivityDisplaySnapshot(scope: scope, scheduleVersion: mapping?.scheduleVersion ?? "local", occurrences: built.occurrences)
@@ -212,9 +220,11 @@ final class NativeLiveActivityController: ObservableObject {
                   occurrence.end > current, !live.contains(occurrence.item.occurrenceId) else { continue }
             live.insert(occurrence.item.occurrenceId)
             guard let token = activityTokens[activity.id] else { continue }
-            let signature = ([token, occurrence.item.dateKey] + (occurrence.refreshAt() + [occurrence.end]).map { String(format: "%.0f", $0) }).joined(separator: ",")
+            let stamps = { (values: [Double]) in values.map { String(format: "%.0f", $0) } }
+            let signature = ([token, occurrence.item.dateKey] + stamps(occurrence.refreshAt() + [occurrence.end]) + (occurrence.alertAt().isEmpty ? [] : ["!"] + stamps(occurrence.alertAt()))).joined(separator: ",")
+            let refresh = Array(occurrence.refreshAt(after: current).prefix(64))
             registrations.append(.init(occurrenceId: occurrence.item.occurrenceId, token: token, dateKey: occurrence.item.dateKey,
-                                       refreshAt: Array(occurrence.refreshAt(after: current).prefix(64)), end: occurrence.end, signature: signature))
+                                       refreshAt: refresh, alertAt: occurrence.alertAt(after: current).filter(refresh.contains), end: occurrence.end, signature: signature))
         }
         return (registrations, live)
     }
@@ -279,7 +289,7 @@ final class NativeLiveActivityController: ObservableObject {
         return .init(semester: currentScheduleMetadata?.data?.currentSemester ?? "", dateKey: occurrence.item.dateKey,
               protocolVersion: 2, scheduleScope: display.scope, occurrenceId: occurrence.item.occurrenceId, scheduleVersion: display.scheduleVersion,
               reservationStart: Date(timeIntervalSince1970: occurrence.start), reservationEnd: Date(timeIntervalSince1970: occurrence.end),
-              broadcastChannel: token ? nil : mapping?.channels[String(occurrence.item.endPeriod)], reminderDate: Date(timeIntervalSince1970: occurrence.reminder),
+              broadcastChannel: token ? nil : occurrence.item.endPeriod.flatMap { mapping?.channels[String($0)] }, reminderDate: Date(timeIntervalSince1970: occurrence.reminder),
               pushMode: token ? "token" : nil)
     }
     private func reconcile(generation: Int) async {
@@ -360,7 +370,7 @@ final class NativeLiveActivityController: ObservableObject {
             guard !removedThisSession.contains(id), !submitted.contains(id),
                   occurrence.item.supersedes.allSatisfy({ !submitted.contains($0) }) else { continue }
             guard current < mapping.createBefore, occurrence.reminder < mapping.createBefore,
-                  occurrence.end <= mapping.broadcastUntil, let channel = mapping.channels[String(occurrence.item.endPeriod)] else {
+                  occurrence.end <= mapping.broadcastUntil, let channel = occurrence.item.endPeriod.flatMap({ mapping.channels[String($0)] }) else {
                 failure = "部分频道缺失或映射已过期，联网后补充。"
                 continue
             }
