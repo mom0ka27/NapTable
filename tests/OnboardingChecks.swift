@@ -36,6 +36,10 @@ struct OnboardingChecks {
         precondition(Set(payload.keys) == Set(["schoolID", "systemName", "systemVersion", "deviceModel", "appVersion", "consentVersion"]))
         precondition(payload["schoolID"] as? String == "nju")
         precondition(!consent.liveAccepted, "Usage statistics work without notification consent")
+        let midnight = Date(timeIntervalSince1970: 1_790_870_400) // 2026-10-02 00:00 UTC+8
+        precondition(UsageReportingService.usageDay(midnight) == UsageReportingService.usageDay(midnight.addingTimeInterval(86_399)))
+        precondition(UsageReportingService.usageDay(midnight.addingTimeInterval(-1)) + 1 == UsageReportingService.usageDay(midnight),
+                     "Usage days roll over at 00:00 UTC+8, not UTC")
         offline = true
         await reporter.report(schoolID: nil, baseURL: base)
         offline = false

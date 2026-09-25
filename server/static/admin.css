@@ -235,7 +235,36 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
 .candidate-chip { padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--green); font-size: 11px; cursor: pointer; }
 .candidate-chip:hover { border-color: #8aae76; }
 .inline-empty { padding: 30px 20px; border: 1px dashed #dce5d4; border-radius: 10px; background: #fafcf7; text-align: center; font-size: 12px; color: var(--muted); }
-.stats-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stats-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.trend-panel { position: relative; margin-top: 20px; padding: 24px; }
+.trend-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); }
+.trend-legend span { display: flex; align-items: center; gap: 6px; }
+.trend-legend i, .trend-tooltip i { width: 9px; height: 9px; border-radius: 2px; }
+.is-new { background: #8fb04a; }
+.is-returning { background: #2f7a4a; }
+.trend-chart { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; margin-top: 24px; }
+.trend-axis { display: flex; flex-direction: column; justify-content: space-between; height: 180px; color: var(--subtle); font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
+.trend-bars { display: flex; align-items: flex-end; gap: 2px; height: 180px; border-bottom: 1px solid var(--line-strong); background: linear-gradient(var(--line) 1px, transparent 1px) top / 100% 50%; }
+.trend-bar { position: relative; flex: 1 1 0; height: 100%; min-width: 0; padding: 0 1px; display: flex; align-items: flex-end; border: 0; background: none; cursor: default; }
+.trend-bar:hover, .trend-bar:focus-visible { background: #f3f6ef; }
+.trend-stack { display: flex; flex-direction: column; gap: 2px; width: 100%; max-width: 22px; margin-inline: auto; border-radius: 4px 4px 0 0; overflow: hidden; }
+.trend-stack i { display: block; min-height: 2px; }
+.trend-bar small { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 6px; color: var(--subtle); font-size: 10px; white-space: nowrap; }
+.trend-bar.is-today small { color: var(--ink); font-weight: 600; }
+.trend-tooltip { position: absolute; top: 70px; transform: translateX(-50%); z-index: 2; min-width: 120px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 6px 20px #263d2814; pointer-events: none; font-size: 11px; }
+.trend-tooltip > span { display: block; color: var(--muted); margin-bottom: 6px; }
+.trend-tooltip div { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.trend-tooltip i { width: 10px; height: 2px; }
+.trend-tooltip strong { font-variant-numeric: tabular-nums; font-weight: 600; }
+.trend-tooltip em { font-style: normal; color: var(--muted); }
+.trend-table { margin-top: 34px; font-size: 11px; color: var(--muted); }
+.trend-table summary { cursor: pointer; width: fit-content; }
+.table-scroll { overflow-x: auto; max-height: 260px; overflow-y: auto; margin-top: 12px; }
+.trend-table table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.trend-table th, .trend-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+.trend-table th:first-child, .trend-table td:first-child { text-align: left; }
+.trend-table th { font-weight: 500; color: var(--subtle); }
+.trend-table td { color: var(--ink); }
 .stats-overview { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(260px, 1fr); gap: 20px; align-items: start; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
 .card-heading h3 { font-size: 14px; font-weight: 600; }
@@ -243,9 +272,10 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
 .soft-label { padding: 5px 9px; border-radius: 6px; background: #f4f7ef; color: #7d916f; font-size: 10px; white-space: nowrap; }
 .stats-panel { padding: 0; overflow: hidden; }
 .stats-panel .card-heading { padding: 24px; }
-.stats-head, .stats-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 76px; align-items: center; gap: 16px; }
+.stats-head, .stats-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 56px 76px; align-items: center; gap: 16px; }
 .stats-head { padding: 12px 24px; border-block: 1px solid var(--line); background: #f9fbf6; color: var(--muted); font-size: 10px; }
-.stats-head span:last-child { text-align: right; }
+.stats-head span:nth-last-child(-n+2) { text-align: right; }
+.stats-row > .today-cell { text-align: right; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stats-row { min-height: 76px; padding: 17px 24px; border-bottom: 1px solid var(--line); }
 .stats-row strong { font-size: 12px; font-weight: 500; }
 .stats-row code { color: var(--muted); font-size: 10px; }
@@ -266,7 +296,7 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
 .distribution-toolbar { margin-top: 6px; }
 .filter-label { flex-direction: row; align-items: center; gap: 12px; white-space: nowrap; }
 .filter-label select { width: 170px; font-size: 11px; }
-.distribution-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.distribution-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .distribution-panel { min-height: 250px; }
 .distribution-list { margin-top: 27px; display: flex; flex-direction: column; gap: 20px; max-height: 420px; overflow-y: auto; scrollbar-width: thin; }
 .distribution-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: baseline; }
@@ -316,7 +346,7 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
   .connection-pill { margin-left: auto; }
   .management-panel { grid-template-columns: 205px minmax(0, 1fr); }
   .stats-overview { grid-template-columns: minmax(0, 1.5fr) minmax(235px, 1fr); }
-  .stats-head, .stats-row { gap: 10px; grid-template-columns: minmax(0, 1fr) 70px 62px; padding-inline: 20px; }
+  .stats-head, .stats-row { gap: 10px; grid-template-columns: minmax(0, 1fr) 70px 44px 62px; padding-inline: 20px; }
   .adjustment-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .adjustment-row.is-off .adjustment-note { grid-column: 1 / -1; }
   .adjustment-row .remove-button { grid-column: 1 / -1; justify-self: end; }
@@ -326,7 +356,7 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
   .school-browser { border-right: 0; border-bottom: 1px solid var(--line); }
   .school-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stats-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stats-metrics .metric-icon { display: none; }
   .stats-overview { grid-template-columns: 1fr; }
   .school-share-panel { display: grid; grid-template-columns: 1fr 160px; column-gap: 22px; }
@@ -399,9 +429,6 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
   .metric-icon svg { width: 14px; height: 14px; }
   .metric-status > strong { font-size: 21px; }
   .stats-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stats-metrics .metric-card:first-child { grid-column: 1 / -1; min-height: 135px; }
-  .stats-metrics .metric-card:first-child .metric-icon { display: grid; width: 42px; height: 42px; right: 20px; top: 25px; }
-  .stats-metrics .metric-card:first-child .metric-icon svg { width: 21px; height: 21px; }
   .school-list { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
   label.wide, .wide { grid-column: auto; }
@@ -416,7 +443,9 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
   .adjustment-row.is-off .adjustment-note { grid-column: auto; }
   .section-toolbar p { max-width: 190px; }
   .button { padding-inline: 11px; font-size: 11px; }
-  .stats-head, .stats-row { grid-template-columns: minmax(0, 1fr) 55px; }
+  .stats-head, .stats-row { grid-template-columns: minmax(0, 1fr) 40px 55px; }
+  .trend-legend { flex-direction: column; gap: 4px; }
+  .trend-panel { padding: 20px; }
   .stats-head > span:nth-child(2), .stats-row > code { display: none; }
   .school-share-panel { grid-template-columns: minmax(0, 1fr) 125px; gap: 13px; padding: 20px; }
   .school-share-chart { width: 125px; height: 125px; padding: 14px; }

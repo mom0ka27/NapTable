@@ -18,6 +18,8 @@ except ImportError:  # pragma: no cover - depends on how the server was started
     import holidays, live_activity
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
+# Usage days follow the school clock, not UTC: "today" starts at 00:00 UTC+8.
+USAGE_ZONE = timezone(timedelta(hours=8))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_devices (
@@ -27,6 +29,9 @@ CREATE TABLE IF NOT EXISTS usage_devices (
  consent_version INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS usage_devices_last_seen ON usage_devices(last_seen);
+CREATE TABLE IF NOT EXISTS usage_daily (
+ day TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, new INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS configuration_migrations (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS apns_config (
  id INTEGER PRIMARY KEY CHECK(id=1), key_path TEXT NOT NULL DEFAULT '',
@@ -64,6 +69,7 @@ CREATE TABLE IF NOT EXISTS shares (
 """
 
 def now(): return datetime.now(timezone.utc).isoformat()
+def _usage_day(stamp): return stamp.astimezone(USAGE_ZONE).date().isoformat()
 
 # The console keeps its session in a cookie so a page reload does not ask for
 # the token again. It is bound to the admin token in force when it was issued,
@@ -514,12 +520,20 @@ class Store:
         if not isinstance(school, str) or len(school) > 80: raise ValueError("invalid schoolID")
         stamp = datetime.now(timezone.utc)
         with self.lock, self.db:
-            existing = self.db.execute("SELECT secret_hash FROM usage_devices WHERE installation_id=?", (installation_id,)).fetchone()
+            existing = self.db.execute("SELECT secret_hash,last_seen FROM usage_devices WHERE installation_id=?", (installation_id,)).fetchone()
             if existing and not secrets.compare_digest(existing[0], self._digest(secret)):
                 return False
             if school and not self.db.execute("SELECT 1 FROM school_configs WHERE id=?", (school,)).fetchone():
                 raise ValueError("unknown schoolID")
-            self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", ((stamp - timedelta(days=90)).isoformat(),))
+            cutoff = (stamp - timedelta(days=90)).isoformat()
+            self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", (cutoff,))
+            self.db.execute("DELETE FROM usage_daily WHERE day<?", (_usage_day(stamp - timedelta(days=90)),))
+            # Only counts leave this block: the daily table never names a device.
+            fresh = existing is None or existing["last_seen"] < cutoff
+            today = _usage_day(stamp)
+            if fresh or _usage_day(datetime.fromisoformat(existing["last_seen"])) < today:
+                self.db.execute("INSERT INTO usage_daily VALUES (?,1,?) ON CONFLICT(day) DO UPDATE SET "
+                                "active=active+1,new=new+excluded.new", (today, int(fresh)))
             self.db.execute(
                 "INSERT INTO usage_devices VALUES (?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(installation_id) DO UPDATE SET school_id=excluded.school_id,system_name=excluded.system_name,"
@@ -530,27 +544,51 @@ class Store:
 
     def usage_stats(self):
         stamp = datetime.now(timezone.utc)
+        today = stamp.astimezone(USAGE_ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.lock, self.db:
             self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", ((stamp - timedelta(days=90)).isoformat(),))
-            devices = self.db.execute("SELECT school_id,system_name,system_version,device_model FROM usage_devices WHERE last_seen>=?",
-                                      ((stamp - timedelta(days=30)).isoformat(),)).fetchall()
+            devices = self.db.execute("SELECT school_id,system_name,system_version,device_model,app_version,first_seen,last_seen "
+                                      "FROM usage_devices WHERE last_seen>=?", ((stamp - timedelta(days=30)).isoformat(),)).fetchall()
+            history = {row["day"]: row for row in self.db.execute("SELECT * FROM usage_daily WHERE day>=?",
+                                                                    (_usage_day(today - timedelta(days=29)),))}
             rows = self.db.execute("SELECT id,name FROM school_configs ORDER BY name").fetchall()
+        labels = {"systemVersions": lambda item: item["system_name"] + " " + item["system_version"],
+                  "deviceModels": lambda item: item["device_model"], "appVersions": lambda item: item["app_version"]}
         def distribution(items, key):
             counts = {}
             for item in items:
-                label = (item["system_name"] + " " + item["system_version"]) if key == "systemVersions" else item["device_model"]
+                label = labels[key](item)
                 counts[label] = counts.get(label, 0) + 1
             return [{"name": name, "users": count} for name, count in sorted(counts.items(), key=lambda entry: (-entry[1], entry[0]))]
+        def seen_since(items, start, column="last_seen"):
+            # Stored stamps are UTC ISO strings, so the bound must be too.
+            bound = start.astimezone(timezone.utc).isoformat()
+            return sum(item[column] >= bound for item in items)
         schools = []
         for row in rows:
             matching = [device for device in devices if device["school_id"] == row["id"]]
             schools.append({"id": row["id"], "name": row["name"], "users": len(matching),
+                            "todayUsers": seen_since(matching, today),
                             "systemVersions": distribution(matching, "systemVersions"),
-                            "deviceModels": distribution(matching, "deviceModels")})
+                            "deviceModels": distribution(matching, "deviceModels"),
+                            "appVersions": distribution(matching, "appVersions")})
+        # Today comes from the live rows so it is right even before the daily
+        # table has seen a report; earlier days only survive as counts.
+        daily = []
+        for offset in range(29, -1, -1):
+            day = _usage_day(today - timedelta(days=offset))
+            saved = history.get(day)
+            daily.append({"date": day, "users": saved["active"] if saved else 0, "newUsers": saved["new"] if saved else 0})
+        daily[-1] = {"date": _usage_day(today), "users": seen_since(devices, today),
+                     "newUsers": seen_since(devices, today, "first_seen")}
         known = {row["id"] for row in rows}
         return {"totalUsers": len(devices), "unassignedUsers": sum(device["school_id"] not in known for device in devices),
-                "windowDays": 30, "schools": schools, "systemVersions": distribution(devices, "systemVersions"),
-                "deviceModels": distribution(devices, "deviceModels"), "updatedAt": stamp.isoformat()}
+                "todayUsers": daily[-1]["users"], "newUsersToday": daily[-1]["newUsers"],
+                "yesterdayUsers": daily[-2]["users"], "weeklyUsers": seen_since(devices, today - timedelta(days=6)),
+                "daily": daily, "windowDays": 30, "timeZone": "UTC+8", "schools": schools,
+                "systemVersions": distribution(devices, "systemVersions"),
+                "deviceModels": distribution(devices, "deviceModels"),
+                "appVersions": distribution(devices, "appVersions"), "updatedAt": stamp.isoformat()}
     def school_name(self, school_id):
         """The catalogue name, never the client's copy of it: a reader should
         see 南京大学 even when the sharer's app had not loaded the catalogue."""

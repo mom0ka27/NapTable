@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>NapTable 管理台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/admin.css?v=20260923-ui2">
+  <link rel="stylesheet" href="/static/admin.css?v=20260925-usage">
 </head>
 <body>
   <div class="app-shell">
@@ -203,16 +203,22 @@
 
       <section id="statsView" class="content-view" hidden>
         <div class="metric-strip stats-metrics" aria-label="使用统计">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span><span>活跃使用设备</span><strong id="totalUserCount">0</strong><small>近 30 天 · 按安装去重</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>今日打开</span><strong id="todayUserCount">0</strong><small id="todayUserDetail">UTC+8 零点起 · 按安装去重</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><span>近 7 天活跃</span><strong id="weeklyUserCount">0</strong><small>含今天在内的 7 天</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span><span>近 30 天活跃</span><strong id="totalUserCount">0</strong><small id="monthlyUserDetail">按安装去重</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>覆盖学校</span><strong id="activeSchoolCount">0</strong><small>近 30 天有设备使用</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4M12 17h.01"/></svg></span><span>未关联学校</span><strong id="unassignedUserCount">0</strong><small>等待设备关联学校</small></div>
-
         </div>
+        <section class="settings-panel trend-panel">
+          <div class="card-heading"><div><h3>每日打开设备</h3><p>近 30 天每天打开过 App 的设备数，按 UTC+8 自然日</p></div><div class="trend-legend"><span><i class="is-new"></i>新设备</span><span><i class="is-returning"></i>回访设备</span></div></div>
+          <div class="trend-chart"><div class="trend-axis" aria-hidden="true"><span id="trendMax">0</span><span>0</span></div><div id="dailyTrend" class="trend-bars"></div></div>
+          <div id="trendTooltip" class="trend-tooltip" role="status" hidden></div>
+          <details class="trend-table"><summary>查看数据表</summary><div class="table-scroll"><table><thead><tr><th>日期</th><th>打开设备</th><th>新设备</th></tr></thead><tbody id="dailyTable"></tbody></table></div></details>
+        </section>
         <div class="section-toolbar"><div><h2>学校使用概览</h2><p id="statsUpdatedAt">近 30 天的设备使用情况</p></div><button id="refreshStatsButton" class="button secondary" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7L20 14M20 4v7h-7"/></svg>刷新数据</button></div>
         <div class="stats-overview">
           <section class="settings-panel stats-panel">
             <div class="card-heading"><div><h3>各学校使用人数</h3><p>以当前课表关联的学校为准</p></div><span class="soft-label">设备数</span></div>
-            <div class="stats-head"><span>学校</span><span>学校 ID</span><span>使用设备</span></div><div id="statsList" class="stats-list"></div>
+            <div class="stats-head"><span>学校</span><span>学校 ID</span><span>今日</span><span>近 30 天</span></div><div id="statsList" class="stats-list"></div>
             <div class="stats-footnote">切换学校后更新归属；重装 App 可能产生新的安装记录。</div>
           </section>
           <section class="settings-panel school-share-panel">
@@ -225,6 +231,7 @@
         <div class="distribution-grid">
           <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>系统版本</h3><p>设备当前使用的操作系统</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg></span></div><div id="systemVersionStats" class="distribution-list"></div></section>
           <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>设备型号</h3><p>系统提供的硬件型号标识</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span></div><div id="deviceModelStats" class="distribution-list"></div></section>
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>App 版本</h3><p>设备当前安装的 App 版本</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></span></div><div id="appVersionStats" class="distribution-list"></div></section>
         </div>
         <p class="stats-explanation">仅统计已同意基础隐私协议并上报的设备，与实时通知开关无关。<span id="unassignedStats"></span></p>
       </section>
@@ -279,6 +286,6 @@
     </form>
   </dialog>
 
-  <script src="/static/admin.js?v=20260924-school-id"></script>
+  <script src="/static/admin.js?v=20260925-usage"></script>
 </body>
 </html>
