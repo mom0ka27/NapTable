@@ -116,29 +116,38 @@ class Table:
         return self.monday + timedelta(days=7 * self.weeks - 1)
 
 
-def own_table(value):
-    """The device's own timetable as uploaded. Strict: no display field is accepted."""
-    keys = {"scope", "periods", "semesterStartMonday", "weekCount", "adjustments", "courses"}
-    if not isinstance(value, dict) or set(value) - {"schoolID"} != keys:
-        raise ProtocolError("own timetable carries times only: scope, periods, semesterStartMonday, weekCount, adjustments, courses")
-    identifier(value["scope"])
+def own_timetable(value):
+    """The device's own timetable as uploaded: (Table, the fields kept).
+
+    Unknown fields are ignored and never stored, so a newer client adding one
+    does not break an older server, and nothing beyond times is persisted."""
+    if not isinstance(value, dict):
+        raise ProtocolError("own timetable must be an object")
+    kept = {"scope": identifier(value.get("scope"))}
     if value.get("schoolID") is not None:
-        identifier(value["schoolID"])
-    periods = _periods(value["periods"])
-    monday = _day(value["semesterStartMonday"], "invalid semesterStartMonday")
+        kept["schoolID"] = identifier(value["schoolID"])
+    periods = _periods(value.get("periods"))
+    kept["periods"] = [{"start": start, "end": end} for start, end in periods]
+    monday = _day(value.get("semesterStartMonday"), "invalid semesterStartMonday")
     if monday.isoweekday() != 1:
         raise ProtocolError("semesterStartMonday must be a Monday")
-    weeks = value["weekCount"]
+    kept["semesterStartMonday"] = monday.isoformat()
+    weeks = value.get("weekCount")
     if type(weeks) is not int or not 1 <= weeks <= 60:
         raise ProtocolError("weekCount must be 1–60")
+    kept["weekCount"] = weeks
+    raw = value.get("adjustments", [])
+    adjustments = _adjustments(raw)
+    kept["adjustments"] = [{key: item[key] for key in ("date", "kind", "source") if key in item and (key != "source" or item["kind"] == "swap")}
+                           for item in raw]
     courses, seen = [], set()
-    if not isinstance(value["courses"], list) or len(value["courses"]) > 1000:
+    if not isinstance(value.get("courses"), list) or len(value["courses"]) > 1000:
         raise ProtocolError("expected at most 1000 courses")
     for course in value["courses"]:
-        if not isinstance(course, dict) or set(course) != {"id", "day", "first", "last", "weeks"}:
-            raise ProtocolError("a course carries id, day, first, last and weeks only")
-        key = identifier(course["id"])
-        day, first, last, listed = course["day"], course["first"], course["last"], course["weeks"]
+        if not isinstance(course, dict):
+            raise ProtocolError("invalid course")
+        key = identifier(course.get("id"))
+        day, first, last, listed = course.get("day"), course.get("first"), course.get("last"), course.get("weeks", [])
         if type(day) is not int or not 1 <= day <= 7:
             raise ProtocolError("course day must be 1–7")
         if type(first) is not int or type(last) is not int or not 1 <= first <= last <= len(periods):
@@ -146,10 +155,16 @@ def own_table(value):
         if not isinstance(listed, list) or len(listed) > 60 or any(type(week) is not int or not 1 <= week <= 60 for week in listed):
             raise ProtocolError("invalid course weeks")
         if (key, day, first, last) in seen:
-            raise ProtocolError("duplicate course")
+            continue
         seen.add((key, day, first, last))
-        courses.append({"id": key, "day": day, "first": first, "last": last, "weeks": set(listed)})
-    return Table(periods, monday, weeks, _adjustments(value["adjustments"]), courses)
+        courses.append({"id": key, "day": day, "first": first, "last": last, "weeks": sorted(set(listed))})
+    kept["courses"] = courses
+    table = Table(periods, monday, weeks, adjustments, [dict(course, weeks=set(course["weeks"])) for course in courses])
+    return table, kept
+
+
+def own_table(value):
+    return own_timetable(value)[0]
 
 
 def _weeks(value):
@@ -267,7 +282,7 @@ def _class_frames(name, table, day, course, first, last, start, end, per_period)
     return frames
 
 
-def _lead_pieces(name, table, day, lead, per_period, conflicts, now, report):
+def _lead_pieces(name, table, day, lead, per_period, conflicts, report):
     """The leading table's courses: consecutive periods of one course form one
     class; overlapping courses need the reader's choice, else the day is skipped."""
     occupants = {}
@@ -301,8 +316,6 @@ def _lead_pieces(name, table, day, lead, per_period, conflicts, now, report):
         start, end = instant(day, table.periods[first - 1][0]), instant(day, table.periods[last - 1][1])
         reminder = max(start - lead * 60, previous)
         previous = end
-        if end <= now:
-            continue
         if end - reminder > EIGHT_HOURS:
             report["omitted"] += 1
             continue
@@ -312,7 +325,7 @@ def _lead_pieces(name, table, day, lead, per_period, conflicts, now, report):
     return pieces
 
 
-def _own_courses(table, day, per_period, now):
+def _own_courses(table, day, per_period):
     """Every own course as its own interval. Forgiving like the client: conflicts
     are all kept (a class beats a break, then the earliest wins)."""
     courses, seen = [], set()
@@ -323,8 +336,6 @@ def _own_courses(table, day, per_period, now):
             continue
         seen.add(key)
         start, end = instant(day, table.periods[first - 1][0]), instant(day, table.periods[last - 1][1])
-        if end <= now:
-            continue
         if per_period and last > first:
             spans = []
             for number, a, b in _bells(table, day, first, last):
@@ -390,7 +401,11 @@ def refresh_at(occurrence):
 
 def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0):
     """The occurrences of one day. `own` leads alone; with `share`, both tables
-    remind and overlapping courses merge into one activity."""
+    remind and overlapping courses merge into one activity.
+
+    Finished classes still take part in grouping, and only activities over by
+    `now` are left out, so an occurrence keeps its id and frames whenever in
+    the day it is computed."""
     settings, conflicts = settings or {}, conflicts or {}
     per_period = bool(settings.get("perPeriod"))
     own_lead = settings.get("leadMinutes", 60)
@@ -418,19 +433,20 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
                 "overlaps": [(piece.table, piece.course, piece.start, piece.end) for piece in pieces]})
 
     if share is None:
-        for piece in _lead_pieces("own", own, day, own_lead, per_period, conflicts, now, report):
-            emit(piece.key, [piece], piece.start, piece.end, piece.reminder, piece.frames)
+        for piece in _lead_pieces("own", own, day, own_lead, per_period, conflicts, report):
+            if piece.end > now:
+                emit(piece.key, [piece], piece.start, piece.end, piece.reminder, piece.frames)
         return occurrences, report
 
     share_lead = settings.get("sharedLeadMinutes", own_lead)
-    mine = _own_courses(own, day, per_period, now) if own is not None else []
+    mine = _own_courses(own, day, per_period) if own is not None else []
     companions = []
     for course in mine:
         for span in [_lead_span(course, own_lead, day)] + course["spans"]:
-            if span["until"] > now and span not in companions:
+            if span not in companions:
                 companions.append(span)
     companions.sort(key=lambda span: (span["from"], span["until"]))
-    pieces = _lead_pieces("share", share, day, share_lead, per_period, conflicts, now, report)
+    pieces = _lead_pieces("share", share, day, share_lead, per_period, conflicts, report)
     for piece in pieces:
         piece.frames = _attach(companions, piece.frames)
     for course in mine:

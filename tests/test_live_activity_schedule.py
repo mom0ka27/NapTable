@@ -3,7 +3,7 @@ import unittest
 from datetime import date, timedelta
 
 from server.live_activity_schedule import (build_day, conflicts_between, instant, occurrence_id, own_table,
-                                           refresh_at, share_table)
+                                           own_timetable, refresh_at, share_table)
 from server.live_activity_timeline import ProtocolError
 
 PERIODS = [{"start": "08:00", "end": "08:45"}, {"start": "08:55", "end": "09:40"},
@@ -31,13 +31,13 @@ def spans(occurrence):
 
 
 class OwnTableTests(unittest.TestCase):
-    def test_upload_carries_times_only(self):
-        for bad in ({"name": "高数"}, {"teacher": "x"}):
-            with self.assertRaises(ProtocolError):
-                table([dict(course("a", 1, 2), **bad)])
-        with self.assertRaises(ProtocolError):
-            own_table({"scope": "s", "periods": PERIODS, "semesterStartMonday": "2026-09-07", "weekCount": 18,
-                       "adjustments": [], "courses": [], "timeZone": "Asia/Shanghai"})
+    def test_unknown_fields_are_ignored_and_not_kept(self):
+        _, kept = own_timetable({"scope": "s", "periods": [dict(PERIODS[0], number=1, name="第1节")], "semesterStartMonday": "2026-09-07",
+                                 "weekCount": 18, "timeZone": "Asia/Shanghai", "adjustments": [{"date": "2026-10-01", "kind": "off", "note": "国庆"}],
+                                 "courses": [dict(course("a", 1, 1), name="高数", teacher="王")]})
+        self.assertEqual(kept, {"scope": "s", "periods": [PERIODS[0]], "semesterStartMonday": "2026-09-07", "weekCount": 18,
+                                "adjustments": [{"date": "2026-10-01", "kind": "off"}],
+                                "courses": [{"id": "a", "day": 2, "first": 1, "last": 1, "weeks": []}]})
 
     def test_rejects_impossible_timetables(self):
         with self.assertRaises(ProtocolError):
@@ -109,6 +109,16 @@ class SingleTableTests(unittest.TestCase):
         self.assertEqual(first, build_day("device", TUESDAY, own, settings={"leadMinutes": 60})[0][0]["occurrenceId"])
         self.assertEqual(first, occurrence_id("device", "own:a:2026-09-22:1:2"))
         self.assertNotEqual(first, build_day("other", TUESDAY, own, settings={"leadMinutes": 15})[0][0]["occurrenceId"])
+
+
+    def test_ids_hold_all_day(self):
+        # Computed mid-afternoon, the morning chain keeps the id it had at dawn.
+        own = table([course("a", 1, 2), course("b", 5, 6)])
+        share = table([course("s", 2, 5)])
+        dawn = build_day("device", TUESDAY, own, share, settings={"leadMinutes": 15}, now=at("06:00"))[0]
+        later = build_day("device", TUESDAY, own, share, settings={"leadMinutes": 15}, now=at("14:30"))[0]
+        self.assertEqual([o["occurrenceId"] for o in later], [o["occurrenceId"] for o in dawn])
+        self.assertEqual(later[0]["frames"], dawn[0]["frames"])
 
 
 class MergedTests(unittest.TestCase):

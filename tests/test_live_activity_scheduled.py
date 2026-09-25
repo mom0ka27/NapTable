@@ -50,6 +50,12 @@ class ScheduledTests(unittest.TestCase):
         rows = self.db.execute("SELECT * FROM la_start_jobs WHERE device=? AND engine=1 ORDER BY fire_at", (self.id,)).fetchall()
         return [row for row in rows if state is None or row['state'] == state]
 
+    def payload(self, row):
+        """The start push a row stands for, built as dispatch builds it."""
+        with self.service.transaction() as db:
+            occurrence, stored, texts, scope = self.service._resolve(db, row)
+            return self.service._payload(occurrence, stored, texts, scope, 'channel-id')
+
     def upload(self, **changes):
         body = copy.deepcopy(self.body)
         body.update(changes)
@@ -73,32 +79,36 @@ class ScheduledTests(unittest.TestCase):
         self.assertEqual((today['day'], today['fire_at'], today['expires_at']), ("2026-09-22", at("07:30"), at("09:50")))
         self.assertEqual(tomorrow['day'], "2026-09-23")
         self.assertTrue(today['channel_key'].endswith(':end-period-2'))
-        attributes = json.loads(today['payload'])['aps']['attributes']
+        # The row keeps a digest; the push is built from the timetable.
+        self.assertEqual(len(today['payload']), 64)
+        attributes = self.payload(today)['aps']['attributes']
         self.assertEqual(attributes['frames'][0]['lead']['course'], 'math')
+        self.assertEqual(attributes['broadcastChannel'], 'channel-id')
         self.assertNotIn('texts', attributes)
         self.assertNotIn('pushMode', attributes)
         # A mapping the school's bells do not match falls back to per-activity pushes.
         other = copy.deepcopy(self.body['own'])
         other['periods'] = [dict(period, start="07:55") if index == 0 else period for index, period in enumerate(PERIODS)]
         self.assertEqual(self.upload(revision=2, own=other)['pushMode'], 'token')
-        self.assertEqual(json.loads(self.jobs()[0]['payload'])['aps']['input-push-token'], 1)
+        self.assertEqual(self.payload(self.jobs()[0])['aps']['input-push-token'], 1)
 
-    def test_upload_is_strict_and_revisioned(self):
-        for broken in ({"settings": {"leadMinutes": 45}}, {"settings": {"leadMinutes": 30, "persistent": True}},
-                       {"timeZone": "Asia/Shanghai"}, {"follow": {"share": "S", "scope": "x"}}):
+    def test_upload_keeps_only_what_the_schedule_needs(self):
+        for broken in ({"settings": {"leadMinutes": 45}}, {"settings": {"leadMinutes": 30, "sharedLeadMinutes": 20}},
+                       {"follow": {"scope": "x"}}, {"revision": 0}):
             with self.assertRaises(ProtocolError):
                 self.upload(**broken)
         named = copy.deepcopy(self.body['own'])
-        named['courses'][0]['name'] = '高数'
-        with self.assertRaises(ProtocolError):
-            self.upload(own=named)
-        self.upload()
+        named['courses'][0].update(name='高数', teacher='王')
+        self.upload(own=named, timeZone="Asia/Shanghai", settings={"leadMinutes": 30, "persistent": True})
+        stored = json.loads(self.db.execute("SELECT body FROM la_timetables").fetchone()[0])
+        self.assertNotIn('高数', json.dumps(stored, ensure_ascii=False))
+        self.assertNotIn('timeZone', stored)
+        self.assertEqual(stored['settings'], {"leadMinutes": 30, "perPeriod": False})
+        # Unknown fields do not change the revision's content.
         self.upload()
         with self.assertRaises(ProtocolError) as error:
             self.upload(settings={"leadMinutes": 60})
         self.assertEqual(error.exception.status, 409)
-        with self.assertRaises(ProtocolError):
-            self.upload(revision=0)
 
     def test_rebuild_writes_only_what_changed_and_keeps_history(self):
         self.upload()
@@ -149,7 +159,7 @@ class ScheduledTests(unittest.TestCase):
         merged = self.jobs()[0]
         # Mine 08:00–09:50 reminds at 07:00; theirs 09:30–10:30 joins at 09:15.
         self.assertEqual((merged['fire_at'], merged['expires_at']), (at("07:00"), at("10:30")))
-        attributes = json.loads(merged['payload'])['aps']['attributes']
+        attributes = self.payload(merged)['aps']['attributes']
         self.assertEqual(attributes['scheduleScope'], 'share-scope')
         self.assertEqual(attributes['texts'], {"7": {"name": "高数", "teacher": "王", "location": "A101"}})
         self.assertEqual(json.loads(merged['refresh'])['alertAt'], [at("09:15")])
@@ -174,7 +184,7 @@ class ScheduledTests(unittest.TestCase):
         # Revoked for good: only my own courses remain.
         self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
         self.service.follow_shares()
-        self.assertEqual([json.loads(row['payload'])['aps']['attributes']['frames'][0]['lead']['table'] for row in self.jobs()], ['own', 'own'])
+        self.assertEqual([self.payload(row)['aps']['attributes']['frames'][0]['lead']['table'] for row in self.jobs()], ['own', 'own'])
         self.service.follow_shares()
 
     # MARK: Claims, tokens and dispatch
@@ -228,6 +238,16 @@ class ScheduledTests(unittest.TestCase):
         self.assertEqual((after[-1]['fire_at'], after[-1]['event']), (at("09:50"), 'end'))
         self.assertFalse(any(row['alert'] for row in after))
         self.assertEqual(self.jobs()[0]['state'], 'submitted')
+
+    def test_a_row_its_timetable_no_longer_has_is_not_sent(self):
+        self.upload()
+        self.service.maintain_channels()
+        # The stored timetable changes without a rebuild (as between two runs).
+        self.db.execute("UPDATE la_timetables SET body=?", (json.dumps(dict(self.body, own=dict(self.body['own'], courses=[]))),)); self.db.commit()
+        self.clock = at("07:31")
+        self.service.dispatch_starts()
+        self.assertEqual(self.client.starts, [])
+        self.assertEqual(self.jobs()[0]['state'], 'cancelled')
 
     def test_nightly_builds_the_new_tomorrow_once(self):
         self.upload()

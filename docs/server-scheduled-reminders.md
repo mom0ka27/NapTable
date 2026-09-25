@@ -48,7 +48,7 @@
 - `conflicts`：两张课表各自的节次冲突选择，键为 `日期:节次`，含义与现有 `naptable.liveActivity.conflicts.<scope>` 相同。
 - `settings.leadMinutes` 用于自己的课，`sharedLeadMinutes` 用于对方的课，取值都是 15 / 30 / 60；缺少 `sharedLeadMinutes` 时两边都用 `leadMinutes`。不关心共享课表时忽略 `sharedLeadMinutes`。「课间也保留」只影响手机上的显示，不上传。
 - 所有日期和时刻一律按 UTC+8 解释，上传内容不带时区。
-- 服务端严格校验：未知键返回 400；节次必须有序且不重叠；课程数、周数、调休条数都有上限。
+- 服务端只挑出上面列出的字段，规范化后保存；不认识的字段直接忽略、不会存下来（客户端多带了课程名也不会落库），新客户端加字段也不会让旧服务端拒收。仍然检查取值：节次必须有序且不重叠，课的节次不能超出节次表，提前量只能是 15 / 30 / 60，课程数、周数、调休条数都有上限，不合法返回 400。`revision` 和摘要都按规范化后的内容计算。
 - `revision` 必须单调递增：旧 revision 返回 409；同一 revision 内容相同则幂等。
 - 响应为 `{revision, pushMode, following, conflicts, omitted, pendingCount}`：`conflicts` 是从今天到学期末（最多 200 天）主导课表的节次冲突，每项 `{id: "日期:节次", date, period, choices: [课程 ID]}`，已选择的也列出；`omitted` 是超过 8 小时等无法排程的次数。
 - `pushMode`：不关心共享课表、带了 `schoolID`，并且上传的节次与这所学校当前的作息完全一致时为 `channel`（订阅学校频道，上下课由公共广播刷新）；其余一律 `token`。
@@ -83,11 +83,13 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 ### 4.2 存储
 
 - `la_timetables`：每台设备一行，永久保存上传的原文、revision、摘要、`push_mode`、频道用的学校与作息版本，以及关注的分享 scope 和上次读到的分享 `updated_at`（每台几 KB）。
-- `la_start_jobs`：沿用现有的启动任务表，由引擎生成的行标记 `engine=1`，并新增 `day`（UTC+8 日期）和 `refresh`（令牌模式的 `refreshAt` / `alertAt`）两列。只存「今天 + 明天」。`payload` 在生成时拼好，发送时只改 `timestamp`，频道模式再填入频道 ID。状态沿用现有取值，新增 `local`（手机本地负责）。
+- `la_start_jobs`：沿用现有的启动任务表，由引擎生成的行标记 `engine=1`，并新增 `day`（UTC+8 日期）和 `refresh`（令牌模式的 `refreshAt` / `alertAt`）两列。只存「今天 + 明天」。这类行的 `payload` 列只存这节课内容的摘要，用来判断重建时有没有变化；启动推送在发送或认领时，按课表原文重算这一天、找到这节课再现拼。发送时如果课表里已经没有这节课，这一行记为 `cancelled`，不发送。状态沿用现有取值，新增 `local`（手机本地负责）。
 - `la_v2_meta`：记录夜间任务最近一次完成的日期。
 - 生成时机：设备上传课表时生成「今天 + 明天」；每天 UTC+8 0:00 之后的第一轮夜间任务（每 30 秒检查一次）为所有设备重建「今天 + 明天」，删除结束超过一天的行，并为走频道的作息版本续期广播承诺。服务端启动时如果当天还没跑过，会立即补跑。
 
-实测（M5，文件型 SQLite WAL，一万台设备，每台每天 5 节课、分节计时）：上传一份课表每台 4.4 ms（含整学期冲突扫描），重建两天 0.5 ms，夜间任务整体 6.4 s（每台一个短事务），库里 15 万行、352 MB。行比较大是因为每行存了完整的启动推送（含所有 frames，约 2 KB）；需要时可以改成发送时现拼。
+- 引擎分组时保留当天已经结束的课，只在输出时去掉已经结束的活动，所以同一节课在一天里任何时候计算，编号和 frames 都一样。
+
+实测（M5，文件型 SQLite WAL，一万台设备，每台每天 5 节课、分节计时）：上传一份课表每台 4.3 ms（含整学期冲突扫描），重建两天 0.35 ms，夜间任务整体 4.5 s（每台一个短事务），库里 15 万行、121 MB；同一时刻现拼 1000 条启动推送约 0.1 s。
 
 ### 4.3 重排
 
@@ -101,7 +103,7 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 
 ### 4.4 发送
 
-- `starts` 循环沿用现有实现：每秒取 `state='pending' AND fire_at<=now` 的行批量发送。频道模式写入 `input-push-channel`，令牌模式写入 `input-push-token: 1`。（一批满额时立即继续下一批：尚未实现。）
+- `starts` 循环沿用现有实现：每秒取 `state='pending' AND fire_at<=now` 的行，逐条现拼启动推送后批量发送。频道模式写入 `input-push-channel`，令牌模式写入 `input-push-token: 1`。（一批满额时立即继续下一批：尚未实现。）
 - 启动推送的 attributes 新增 `frames`，携带这个活动的全部 frames（只有课程 ID、节次和阶段，不含文字），随活动保存在手机上；小组件按当前时刻选出对应的一段，再按课程 ID 从本地课表取文字。这样客户端不需要提前下载排程也能渲染远程启动的活动。
 - 共享课表的课：启动推送的 attributes 新增 `texts`，为 frames 里出现的每门对方课程带上 `{name, teacher, location}`（取自分享快照），供手机上还没有这节课内容时直接显示。自己的课不带文字。推送超过 3900 字节时先去掉 `texts`，frames 保留。
 - 令牌模式的刷新时刻和提醒时刻（`refreshAt` / `alertAt`）由服务端根据 frames 计算。客户端只需上传令牌：`PUT /devices/{id}/activities/{occurrenceId}` 的请求体为 `{"token": "…"}`。已经启动的活动遇到重建时，保留启动记录，但尚未发送的刷新按新的 frames 重排。
