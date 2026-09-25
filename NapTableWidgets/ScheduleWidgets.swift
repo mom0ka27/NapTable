@@ -1679,8 +1679,10 @@ private struct WidgetDateHeader: View {
             header(isCompact: isCompact)
             // 调休比「距中秋还有几天」重要，两行挤不下时让调休占这一行。
             if let note = day.normalizedNote {
-                AdjustmentNoteChip(note: note)
-                    .padding(.top, -2)
+                if !repeatsBadge(note) {
+                    AdjustmentNoteChip(note: note)
+                        .padding(.top, -2)
+                }
             } else if !compact, let countdown = holidayCountdown {
                 HolidayCountdownChip(countdown: countdown)
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1762,6 +1764,13 @@ private struct WidgetDateHeader: View {
     private var badgeText: String? {
         guard options.showHoliday else { return nil }
         return calendarDay?.badge
+    }
+
+    /// 服务端自动生成的放假说明就是假期名本身（「中秋节」），而节日名已经在右侧徽标
+    /// （窄组件是星期旁那一列）里了，再在下面写一遍就重复了。
+    private func repeatsBadge(_ note: String) -> Bool {
+        guard let badgeText else { return false }
+        return note == badgeText || note == badgeText + "放假" || badgeText.hasPrefix(note)
     }
 
     private var lunarText: String? {
