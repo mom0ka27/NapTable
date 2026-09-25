@@ -32,7 +32,10 @@ struct CourseTableSettingsView: View {
                 .multilineTextAlignment(.leading)
             Button("取消", role: .cancel) {}
             Button("保存") { store.renameTable(tableId, to: renameText) }
-                .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || store.isTableNameTaken(renameText, except: tableId))
+        } message: {
+            Text("课表名称不能和其他课表重复。")
         }
     }
 
@@ -91,9 +94,13 @@ struct CourseTableSettingsView: View {
             LabeledContent("课程", value: "\(courseCount) 门")
 
             if table.id == store.selectedTableId {
+                // 右边不能放 `Label`：表单会把它当成多个子视图拆开排，状态下面凭空多出一块空行。
                 LabeledContent("状态") {
-                    Label("正在使用", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("正在使用")
+                    }
+                    .foregroundStyle(Color.accentColor)
                 }
             } else {
                 Button("切换到这张课表") { store.selectTable(tableId) }

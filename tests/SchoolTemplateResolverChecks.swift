@@ -46,6 +46,11 @@ struct SchoolTemplateResolverChecks {
                 schoolID: "nju", schools: duplicate)
             fatalError("Ambiguous school term must not be chosen arbitrarily")
         } catch is ScheduleServiceError {}
-        print("PASS: server current term, academic-year matching, active/upcoming selection, template priority, authoritative fields, missing school/term and ambiguity")
+        let now = WeekCalculator.parseDay("2026-09-16")!
+        precondition(SchoolTemplateResolver.semesterName(startMonday: "2026-09-14", hint: "", now: now) == "2026 秋")
+        precondition(SchoolTemplateResolver.semesterName(startMonday: "2027-02-22", hint: "2026-2027学年 第1学期", now: now) == "2027 春")
+        precondition(SchoolTemplateResolver.semesterName(startMonday: nil, hint: "2025-2026学年第二学期", now: now) == "2026 春")
+        precondition(SchoolTemplateResolver.semesterName(startMonday: nil, hint: "我的课表", now: now) == "2026 秋")
+        print("PASS: semester table names, server current term, academic-year matching, active/upcoming selection, template priority, authoritative fields, missing school/term and ambiguity")
     }
 }

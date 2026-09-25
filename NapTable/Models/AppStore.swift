@@ -284,12 +284,27 @@ final class AppStore: ObservableObject {
 
     // MARK: Table management
 
+    /// 课表名不能重复（去掉首尾空白后比较）。`except` 是正在改名或被覆盖的那张，不算撞名。
+    func isTableNameTaken(_ name: String, except id: Int? = nil) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return tables.contains { $0.id != id && $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }
+    }
+
+    /// 撞名时在后面补序号：「2026 秋」已有就用「2026 秋（2）」，依次往上加。
+    func uniqueTableName(_ name: String, except id: Int? = nil) -> String {
+        let base = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isTableNameTaken(base, except: id) else { return base }
+        var index = 2
+        while isTableNameTaken("\(base)（\(index)）", except: id) { index += 1 }
+        return "\(base)（\(index)）"
+    }
+
     @discardableResult
     func addTable(name: String, semesterStartMonday: String = "", classTimeList: [ClassTime] = []) -> CourseTable {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let table = CourseTable(
             id: nextTableId,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "课表 \(nextTableId)" : name.trimmingCharacters(in: .whitespacesAndNewlines),
+            name: uniqueTableName(trimmed.isEmpty ? "课表 \(nextTableId)" : trimmed),
             classTimeList: classTimeList,
             semesterStartMonday: semesterStartMonday
         )
@@ -304,7 +319,7 @@ final class AppStore: ObservableObject {
     func renameTable(_ id: Int, to name: String) {
         guard let index = tables.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, !isTableNameTaken(trimmed, except: id) else { return }
         tables[index].name = trimmed
         scheduleSave()
     }
@@ -480,7 +495,6 @@ final class AppStore: ObservableObject {
         case .replaceCurrent:
             table = selectedTable ?? addTable(name: payload.name)
             if let index = tables.firstIndex(where: { $0.id == table.id }) {
-                tables[index].name = payload.name
                 if let start = payload.semesterStartMonday, !start.isEmpty {
                     tables[index].semesterStartMonday = start
                 }
@@ -657,6 +671,19 @@ final class AppStore: ObservableObject {
     // MARK: Persistence
 
     private func normalize() {
+        // 老版本和恢复备份都可能带进同名课表，按先后给后来的补序号。
+        var seen = Set<String>()
+        for index in tables.indices {
+            let base = tables[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
+            var name = base
+            var suffix = 2
+            while seen.contains(name) || (name != base && isTableNameTaken(name)) {
+                name = "\(base)（\(suffix)）"
+                suffix += 1
+            }
+            tables[index].name = name
+            seen.insert(name)
+        }
         if !tables.contains(where: { $0.id == selectedTableId }) {
             selectedTableId = tables.first?.id ?? 0
         }
