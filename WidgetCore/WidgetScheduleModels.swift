@@ -171,6 +171,9 @@ struct WidgetCourseWindow {
 /// The payload the app writes into the App Group container. `weekDays` carries
 /// the whole selected week so the two-day widget can show tomorrow.
 struct WidgetSchedulePayload: Codable, Equatable {
+    /// 「最近有课的一天」往后找几天。一周跨不过中秋接国庆这样的长假，三周连寒暑假前后的空档也够用。
+    static let lookaheadDays = 21
+
     let title: String?
     let sourceLabel: String?
     let generatedAt: String?
@@ -179,7 +182,8 @@ struct WidgetSchedulePayload: Codable, Equatable {
     let today: WidgetDay?
     let days: [WidgetDay]?
     let weekDays: [WidgetDay]?
-    /// 当前这一周的下一周。周日晚上要显示「明天」时，那一天已经不在 `weekDays` 里了。
+    /// `weekDays` 之外、今天所在这一周和之后三周的日子。周日晚上的「明天」、
+    /// 「最近有课的一天」（最多往后三周）都在这里找。名字沿用最早只带下一周时的叫法。
     /// 旧版本写的 payload 没有这个字段，解码成 `nil` 即可。
     let nextWeekDays: [WidgetDay]?
 
@@ -242,22 +246,15 @@ struct WidgetSchedulePayload: Codable, Equatable {
         }
     }
 
-    /// 今天之后一周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
+    /// 今天之后三周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
     func nextCourseDay(after now: Date = .now) -> (day: WidgetDay, offset: Int)? {
-        for offset in 1...7 {
+        for offset in 1...Self.lookaheadDays {
             guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: offset, to: now),
                   let day = knownDay(for: Self.dateString(date)),
                   !day.courseList.isEmpty else { continue }
             return (day, offset)
         }
         return nil
-    }
-
-    /// 今天还有课就是今天，否则是最近一个有课的日期；两个都没有时退回今天。
-    func preferredCourseDay(now: Date = .now) -> (day: WidgetDay, offset: Int) {
-        let today = currentDay(now: now)
-        if !remainingCourses(in: today, now: now).isEmpty { return (today, 0) }
-        return nextCourseDay(after: now) ?? (today, 0)
     }
 
     static func dateString(_ date: Date) -> String {

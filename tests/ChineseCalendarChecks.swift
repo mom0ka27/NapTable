@@ -166,8 +166,7 @@ struct ChineseCalendarChecks {
         let rolled = schoolDay.upcoming(now: afterSchool, afterClass: .nextCourseDay)
         expect(rolled.0.date == friday && rolled.1.first?.displayName == "有机化学", "放学后临近课程换到明天的课")
         expect(schoolDay.upcoming(now: afterSchool, afterClass: .tomorrow).1.isEmpty, "其他选项放学后不换日子")
-        expect(schoolDay.preferredCourseDay(now: moment(thursday, hour: 8)).offset == 0, "今天还有课就从今天起")
-        expect(schoolDay.preferredCourseDay(now: afterSchool).day.date == friday, "今天上完了从最近有课的一天起")
+        expect(schoolDay.nextCourseDay(after: moment(thursday, hour: 8))?.day.date == friday, "两日课表右边是今天之后最近有课的一天")
         expect(payload.nextCourseDay(after: sundayDate)?.day.date == monday, "最近有课的一天可以跨到下一周")
         let quietWeek = WidgetSchedulePayload(
             title: nil, sourceLabel: nil, generatedAt: nil, semester: nil, currentWeek: 4,
@@ -176,8 +175,22 @@ struct ChineseCalendarChecks {
             weekDays: [widgetDay(thursday, day: 4, week: 4, courses: [])],
             nextWeekDays: nil
         )
-        expect(quietWeek.nextCourseDay(after: afterSchool) == nil, "一周内都没课时返回 nil")
-        expect(quietWeek.preferredCourseDay(now: afterSchool).day.date == thursday, "一周内都没课时退回今天")
+        expect(quietWeek.nextCourseDay(after: afterSchool) == nil, "三周内都没课时返回 nil")
+        // 长假：下一节课在十三天以后也要找得到；隔了十五天就不找了
+        let longBreak = WidgetSchedulePayload(
+            title: nil, sourceLabel: nil, generatedAt: nil, semester: nil, currentWeek: 4,
+            today: widgetDay(thursday, day: 4, week: 4, courses: []),
+            days: nil,
+            weekDays: [widgetDay(thursday, day: 4, week: 4, courses: [])],
+            nextWeekDays: [
+                widgetDay("2026-09-27", day: 7, week: 5, courses: []),
+                widgetDay("2026-09-30", day: 3, week: 6, courses: [course("假期后的课")]),
+            ]
+        )
+        let rolledAfterBreak = longBreak.nextCourseDay(after: afterSchool)
+        expect(rolledAfterBreak?.day.date == "2026-09-30" && rolledAfterBreak?.offset == 13, "十三天后的课要找得到")
+        expect(longBreak.nextCourseDay(after: moment("2026-09-09", hour: 18))?.offset == 21, "隔了二十一天也要找得到")
+        expect(longBreak.nextCourseDay(after: moment("2026-09-08", hour: 18)) == nil, "隔了二十二天就不找了")
         expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "最近有课的一天", "新选项的名字")
 
         // 旧 payload 没有 nextWeekDays，解码后应为 nil 而不是失败

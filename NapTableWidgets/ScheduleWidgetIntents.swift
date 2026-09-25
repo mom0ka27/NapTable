@@ -43,13 +43,14 @@ enum UpcomingCourseCountOption: Int, AppEnum {
 enum TwoDayStartOption: String, AppEnum {
     /// 固定今天和明天。
     case today
-    /// 今天还有课就从今天起，否则从最近一个有课的日期起，连着两天。
+    /// 左边照旧是今天，右边是今天之后最近一个有课的日期（三周之内，没有就是明天）。
+    /// rawValue 沿用旧名，已经放好的小组件不用重新设置。
     case nextCourseDay
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "显示哪两天"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
         .today: "今天和明天",
-        .nextCourseDay: "从最近有课的一天起",
+        .nextCourseDay: "今天和最近有课的一天",
     ]
 }
 
