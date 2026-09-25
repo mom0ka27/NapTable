@@ -301,6 +301,15 @@ struct GlobalThemeSettingsSection: View {
         } footer: {
             Text("同时应用到课表、小组件、实时活动和灵动岛。")
         }
+
+        Section {
+            Toggle("纯色模式", isOn: Binding(
+                get: { settings.solidCourseColors },
+                set: { settings.setSolidCourseColors($0) }
+            ))
+        } footer: {
+            Text("开启后，课表和小组件里的课程都使用主题色；关闭时每门课各有颜色，课表和小组件里同一门课颜色一致。")
+        }
     }
 
     private func themeColor(_ theme: ScheduleLiveActivityTheme) -> Color {

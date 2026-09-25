@@ -8,6 +8,8 @@ enum NextWidgetConfiguration {
     static let widgetDisplayOptionsKey = "scheduleWidgetDisplayOptions"
     static let globalThemeKey = "scheduleGlobalTheme"
     static let globalCustomColorKey = "scheduleGlobalCustomColor"
+    /// 「纯色模式」：课表和小组件里的课程都用主题色，不按课名分色。
+    static let solidCourseColorsKey = "scheduleSolidCourseColors"
     // Kept for migration from the first Live Activity-only theme setting.
     /// Written by the app's Live Activity settings. The widget extension reads
     /// it so a stale render can tell "carry on to the next class" apart from
@@ -37,6 +39,16 @@ enum NextWidgetConfiguration {
 
     static var scheduleTheme: ScheduleWidgetTheme {
         globalTheme.widgetTheme
+    }
+
+    static var solidCourseColors: Bool {
+        UserDefaults(suiteName: appGroup)?.bool(forKey: solidCourseColorsKey) ?? false
+    }
+
+    /// 当前主题色的 RGB，自定义主题取用户挑的颜色。
+    static var globalBrandColor: ScheduleLiveActivityRGB {
+        let theme = globalTheme
+        return theme == .custom ? globalCustomColor : theme.brandColor
     }
 
     static var displayOptions: ScheduleWidgetDisplayOptions {

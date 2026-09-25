@@ -158,6 +158,7 @@ struct NativeScheduleDayColumn: View {
 struct NativeScheduleCourseCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
+    @ObservedObject private var themeSettings = NativeThemeSettings.shared
     let course: NativeScheduleCourse
     var compact = false
 
@@ -254,8 +255,12 @@ struct NativeScheduleCourseCard: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var swatch: ScheduleCourseTint.Swatch {
+        ScheduleCourseTint.swatch(for: course.name, solid: themeSettings.solidCourseColor)
+    }
+
     private var accent: Color {
-        ScheduleCourseTint.accent(for: course.name, scheme: colorScheme)
+        swatch.accent(scheme: colorScheme)
     }
 
     private var courseBorder: Color {
@@ -265,17 +270,15 @@ struct NativeScheduleCourseCard: View {
         return hslColor(
             hue: hue,
             saturation: min(0.82, saturation + 0.08),
-            lightness: ScheduleCourseTint.borderLightness(for: course.name)
+            lightness: swatch.borderLightness
         ).opacity(0.48)
     }
 
-    private var hue: Double { ScheduleCourseTint.hue(for: course.name) }
+    private var hue: Double { swatch.hue }
 
-    private var saturation: Double { ScheduleCourseTint.saturation(for: course.name) }
+    private var saturation: Double { swatch.saturation }
 
-    private var backgroundLightness: Double { ScheduleCourseTint.backgroundLightness(for: course.name) }
-
-    private var textLightness: Double { ScheduleCourseTint.textLightness(for: course.name) }
+    private var backgroundLightness: Double { swatch.backgroundLightness }
 
     private var courseBackground: Color {
         if colorScheme == .dark {
