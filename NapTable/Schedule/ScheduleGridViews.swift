@@ -18,6 +18,8 @@ struct NativeScheduleDayColumn: View {
     let adjustment: ResolvedCalendarAdjustment?
     let columnWidth: CGFloat
     let rowHeight: CGFloat
+    /// 画到第几节。晚上没课的行可以收起来，见 `NativeSchedulePreferences.hideSlotsAfter`。
+    var slotCount: Int = ScheduleSlot.all.count
     let compactCards: Bool
     let showsDateHeader: Bool
     let blocks: [NativeScheduleCourseBlock]
@@ -86,7 +88,7 @@ struct NativeScheduleDayColumn: View {
 
             ZStack(alignment: .topLeading) {
                 VStack(spacing: Self.slotGap) {
-                    ForEach(ScheduleSlot.all, id: \.number) { slot in
+                    ForEach(ScheduleSlot.all.prefix(slotCount), id: \.number) { slot in
                         let occupied = blocks.contains { ($0.startSlot...$0.endSlot).contains(slot.number) }
                         HStack(spacing: 0) {
                             ForEach(0..<laneCount, id: \.self) { lane in
@@ -139,8 +141,8 @@ struct NativeScheduleDayColumn: View {
             }
             .frame(
                 width: columnWidth,
-                height: CGFloat(ScheduleSlot.all.count) * rowHeight
-                    + CGFloat(max(0, ScheduleSlot.all.count - 1)) * Self.slotGap
+                height: CGFloat(slotCount) * rowHeight
+                    + CGFloat(max(0, slotCount - 1)) * Self.slotGap
             )
         }
         .frame(width: columnWidth)
@@ -157,7 +159,6 @@ struct NativeScheduleDayColumn: View {
 
 struct NativeScheduleCourseCard: View {
     @Environment(\.colorScheme) private var colorScheme
-    @ObservedObject private var preferences = NativeSchedulePreferences.shared
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
     let course: NativeScheduleCourse
     var compact = false
@@ -165,20 +166,9 @@ struct NativeScheduleCourseCard: View {
     var body: some View {
         GeometryReader { geometry in
             let shortCard = geometry.size.height < 64
-            let location = preferences.showLocation ? clean(course.location) : nil
-            let teacher = preferences.showTeacher ? clean(course.teacher) : nil
-            // The slot note is a per-occurrence remark; the week list is what the
-            // "显示周次" switch is about, so only the latter is gated.
-            let note = clean(course.slotNote) ?? (preferences.showWeeks ? clean(course.weeks) : nil)
-            let metadata: String? = {
-                let values: [String] = compact
-                    ? [location.map { "@\($0.trimmingCharacters(in: CharacterSet(charactersIn: "@＠")))" }].compactMap { $0 }
-                    : [
-                        location.map { "@\($0.trimmingCharacters(in: CharacterSet(charactersIn: "@＠")))" },
-                        teacher,
-                    ].compactMap { $0 }
-                return values.isEmpty ? nil : values.joined(separator: " · ")
-            }()
+            // 卡片上除了课名只放教室；老师、周次和备注在课程详情里看。
+            let location = clean(course.location)
+                .map { "@\($0.trimmingCharacters(in: CharacterSet(charactersIn: "@＠")))" }
 
             VStack(spacing: compact ? 3 : (shortCard ? 2 : 5)) {
                 Text(course.name)
@@ -188,22 +178,13 @@ struct NativeScheduleCourseCard: View {
                     .frame(maxWidth: .infinity)
                     .layoutPriority(1)
 
-                if let metadata {
-                    Text(metadata)
+                if let location {
+                    Text(location)
                         .font(.system(size: compact || shortCard ? 9 : 12, weight: .medium))
                         .lineLimit(shortCard ? 1 : 2)
                         .minimumScaleFactor(0.85)
                         .frame(maxWidth: .infinity)
                         .layoutPriority(2)
-                }
-
-                if !compact, !shortCard, let note {
-                    Text(note)
-                        .font(.system(size: 11, weight: .regular))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(maxWidth: .infinity)
-                        .opacity(0.86)
                 }
             }
             .multilineTextAlignment(.center)

@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// The Settings tab.
 ///
-/// Four groups, two or three rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
+/// Four groups, a few rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
 /// Every row says what it currently is, so the common case — "did I already
 /// set that?" — is answered without opening it.
 ///
@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
+    @ObservedObject private var schedulePreferences = NativeSchedulePreferences.shared
     @ObservedObject private var sharingService = ScheduleSharingService.shared
     @ObservedObject private var privacyConsent = PrivacyConsent.shared
     @Binding var showImport: Bool
@@ -75,16 +76,37 @@ struct SettingsView: View {
 
             SettingsDestinationRow(
                 title: "课表显示",
-                detail: "打开时的视图、卡片密度和背景图",
+                detail: "打开时的视图、卡片密度和显示的节次",
                 systemImage: "calendar"
             ) {
-                Form { ScheduleSettingsSection() }
+                ScheduleDisplaySettingsScreen()
                     .navigationTitle("课表显示")
+                    .appInlineNavigationTitle()
+            }
+
+            SettingsDestinationRow(
+                title: "背景图片",
+                detail: backgroundSummary,
+                systemImage: "photo.on.rectangle"
+            ) {
+                ScheduleBackgroundSettingsScreen()
+                    .navigationTitle("背景图片")
                     .appInlineNavigationTitle()
             }
         } header: {
             Text("外观")
         }
+    }
+
+    /// 「共用一张 · 浅色 18% · 深色 28%」这样的一行摘要。
+    private var backgroundSummary: String {
+        let light = schedulePreferences.hasOwnBackground(dark: false)
+        let dark = schedulePreferences.hasOwnBackground(dark: true)
+        guard light || dark else { return "未设置" }
+        let percent = { (value: Double) in "\(Int((value * 100).rounded()))%" }
+        return (light && dark ? "浅色、深色各一张" : "两种模式共用一张")
+            + " · 浅色 \(percent(schedulePreferences.backgroundOpacity))"
+            + " · 深色 \(percent(schedulePreferences.backgroundOpacityDark))"
     }
 
     private var tablesGroup: some View {

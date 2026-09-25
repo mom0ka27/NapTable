@@ -68,8 +68,32 @@ struct ScheduleGlassControl: ViewModifier {
     }
 }
 
+extension EnvironmentValues {
+    /// 课表页铺了背景图。格子和卡片的底色要跟着变透，否则一块块白底会盖在
+    /// 图上，看起来像贴了纸。
+    @Entry var scheduleHasBackgroundImage = false
+}
+
+extension ShapeStyle where Self == Color {
+    /// 格子、表头这类小块表面的底色。数量多，不用实时模糊的材质。
+    static func scheduleCellSurface(hasBackground: Bool, dark: Bool) -> Color {
+        guard hasBackground else { return Color.appSecondaryGroupedBackground.opacity(0.86) }
+        return dark ? Color.appSecondaryGroupedBackground.opacity(0.5) : Color.white.opacity(0.5)
+    }
+}
+
+/// 学期选择器、自由时间入口这类单个的实心卡片：有背景图时换成磨砂材质。
+struct ScheduleCardSurface: ShapeStyle {
+    var hasBackground: Bool
+
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        hasBackground ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.appSecondaryGroupedBackground)
+    }
+}
+
 struct ScheduleGlassBackground: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scheduleHasBackgroundImage) private var hasBackground
     let cornerRadius: CGFloat
     var colors: [Color] = [.clear, .clear]
     var border: Color = Color.appSeparator.opacity(0.12)
@@ -78,7 +102,7 @@ struct ScheduleGlassBackground: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         shape
-            .fill(Color.appSecondaryGroupedBackground.opacity(0.86))
+            .fill(.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark))
             .overlay {
                 shape.fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
             }
