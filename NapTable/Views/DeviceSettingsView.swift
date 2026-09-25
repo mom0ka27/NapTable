@@ -82,39 +82,39 @@ struct ScheduleDisplaySettingsScreen: View {
 struct ScheduleBackgroundSettingsScreen: View {
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
     @State private var editingBackground: PendingBackground?
-    @State private var saveError = false
 
     var body: some View {
         Form {
+            if preferences.hasAnyBackground {
+                Section {
+                    Toggle("显示背景图片", isOn: $preferences.backgroundEnabled)
+                } footer: {
+                    Text("关闭后课表上不显示背景，图片和设置都保留，打开就恢复。")
+                }
+            }
             ScheduleBackgroundSection(preferences: preferences, dark: false, pendingBackground: $editingBackground)
             ScheduleBackgroundSection(preferences: preferences, dark: true, pendingBackground: $editingBackground)
         }
         .navigationDestination(item: $editingBackground) { pending in
             // 另一个外观有自己的图，这张就只属于当前外观，预览和不透明度都锁在它上面。
-            let separate = preferences.hasOwnBackground(dark: !pending.dark)
             BackgroundCropEditor(
                 image: pending.image,
                 initialPlacement: pending.placement,
-                initialOpacity: .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark),
-                initialPreviewDark: pending.dark,
-                locksPreviewAppearance: separate,
-                onSave: { data, placement, opacity in
-                    do {
-                        try preferences.setBackground(cropped: data, source: pending.source,
-                                                      placement: placement, dark: pending.dark)
-                        if !separate || !pending.dark { preferences.backgroundOpacity = opacity.light }
-                        if !separate || pending.dark { preferences.backgroundOpacityDark = opacity.dark }
-                    } catch {
-                        saveError = true
+                opacity: Binding(
+                    get: { .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark) },
+                    set: {
+                        preferences.backgroundOpacity = $0.light
+                        preferences.backgroundOpacityDark = $0.dark
                     }
-                    editingBackground = nil
+                ),
+                initialPreviewDark: pending.dark,
+                locksPreviewAppearance: preferences.hasOwnBackground(dark: !pending.dark),
+                commitsOnAppear: pending.isNew,
+                onCommit: { data, placement in
+                    try preferences.setBackground(cropped: data, source: pending.source,
+                                                  placement: placement, dark: pending.dark)
                 }
             )
-        }
-        .alert("背景图片", isPresented: $saveError) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text("这张图片保存失败，换一张再试。")
         }
     }
 }
@@ -128,6 +128,8 @@ struct PendingBackground: Identifiable, Hashable {
     let placement: NativeSchedulePreferences.BackgroundPlacement
     /// 存到深色还是浅色那张。
     let dark: Bool
+    /// 刚从相册选的，进编辑页就要先存一次；重新调整已有的图则不用。
+    var isNew = false
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -145,6 +147,7 @@ struct ScheduleSettingsSection: View {
                 Text("月历").tag("month")
             }
             Picker("卡片密度", selection: $preferences.density) {
+                Text("宽松").tag("relaxed")
                 Text("舒适").tag("comfortable")
                 Text("紧凑").tag("compact")
             }
@@ -186,6 +189,7 @@ private struct ScheduleBackgroundSection: View {
     @State private var selectedBackground: PhotosPickerItem?
     @State private var backgroundBusy = false
     @State private var backgroundError = ""
+    @State private var confirmingRemoval = false
     @Binding var pendingBackground: PendingBackground?
 
     private var name: String { dark ? "深色模式" : "浅色模式" }
@@ -219,11 +223,21 @@ private struct ScheduleBackgroundSection: View {
                 }
                 .disabled(backgroundBusy)
                 Button(role: .destructive) {
-                    try? preferences.setBackgroundData(nil, dark: dark)
+                    confirmingRemoval = true
                 } label: {
                     Text(preferences.hasOwnBackground(dark: !dark) ? "移除，改为跟随\(otherName)" : "移除背景图片")
                 }
                 .disabled(backgroundBusy)
+                .confirmationDialog("移除\(name)的背景图片？", isPresented: $confirmingRemoval, titleVisibility: .visible) {
+                    Button("移除", role: .destructive) {
+                        try? preferences.setBackgroundData(nil, dark: dark)
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text(preferences.hasOwnBackground(dark: !dark)
+                         ? "移除后\(name)改用\(otherName)的图片。原图和调整过的位置会一起删掉。"
+                         : "原图和调整过的位置会一起删掉。只想暂时不显示的话，可以关掉上面的「显示背景图片」。")
+                }
             }
         } header: {
             Text(name)
@@ -244,7 +258,8 @@ private struct ScheduleBackgroundSection: View {
                           let source = BackgroundCropEditor.jpegData(image) else { throw BackgroundError.invalidData }
                     // 先进编辑页摆好位置和大小，按「使用」才写进课表。原图存的是
                     // 缩小并转正之后的版本，不留相册里的几十兆原文件。
-                    pendingBackground = PendingBackground(image: image, source: source, placement: .init(), dark: dark)
+                    pendingBackground = PendingBackground(image: image, source: source, placement: .init(),
+                                                          dark: dark, isNew: true)
                 } catch {
                     backgroundError = "这张图片读不出来，换一张再试。"
                 }
@@ -566,9 +581,9 @@ struct LiveActivitySettingsScreen: View {
 
             Section("实际安排") {
                 Text(controller.coverage)
-                if controller.omitted > 0 { Text("\(controller.omitted) 项课程缺少可靠时间或来源身份，未安排。") }
+                if controller.omitted > 0 { Text("\(controller.omitted) 门课程的上课时间不完整，没有安排提醒。") }
                 if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
-                Text("提醒由服务端按上传的课表安排（只上传节次和周次，不含课程名），不打开 App 也会按时出现。iOS 26 及以上在本机预约最近几节，其余由服务端远程启动；iOS 17 仅支持预览效果。")
+                Text("不打开 App 也会按时出现。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !controller.conflicts.isEmpty {

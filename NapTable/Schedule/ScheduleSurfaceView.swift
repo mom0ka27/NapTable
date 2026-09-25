@@ -32,6 +32,7 @@ struct NativeScheduleView: View {
     @State private var freeCoursesPresented = false
     #if DEBUG
     @State private var debugCropImage: DebugCropImage?
+    @State private var debugCropOpacity = BackgroundCropEditor.Opacity(light: 0.18, dark: 0.28)
     #endif
     // Horizontal week paging state. The track holds the previous, current and
     // next week so a swipe drags the neighbouring timetable into view instead
@@ -65,9 +66,10 @@ struct NativeScheduleView: View {
         self.onWatch = onWatch
     }
 
-    /// 当前外观下铺在课表后面的图。深色没单独设图时沿用浅色的，反之亦然。
+    /// 当前外观下铺在课表后面的图。深色没单独设图时沿用浅色的，反之亦然；
+    /// 「显示背景图片」关着就是没有。
     private var displayedBackground: ScheduleBackgroundImage? {
-        preferences.backgroundImage(dark: colorScheme == .dark)
+        preferences.visibleBackgroundImage(dark: colorScheme == .dark)
     }
 
     /// 顶栏和课表区域自己的底色。有背景图片时必须透明，否则整张图会被这层
@@ -249,10 +251,10 @@ struct NativeScheduleView: View {
         #if DEBUG && os(iOS)
         .fullScreenCover(item: $debugCropImage) { item in
             NavigationStack {
+                // 调试截图用：不透明度只在这一页里变，摆放也不写回设置。
                 BackgroundCropEditor(image: item.image, initialPlacement: item.placement,
-                                     initialOpacity: .init(light: preferences.backgroundOpacity,
-                                                           dark: preferences.backgroundOpacityDark),
-                                     onCancel: { debugCropImage = nil }, onSave: { _, _, _ in debugCropImage = nil })
+                                     opacity: $debugCropOpacity,
+                                     onDone: { debugCropImage = nil }, onCommit: { _, _ in })
             }
         }
         #endif
@@ -928,13 +930,21 @@ struct NativeScheduleView: View {
     }
 
     private var weekGridRowHeight: CGFloat {
-        preferences.density == "compact" ? 40 : NativeScheduleDayColumn.slotHeight
+        switch preferences.density {
+        case "compact": 40
+        case "relaxed": 52
+        default: NativeScheduleDayColumn.slotHeight
+        }
     }
 
     /// The day layout carries an extra weekday picker above the grid, so it
     /// keeps the same 3pt deficit it had when both heights were constants.
     private var dayGridRowHeight: CGFloat {
-        preferences.density == "compact" ? 37 : NativeScheduleDayColumn.daySlotHeight
+        switch preferences.density {
+        case "compact": 37
+        case "relaxed": 49
+        default: NativeScheduleDayColumn.daySlotHeight
+        }
     }
 
     /// Daily mode uses the same native page controller as the weekly pager. A
@@ -1539,12 +1549,14 @@ struct NativeScheduleView: View {
             guard let path = ProcessInfo.processInfo.environment["NAPTABLE_DEBUG_CROP_IMAGE"],
                   let data = FileManager.default.contents(atPath: path),
                   let image = BackgroundCropEditor.decode(data) else { return }
+            debugCropOpacity = .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark)
             debugCropImage = DebugCropImage(image: image)
         case "recrop":
             // 和设置里的「调整位置和大小」一样：原图加上次的摆放。
             guard let data = preferences.backgroundSourceData(dark: colorScheme == .dark)
                     ?? preferences.backgroundSourceData(dark: colorScheme != .dark),
                   let image = BackgroundCropEditor.decode(data) else { return }
+            debugCropOpacity = .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark)
             debugCropImage = DebugCropImage(image: image, placement: preferences.backgroundPlacement(dark: colorScheme == .dark))
         case "detail":
             guard let result = store.result else { return }

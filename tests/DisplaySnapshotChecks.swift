@@ -37,6 +37,7 @@ struct DisplaySnapshotChecks {
         expect(!reloaded.showFreeTimeCourses, "自由时间开关持久化")
         expect(fresh.visibleDays == Array(1...7), "默认排满七天")
         expect(abs(fresh.backgroundOpacityDark - fresh.backgroundOpacity - 0.1) < 0.0001, "深色默认比浅色高 10%")
+        expect(fresh.backgroundEnabled, "默认显示背景图片")
 
         // 隐藏第 N 节之后的行：默认第 9 节，有更晚的课就画到那节课
         expect(fresh.hideSlotsAfter == 9, "默认隐藏第 9 节之后")
@@ -109,6 +110,17 @@ struct DisplaySnapshotChecks {
         expect(clamped.backgroundOpacityDark == 1, "旧备份没有深色值时按浅色推算并夹到上限")
         expect(clamped.hideSlotsAfter == 0, "负数节次回落到不隐藏")
 
+        // 宽松档能存能读
+        let relaxed = makePreferences("relaxed")
+        relaxed.density = "relaxed"
+        let relaxedReloaded = NativeSchedulePreferences(defaults: UserDefaults(suiteName: "naptable.checks.relaxed")!)
+        expect(relaxedReloaded.density == "relaxed", "宽松密度持久化")
+        var relaxedSnapshot = relaxed.makeSnapshot()
+        relaxedSnapshot.backgroundImageData = nil
+        let relaxedTarget = makePreferences("relaxedTarget")
+        relaxedTarget.apply(relaxedSnapshot)
+        expect(relaxedTarget.density == "relaxed", "宽松密度可从备份还原")
+
         // 旧版显示设置备份没有新字段，恢复后仍默认显示自由时间课程。
         var oldBackup = try! JSONSerialization.jsonObject(with: json) as! [String: Any]
         oldBackup.removeValue(forKey: "showFreeTimeCourses")
@@ -173,6 +185,22 @@ struct DisplaySnapshotChecks {
 
         pair.apply(pairBackup)
         expect(pair.hasOwnBackground(dark: true), "恢复备份写回深色背景图")
+
+        // 关掉「显示背景图片」只是隐藏，图还在；备份也记着开关
+        pair.backgroundEnabled = false
+        expect(pair.hasOwnBackground(dark: false) && pair.hasOwnBackground(dark: true), "隐藏背景不删图")
+        expect(pair.visibleBackgroundImage(dark: false) == nil && pair.visibleBackgroundImage(dark: true) == nil,
+               "隐藏后课表上没有背景")
+        let hiddenReloaded = NativeSchedulePreferences(defaults: UserDefaults(suiteName: "naptable.checks.pair")!)
+        expect(!hiddenReloaded.backgroundEnabled, "隐藏背景开关持久化")
+        let hiddenTarget = makePreferences("hiddenTarget")
+        var hiddenSnapshot = pair.makeSnapshot()
+        hiddenSnapshot.backgroundImageData = nil
+        hiddenSnapshot.backgroundImageDataDark = nil
+        hiddenTarget.apply(hiddenSnapshot)
+        expect(!hiddenTarget.backgroundEnabled, "隐藏背景开关可从备份还原")
+        pair.backgroundEnabled = true
+
         try! pair.setBackgroundData(nil)
         try! pair.setBackgroundData(nil, dark: true)
 

@@ -28,6 +28,8 @@ final class NativeSchedulePreferences: ObservableObject {
     /// 第几节之后的空行不画；0 表示全部显示。那一周有更晚的课就一直画到那节课。
     @Published var hideSlotsAfter: Int { didSet { persist() } }
     @Published var backgroundPath: String { didSet { loadBackgroundImage(); persist() } }
+    /// 关掉只是不在课表上显示，图片、摆放和不透明度都留着，打开就回来。
+    @Published var backgroundEnabled: Bool { didSet { persist() } }
     /// 浅色模式下背景图的不透明度。
     @Published var backgroundOpacity: Double { didSet { persist() } }
     /// 深色模式下背景图的不透明度。深色底上图片显得更暗，默认比浅色高一点。
@@ -54,6 +56,7 @@ final class NativeSchedulePreferences: ObservableObject {
         static let backgroundOpacityDark = "nativeSchedule.backgroundOpacityDark"
         static let backgroundPlacement = "nativeSchedule.backgroundPlacement"
         static let backgroundPathDark = "nativeSchedule.backgroundPathDark"
+        static let backgroundEnabled = "nativeSchedule.backgroundEnabled"
         static let backgroundPlacementDark = "nativeSchedule.backgroundPlacementDark"
     }
 
@@ -73,10 +76,11 @@ final class NativeSchedulePreferences: ObservableObject {
         let savedView = defaults.string(forKey: Key.defaultView) ?? "week"
         defaultView = Self.viewOptions.contains(savedView) ? savedView : "week"
         let savedDensity = defaults.string(forKey: Key.density) ?? "comfortable"
-        density = savedDensity == "compact" ? "compact" : "comfortable"
+        density = Self.densityOptions.contains(savedDensity) ? savedDensity : "comfortable"
         hideSlotsAfter = Self.clampedHideSlotsAfter(defaults.object(forKey: Key.hideSlotsAfter) as? Int ?? Self.defaultHideSlotsAfter)
         backgroundPath = defaults.string(forKey: Key.backgroundPath) ?? ""
         backgroundPathDark = defaults.string(forKey: Key.backgroundPathDark) ?? ""
+        backgroundEnabled = defaults.object(forKey: Key.backgroundEnabled) as? Bool ?? true
         let opacity = Self.clampedOpacity(defaults.object(forKey: Key.backgroundOpacity) as? Double ?? Self.defaultBackgroundOpacity)
         backgroundOpacity = opacity
         // 升级上来还没有单独设过深色的，按浅色的值推一个默认值。
@@ -90,7 +94,8 @@ final class NativeSchedulePreferences: ObservableObject {
     }
 
     static let viewOptions = ["week", "day", "month"]
-    static let densityOptions = ["comfortable", "compact"]
+    /// 卡片密度：宽松只加高行距，卡片排版和舒适一样；紧凑同时换用小字号卡片。
+    static let densityOptions = ["relaxed", "comfortable", "compact"]
 
     /// 背景图的不透明度范围。在「调整背景」页里调，可以一直开到 100%。
     static let backgroundOpacityRange: ClosedRange<Double> = 0.1...1
@@ -114,6 +119,16 @@ final class NativeSchedulePreferences: ObservableObject {
     /// 当前外观下显示的背景图：这个外观没单独设图，就沿用另一个外观的。
     func backgroundImage(dark: Bool) -> ScheduleBackgroundImage? {
         dark ? (backgroundImageDark ?? backgroundImage) : (backgroundImage ?? backgroundImageDark)
+    }
+
+    /// 课表上实际铺的图：开关关着就是没有。
+    func visibleBackgroundImage(dark: Bool) -> ScheduleBackgroundImage? {
+        backgroundEnabled ? backgroundImage(dark: dark) : nil
+    }
+
+    /// 两种外观里至少有一张图。
+    var hasAnyBackground: Bool {
+        hasOwnBackground(dark: false) || hasOwnBackground(dark: true)
     }
 
     /// 这个外观有没有自己的一张图（而不是沿用另一个外观的）。
@@ -169,6 +184,8 @@ final class NativeSchedulePreferences: ObservableObject {
         var backgroundImageData: Data?
         /// Optional so backups made before this preference existed still decode.
         var backgroundImageDataDark: Data? = nil
+        /// Optional so backups made before this preference existed still decode.
+        var backgroundEnabled: Bool? = nil
     }
 
     func makeSnapshot() -> DisplaySnapshot {
@@ -187,7 +204,8 @@ final class NativeSchedulePreferences: ObservableObject {
                 : try? Data(contentsOf: Self.backgroundFileURL),
             backgroundImageDataDark: backgroundPathDark.isEmpty
                 ? nil
-                : try? Data(contentsOf: Self.backgroundFileURL(dark: true))
+                : try? Data(contentsOf: Self.backgroundFileURL(dark: true)),
+            backgroundEnabled: backgroundEnabled
         )
     }
 
@@ -200,6 +218,7 @@ final class NativeSchedulePreferences: ObservableObject {
         defaultView = Self.viewOptions.contains(snapshot.defaultView) ? snapshot.defaultView : "week"
         density = Self.densityOptions.contains(snapshot.density) ? snapshot.density : "comfortable"
         hideSlotsAfter = Self.clampedHideSlotsAfter(snapshot.hideSlotsAfter ?? Self.defaultHideSlotsAfter)
+        backgroundEnabled = snapshot.backgroundEnabled ?? true
         backgroundOpacity = Self.clampedOpacity(snapshot.backgroundOpacity)
         backgroundOpacityDark = Self.clampedOpacity(
             snapshot.backgroundOpacityDark ?? Self.defaultDarkOpacity(light: backgroundOpacity)
@@ -253,6 +272,7 @@ final class NativeSchedulePreferences: ObservableObject {
         hideSlotsAfter = Self.defaultHideSlotsAfter
         backgroundPath = ""
         backgroundPathDark = ""
+        backgroundEnabled = true
         backgroundOpacity = Self.defaultBackgroundOpacity
         backgroundOpacityDark = Self.defaultDarkOpacity(light: Self.defaultBackgroundOpacity)
         backgroundImage = nil
@@ -331,6 +351,7 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(Self.clampedHideSlotsAfter(hideSlotsAfter), forKey: Key.hideSlotsAfter)
         defaults.set(backgroundPath, forKey: Key.backgroundPath)
         defaults.set(backgroundPathDark, forKey: Key.backgroundPathDark)
+        defaults.set(backgroundEnabled, forKey: Key.backgroundEnabled)
         defaults.set(Self.clampedOpacity(backgroundOpacity), forKey: Key.backgroundOpacity)
         defaults.set(Self.clampedOpacity(backgroundOpacityDark), forKey: Key.backgroundOpacityDark)
     }

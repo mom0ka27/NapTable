@@ -8,19 +8,24 @@ import UniformTypeIdentifiers
 /// 看到的就是课表页上的样子。预览叠了一层示意格子，并按不透明度混合，
 /// 方便判断图放上去之后课表还看不看得清。
 ///
-/// 设置里是推进导航栈的一页，返回键就是取消；本身不带 `NavigationStack`，
-/// 需要弹出来用时由调用方包一层并传 `onCancel`。
+/// 改动实时生效，没有「保存」这一步：不透明度直接绑在设置上，位置和大小
+/// 每次松手后稍等一下就重新裁一张写进去。设置里是推进导航栈的一页，返回就是
+/// 完成；本身不带 `NavigationStack`，需要弹出来用时由调用方包一层并传 `onDone`。
 struct BackgroundCropEditor: View {
     let image: CGImage
     var initialPlacement = NativeSchedulePreferences.BackgroundPlacement()
-    let initialOpacity: Opacity
+    /// 两种外观的不透明度，拖动时直接改到设置里。
+    @Binding var opacity: Opacity
     /// 打开时预览哪种外观；nil 跟随系统。
     var initialPreviewDark: Bool? = nil
     /// 两种外观各有一张图时，这张图只属于一种外观：预览锁定在它上面，
     /// 也只调它的不透明度。两种外观共用一张图时可以来回切换。
     var locksPreviewAppearance = false
-    var onCancel: (() -> Void)?
-    let onSave: (_ jpeg: Data, _ placement: NativeSchedulePreferences.BackgroundPlacement, _ opacity: Opacity) -> Void
+    /// 刚从相册选的图：一进来就按默认摆放存一次，课表立刻换上它。
+    var commitsOnAppear = false
+    var onDone: (() -> Void)?
+    /// 摆放有变化时调用，写入裁好的图；写失败时抛错。
+    let onCommit: (_ jpeg: Data, _ placement: NativeSchedulePreferences.BackgroundPlacement) throws -> Void
 
     /// 浅色、深色各一个不透明度。
     struct Opacity: Equatable {
@@ -36,11 +41,14 @@ struct BackgroundCropEditor: View {
     @State private var gestureScale: CGFloat = 1
     @State private var dragTranslation: CGSize = .zero
     @State private var adjusting = false
-    @State private var opacity = Opacity(light: 0.18, dark: 0.28)
     /// 预览按哪种外观画。滑块调的也是这种外观的不透明度。
     @State private var previewDark = false
-    @State private var saving = false
     @State private var failed = false
+    /// 等着写入的那次裁剪。连续调整时只保留最后一次。
+    @State private var pendingCommit: Task<Void, Never>?
+    @State private var hasUncommittedChanges = false
+    /// `onAppear` 可能不止来一次，初始摆放和首次写入只做一回，免得把调好的位置冲掉。
+    @State private var didAppear = false
 
     static let maxScale: CGFloat = 4
 
@@ -62,26 +70,32 @@ struct BackgroundCropEditor: View {
         .toolbar(.hidden, for: .tabBar)
         #endif
         .toolbar {
-            if let onCancel {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消", action: onCancel)
+            if let onDone {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        commitNow()
+                        onDone()
+                    }
                 }
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("使用") { save() }
-                    .disabled(saving)
             }
         }
         .alert("背景图片", isPresented: $failed) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("这张图片保存失败，换一张再试。")
+            Text("这次调整没能保存，再调一下试试，或者换一张图片。")
         }
+        // 返回时还没轮到的那次裁剪马上写掉，不丢最后一下调整。
+        .onDisappear { commitNow() }
         .onAppear {
-            opacity = initialOpacity
+            guard !didAppear else { return }
+            didAppear = true
             previewDark = initialPreviewDark ?? (systemScheme == .dark)
             scale = min(Self.maxScale, max(1, initialPlacement.scale))
             offset = CGSize(width: initialPlacement.offsetX, height: initialPlacement.offsetY)
+            if commitsOnAppear {
+                hasUncommittedChanges = true
+                commitNow()
+            }
         }
     }
 
@@ -145,6 +159,7 @@ struct BackgroundCropEditor: View {
                         image: image, frame: frame, scale: scale
                     )
                     dragTranslation = .zero
+                    scheduleCommit()
                 }
                 .simultaneously(with: MagnifyGesture()
                     .onChanged {
@@ -156,6 +171,7 @@ struct BackgroundCropEditor: View {
                         scale = min(Self.maxScale, max(1, scale * value.magnification))
                         gestureScale = 1
                         offset = Self.clamp(offset, image: image, frame: frame, scale: scale)
+                        scheduleCommit()
                     })
         )
         .onTapGesture(count: 2) { reset() }
@@ -171,7 +187,10 @@ struct BackgroundCropEditor: View {
         VStack(spacing: 10) {
             HStack {
                 Text("大小")
-                Slider(value: $scale, in: 1...Self.maxScale) { adjusting = $0 }
+                Slider(value: $scale, in: 1...Self.maxScale) { editing in
+                    adjusting = editing
+                    if !editing { scheduleCommit() }
+                }
                 Text("\(Int((scale * 100).rounded()))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -219,18 +238,35 @@ struct BackgroundCropEditor: View {
             scale = 1
             offset = .zero
         }
+        scheduleCommit()
+    }
+
+    /// 松手后稍等一下再裁：连着拖几下只写最后一次，不会每一下都重新编码 JPEG。
+    private func scheduleCommit() {
+        hasUncommittedChanges = true
+        pendingCommit?.cancel()
+        pendingCommit = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            commitNow()
+        }
     }
 
     @MainActor
-    private func save() {
-        saving = true
-        defer { saving = false }
-        guard let data = Self.render(image: image, scale: scale, offset: offset) else {
+    private func commitNow() {
+        pendingCommit?.cancel()
+        pendingCommit = nil
+        guard hasUncommittedChanges else { return }
+        hasUncommittedChanges = false
+        do {
+            guard let data = Self.render(image: image, scale: scale, offset: offset) else { throw CommitError.render }
+            try onCommit(data, .init(scale: scale, offsetX: offset.width, offsetY: offset.height))
+        } catch {
             failed = true
-            return
         }
-        onSave(data, .init(scale: scale, offsetX: offset.width, offsetY: offset.height), opacity)
     }
+
+    private enum CommitError: Error { case render }
 
     /// 以一个固定尺寸的画框重放同样的摆放，再按原图的清晰度渲染成 JPEG，
     /// 这样裁出来的结果和屏幕上预览所用的画框大小无关。
