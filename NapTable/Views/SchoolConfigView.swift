@@ -106,6 +106,24 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("移除共享课表「\(schedule.name)」")
+                            // 挂在垃圾桶按钮上：iOS 26 起确认框从触发它的视图旁边弹出，
+                            // 挂在整个列表上会飘到屏幕中间。
+                            .confirmationDialog(
+                                "移除共享课表「\(schedule.name)」？",
+                                isPresented: Binding(
+                                    get: { pendingRemoval?.meta.code == schedule.meta.code },
+                                    set: { if !$0 { pendingRemoval = nil } }
+                                ),
+                                titleVisibility: .visible
+                            ) {
+                                Button("移除课表", role: .destructive) {
+                                    service.removeShared(schedule.meta.code)
+                                    pendingRemoval = nil
+                                }
+                                Button("取消", role: .cancel) { pendingRemoval = nil }
+                            } message: {
+                                Text("仅从你的列表移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。")
+                            }
                         }
                         Toggle(isOn: Binding(
                             get: { service.followedCode == schedule.meta.code },
@@ -155,22 +173,6 @@ struct MySchedulesView<OwnedSchedules: View>: View {
             SharedScheduleImportView { name in
                 message = "已导入「\(name)」，可在课表顶部切换查看"
             }
-        }
-        .confirmationDialog(
-            "移除共享课表「\(pendingRemoval?.name ?? "")」？",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("移除课表", role: .destructive) {
-                if let schedule = pendingRemoval { service.removeShared(schedule.meta.code) }
-                pendingRemoval = nil
-            }
-            Button("取消", role: .cancel) { pendingRemoval = nil }
-        } message: {
-            Text("仅从你的列表移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。")
         }
         .task { await service.refreshFollowed() }
     }
