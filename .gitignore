@@ -24,3 +24,6 @@ __pycache__/
 !.env.example
 *.p8
 AuthKey_*.p8
+
+# Claude Code local state and worktrees
+.claude/

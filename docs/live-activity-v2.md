@@ -1,6 +1,6 @@
 # Live Activity v2
 
-实现依据：`naptable-live-activity-migration.md`。本文件记录工作区实现与本地验证，不代表部署、真机送达或容量验收。
+本文记录课程实时活动 v2 的客户端行为、HTTP 契约与服务端调度，以代码为准。服务端已上线；真机送达与容量仍未完成验收，见文末。
 
 ## 客户端行为
 
@@ -41,7 +41,7 @@
 
 ### 令牌模式（共享课表 + 关心）
 
-规格见 `live-activity-token-mode.md`。提醒快照是共享课表（`sourceLabel != nil`）时 `pushMode = token`，其余一律频道模式；模式随 `scheduleScope` 切换，同一 scope 内不混用。
+提醒快照是共享课表（`sourceLabel != nil`）时 `pushMode = token`，其余一律频道模式；模式随 `scheduleScope` 切换，同一 scope 内不混用。
 
 - iOS 18 与 iOS 26 相同：不做本地预约，计划带 `pushMode: "token"` 上传，服务端 start 写 `"input-push-token": 1`、不引用频道，也不延长广播承诺。原因：官方文档只保证 push-to-start 会唤醒 App 下发更新令牌，没有说明本地预约（pending）何时下发令牌。iOS 26 设备若已交接为 local，先结束本地活动再调用 `remote-resume`；取消关心后重新 `local-handoff` 并本地预约。iOS 26 同样订阅 `pushToStartTokenUpdates`。
 - App 订阅每个令牌活动的 `pushTokenUpdates`（请求后、`activityUpdates`、每次前台/后台刷新补订阅），把 `refreshAt`（除第一帧外所有帧的开始，加帧间空档的起点，加提醒时刻）和 `end` PUT 到上面的端点。合并活动里开场之后才加入的课（任一张课表），在它单独提醒时本该提醒的时刻（开课前提前显示时间，被前一门课下课截断）列入 `alertAt`；与开场同时或更早就到提醒时刻的课不重复提醒。只在非空时发送；旧服务端以 400「expected token, dateKey, refreshAt and end only」拒收时，本次会话去掉 `alertAt` 重发，只丢提醒、不丢刷新。App Group 小账本按 occurrence 记录上次被接受的摘要，内容不变不重复上传；活动结束或 occurrence 消失时尽力 DELETE。
@@ -64,9 +64,9 @@ start 的提交意图在网络前落盘。明确拒绝的 408/429/5xx 在期限�
 
 远程 token 使用 Fernet 认证加密，不写入计划或日志。部署时安装 `server/requirements.txt`，在数据库和 release 目录外生成、备份并限制权限的 Fernet key，通过 `NAPTABLE_LA_TOKEN_KEY_PATH` 指定。未配置 key 时不能注册远程 token，但本地预约设备可注册。不要更换或丢失密钥后继续假设旧 token 可用。
 
-先备份数据库/配置，准备配套服务端，再发布客户端。本次工作不包含提交、推送、部署或真实 APNs 请求。回退必须保留提交历史与广播承诺，不能恢复旧 pending 队列后直接启动旧调度器。
+先备份数据库/配置，准备配套服务端，再发布客户端。回退必须保留提交历史与广播承诺，不能恢复旧 pending 队列后直接启动旧调度器。
 
-## 验证及发布前验收
+## 验证与验收
 
 本地检查入口：
 

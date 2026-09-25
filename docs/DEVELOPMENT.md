@@ -72,21 +72,16 @@ xcrun simctl get_app_container booted me.mom0ka27.naptable groups
 
 ## 测试与验证
 
-Swift 模型和实时活动检查：
+Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh` 用 Node 运行中山大学导入脚本）：
 
 ```sh
-bash tests/check-live-activity.sh
-bash tests/check-chinese-calendar.sh
-bash tests/check-calendar-adjustment.sh
-bash tests/check-sharing.sh
-bash tests/check-import-conflicts.sh
+for script in tests/check-*.sh; do bash "$script" || break; done
 ```
 
-服务端测试：
+服务端测试（加密相关用例需先安装 `server/requirements.txt`，否则跳过）：
 
 ```sh
-python3 -m unittest tests.test_term_authority tests.test_shares tests.test_server \
-  tests.test_live_activity tests.test_apns
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Debug 模拟器可以通过环境变量直接打开指定入口：
