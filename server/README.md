@@ -51,11 +51,7 @@ ln -s "$(dirname "$(dirname "$runtime")")" /opt/naptable/python
 
 脚本先运行全部 Python 服务端测试，再创建版本化 release 和独立虚拟环境，安装加密依赖，配置并备份 token 密钥，在数据库副本上预检迁移，停旧调度并最终备份数据库，然后原子切换 `/opt/naptable/current` 并检查内外网健康接口。v2 版本之间启动失败会恢复上一 release；首次 v1 → v2 迁移失败会停止服务并保留现场，不自动重启可能重新产生旧启动任务的 v1。设置 `NAPTABLE_SKIP_TESTS=1` 可跳过重复测试，`NAPTABLE_DOMAIN` 可覆盖默认域名。
 
-`.github/workflows/deploy-server.yml` 会在 `main` 分支的 `server/`、`deploy/` 或 Python 服务端测试发生变化时执行相同流程。启用前需要在 GitHub Actions 配置三个 repository secrets：
-
-- `NAP_SSH_TARGET`：例如 `root@naptable.mom0ka27.top`；
-- `NAP_SSH_PRIVATE_KEY`：专用于部署的 SSH 私钥；
-- `NAP_SSH_KNOWN_HOSTS`：经过核对的目标机 `known_hosts` 记录。
+部署只从开发机手动执行。`.github/workflows/server-tests.yml` 在 `main` 分支和 PR 的 `server/`、`deploy/` 或 Python 服务端测试发生变化时只运行测试，不部署。
 
 数据库、`/etc/naptable/naptable.env` 与 `/etc/naptable/keys/` 均位于 release 目录之外，连续部署不会覆盖业务数据或 APNs 凭据。
 

@@ -86,6 +86,7 @@ required_files=(
     server/holidays.py
     server/live_activity.py
     server/live_activity_v2.py
+    server/live_activity_schedule.py
     server/live_activity_timeline.py
     server/requirements.txt
     server/naptable_server.py
@@ -114,11 +115,7 @@ chown -R root:root "$release_path"
 find "$release_path" -type d -exec chmod 0755 {} +
 find "$release_path" -type f -exec chmod 0644 {} +
 chmod 0755 "$release_path/deploy/backup.py" "$release_path/deploy/reload-nginx-after-renewal.sh"
-"$python_runtime" -m py_compile \
-    "$release_path/server/apns.py" \
-    "$release_path/server/holidays.py" \
-    "$release_path/server/live_activity.py" \
-    "$release_path/server/naptable_server.py"
+"$python_runtime" -m py_compile "$release_path"/server/*.py
 
 # Keep dependencies tied to the release, while credentials survive releases.
 umask 022

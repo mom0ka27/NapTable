@@ -1,0 +1,36 @@
+name: Server tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - "tests/test_*.py"
+      - ".github/workflows/server-tests.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "deploy/**"
+      - "tests/test_*.py"
+      - ".github/workflows/server-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install server dependencies
+        run: python3 -m pip install -r server/requirements.txt
+
+      - name: Run server tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
