@@ -184,7 +184,8 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
     }
 }
 
-/// 今天的课上完之后小组件显示什么。两日课表本来就带明天，不受这个设置影响。
+/// 今天的课上完之后小组件显示什么。在每个小组件的「编辑小组件」里单独选；
+/// 两日课表本来就带明天，不受这个设置影响。
 enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable, Sendable {
     /// 保持原来的「今天没有课程」。
     case none
@@ -192,6 +193,8 @@ enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable,
     case tomorrow
     /// 最近的一段法定假期。
     case holiday
+    /// 整个小组件换成最近一个有课的日期（一周之内），照常显示那天的课；一周内都没课时退回最近的节假日。
+    case nextCourseDay
 
     var id: String { rawValue }
 
@@ -200,6 +203,7 @@ enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable,
         case .none: return "今天没有课程"
         case .tomorrow: return "明天的课程"
         case .holiday: return "最近的节假日"
+        case .nextCourseDay: return "最近有课的一天"
         }
     }
 }

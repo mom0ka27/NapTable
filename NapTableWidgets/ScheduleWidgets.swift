@@ -1007,7 +1007,12 @@ private struct UpcomingScheduleWidget: Widget {
     let kind = "me.mom0ka27.naptable.widget.upcoming"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: ScheduleTimelineProvider()) { entry in
+        // 沿用原来的 kind：换成可编辑的配置后，已经放在桌面上的小组件照样在，取默认值。
+        AppIntentConfiguration(
+            kind: kind,
+            intent: UpcomingScheduleWidgetIntent.self,
+            provider: ScheduleIntentTimelineProvider<UpcomingScheduleWidgetIntent>()
+        ) { entry in
             ScheduleWidgetRoot(entry: entry) { payload in
                 UpcomingScheduleView(payload: payload)
             }
@@ -1028,7 +1033,11 @@ private struct TodayScheduleWidget: Widget {
     let kind = "me.mom0ka27.naptable.widget.today"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: ScheduleTimelineProvider()) { entry in
+        AppIntentConfiguration(
+            kind: kind,
+            intent: TodayScheduleWidgetIntent.self,
+            provider: ScheduleIntentTimelineProvider<TodayScheduleWidgetIntent>()
+        ) { entry in
             ScheduleWidgetRoot(entry: entry) { payload in
                 TodayScheduleView(payload: payload)
             }
@@ -1043,7 +1052,11 @@ private struct TwoDayScheduleWidget: Widget {
     let kind = "me.mom0ka27.naptable.widget.twoday"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: ScheduleTimelineProvider()) { entry in
+        AppIntentConfiguration(
+            kind: kind,
+            intent: TwoDayScheduleWidgetIntent.self,
+            provider: ScheduleIntentTimelineProvider<TwoDayScheduleWidgetIntent>()
+        ) { entry in
             ScheduleWidgetRoot(entry: entry) { payload in
                 TwoDayScheduleView(payload: payload)
             }
@@ -1082,8 +1095,12 @@ private struct ScheduleWidgetRoot<Content: View>: View {
 
     var body: some View {
         let theme = NextWidgetConfiguration.scheduleTheme
-        let displayOptions = NextWidgetConfiguration.displayOptions
-        Group {
+        var displayOptions = NextWidgetConfiguration.displayOptions
+        // 「今天的课上完后」已经挪进每个小组件自己的「编辑小组件」里。
+        if let afterClass = entry.configuration.afterClass {
+            displayOptions.afterClass = afterClass
+        }
+        return Group {
             switch entry.state {
             case .loaded(let payload):
                 content(payload)
@@ -1114,6 +1131,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
         }
         .environment(\.scheduleWidgetTheme, theme)
         .environment(\.scheduleWidgetDisplayOptions, displayOptions)
+        .environment(\.scheduleWidgetConfiguration, entry.configuration)
         .widgetURL(entry.appURL)
         .containerBackground(for: .widget) {
             if family.isAccessory {
@@ -1187,10 +1205,11 @@ private struct UpcomingScheduleView: View {
     let payload: WidgetSchedulePayload
     @Environment(\.widgetFamily) private var family
     @Environment(\.scheduleWidgetDisplayOptions) private var options
+    @Environment(\.scheduleWidgetConfiguration) private var configuration
 
     @ViewBuilder
     var body: some View {
-        let selection = payload.upcoming()
+        let selection = payload.upcoming(afterClass: options.afterClass)
         if family.isAccessory {
             LockScreenScheduleView(payload: payload, day: selection.0, courses: selection.1)
         } else {
@@ -1212,8 +1231,15 @@ private struct UpcomingScheduleView: View {
                         UpcomingColumn(label: "接下来", course: selection.1.count > 1 ? selection.1[1] : nil)
                     }
                 } else if let course = selection.1.first {
-                    // 小号只放一节：当前这节，没在上课就是接下来那节。
+                    // 默认只放一节：当前这节，没在上课就是接下来那节。「编辑小组件」里可以改成两节。
                     CourseSummary(course: course, roomy: true)
+                    if configuration.upcomingCourseCount > 1, selection.1.count > 1 {
+                        Spacer(minLength: 7)
+                        Text("接下来")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(WidgetPalette.muted)
+                        CompactNextCourse(course: selection.1[1])
+                    }
                 }
             }
         }
@@ -1270,7 +1296,8 @@ private struct LockScreenScheduleView: View {
             return nil
         case .tomorrow:
             return tomorrowCourseText ?? AfterClassView.holidayLine()
-        case .holiday:
+        case .holiday, .nextCourseDay:
+            // 「最近有课的一天」在选课时就已经换过日子了，走到这里说明一周内都没课。
             return AfterClassView.holidayLine()
         }
     }
@@ -1451,6 +1478,34 @@ private struct CourseSummary: View {
     }
 }
 
+private struct CompactNextCourse: View {
+    let course: WidgetCourse
+    @Environment(\.scheduleWidgetTheme) private var theme
+    @Environment(\.scheduleWidgetDisplayOptions) private var options
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(WidgetPalette.accent(for: course, theme: theme))
+                .frame(width: 5, height: 27)
+            VStack(alignment: .leading, spacing: 1) {
+                if let primary = options.primaryValue(for: course) {
+                    Text(primary)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(WidgetPalette.primary)
+                        .lineLimit(1)
+                }
+                if options.showTime {
+                    Text(course.timeRange)
+                        .font(.system(size: 9))
+                        .foregroundStyle(WidgetPalette.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+}
+
 private struct TodayScheduleView: View {
     let payload: WidgetSchedulePayload
     @Environment(\.widgetFamily) private var family
@@ -1467,9 +1522,14 @@ private struct TodayScheduleView: View {
             today.courseList.allSatisfy { $0.hasEnded(at: minutes) }
         } ?? false
         let showsAfterClass = today.courseList.isEmpty || (finished && options.showsAfterClassPreview)
-        let maxLimit = family == .systemLarge ? 7 : 2
+        // 「最近有课的一天」：整块换成那一天，照常列课（不灰显）；一周内都没课才走下面的课后卡片。
+        let rolled = showsAfterClass && options.afterClass == .nextCourseDay
+            ? payload.nextCourseDay(after: now)
+            : nil
         Group {
-            if showsAfterClass {
+            if let rolled {
+                courseList(day: rolled.day, nowMinutes: nil)
+            } else if showsAfterClass {
                 // 课后卡片自己会撑满剩下的高度，不参与下面按行数挑排法。
                 VStack(alignment: .leading, spacing: spacing) {
                     WidgetDateHeader(
@@ -1484,32 +1544,8 @@ private struct TodayScheduleView: View {
                         showsRemainingCount: family != .systemMedium
                     )
                 }
-            } else if family == .systemLarge {
-                // 大号写死 7 行放不下，多出来的课会被悄悄截掉。从多到少试，挑第一个放得下的，
-                // 这样「后面还有几门」才数得准。
-                ViewThatFits(in: .vertical) {
-                    ForEach(Array(stride(from: maxLimit, through: 1, by: -1)), id: \.self) { limit in
-                        courses(today: today, nowMinutes: nowMinutes, limit: limit)
-                    }
-                }
             } else {
-                // 中号固定两门，提示跟在下面。两门课加日期栏已经快把高度用满了：放不下时
-                // 两门课之间的间隔一档档收，但不低于 4，再挤就粘在一起了；提示和上面那门课
-                // 之间的距离不动。还放不下（小屏手机）才把提示贴到右下角，往下探进系统留的边距里。
-                let window = today.courseWindow(limit: maxLimit, nowMinutes: nowMinutes)
-                ViewThatFits(in: .vertical) {
-                    ForEach([7, 6, 5, 4] as [CGFloat], id: \.self) { rowSpacing in
-                        courses(today: today, nowMinutes: nowMinutes, limit: maxLimit, rowSpacing: rowSpacing)
-                    }
-                    courses(today: today, nowMinutes: nowMinutes, limit: maxLimit, rowSpacing: 6, showsRemaining: false)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .overlay(alignment: .bottomTrailing) {
-                            if window.remainingCount > 0 {
-                                remainingText(window.remainingCount)
-                                    .offset(y: 8)
-                            }
-                        }
-                }
+                courseList(day: today, nowMinutes: nowMinutes)
             }
         }
         // 大号的课排不满时，系统默认把整块内容竖着居中，日期栏就飘在半空；贴顶放。
@@ -1517,6 +1553,38 @@ private struct TodayScheduleView: View {
     }
 
     private var spacing: CGFloat { family == .systemLarge ? 8 : 7 }
+
+    @ViewBuilder
+    private func courseList(day: WidgetDay, nowMinutes: Int?) -> some View {
+        let maxLimit = family == .systemLarge ? 7 : 2
+        if family == .systemLarge {
+            // 大号写死 7 行放不下，多出来的课会被悄悄截掉。从多到少试，挑第一个放得下的，
+            // 这样「后面还有几门」才数得准。
+            ViewThatFits(in: .vertical) {
+                ForEach(Array(stride(from: maxLimit, through: 1, by: -1)), id: \.self) { limit in
+                    courses(today: day, nowMinutes: nowMinutes, limit: limit)
+                }
+            }
+        } else {
+            // 中号固定两门，提示跟在下面。两门课加日期栏已经快把高度用满了：放不下时
+            // 两门课之间的间隔一档档收，但不低于 4，再挤就粘在一起了；提示和上面那门课
+            // 之间的距离不动。还放不下（小屏手机）才把提示贴到右下角，往下探进系统留的边距里。
+            let window = day.courseWindow(limit: maxLimit, nowMinutes: nowMinutes)
+            ViewThatFits(in: .vertical) {
+                ForEach([7, 6, 5, 4] as [CGFloat], id: \.self) { rowSpacing in
+                    courses(today: day, nowMinutes: nowMinutes, limit: maxLimit, rowSpacing: rowSpacing)
+                }
+                courses(today: day, nowMinutes: nowMinutes, limit: maxLimit, rowSpacing: 6, showsRemaining: false)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .overlay(alignment: .bottomTrailing) {
+                        if window.remainingCount > 0 {
+                            remainingText(window.remainingCount)
+                                .offset(y: 8)
+                        }
+                    }
+            }
+        }
+    }
 
     private func courses(
         today: WidgetDay,
@@ -1628,21 +1696,27 @@ private struct TodayCourseRow: View {
 
 private struct TwoDayScheduleView: View {
     let payload: WidgetSchedulePayload
+    @Environment(\.scheduleWidgetConfiguration) private var configuration
 
     var body: some View {
         let now = Date.now
         let todayDate = WidgetSchedulePayload.dateString(now)
-        let today = payload.currentDay(now: now)
+        // 「编辑小组件」里可以改成从最近有课的一天起：今天的课上完了就整体往后挪。
+        let start = configuration.twoDayStart == .nextCourseDay
+            ? payload.preferredCourseDay(now: now)
+            : (day: payload.currentDay(now: now), offset: 0)
+        let today = start.day
+        let isToday = start.offset == 0 && today.date == todayDate
         let tomorrowDate = WidgetSchedulePayload.dateString(
-            Calendar.current.date(byAdding: .day, value: 1, to: now) ?? now
+            Calendar.current.date(byAdding: .day, value: start.offset + 1, to: now) ?? now
         )
-        let tomorrow = payload.fullDay(for: tomorrowDate, fallbackOffset: 1)
+        let tomorrow = payload.fullDay(for: tomorrowDate, fallbackOffset: start.offset + 1)
 
         HStack(alignment: .top, spacing: 13) {
             DayColumn(
                 day: today,
-                nowMinutes: today.date == todayDate ? WidgetSchedulePayload.minutesSinceMidnight(now) : nil,
-                isToday: today.date == todayDate,
+                nowMinutes: isToday ? WidgetSchedulePayload.minutesSinceMidnight(now) : nil,
+                isToday: isToday,
                 siblingHasCourses: !tomorrow.courseList.isEmpty,
                 tableName: payload.title
             )
@@ -2022,7 +2096,8 @@ private struct AfterClassView: View {
                 // 明天也没课：能给出假期就给假期，否则老老实实说没课。
                 holidayCard(message: todayMessage)
             }
-        case .holiday:
+        case .holiday, .nextCourseDay:
+            // 「最近有课的一天」由外面直接换成那一天；到这里说明一周内都没课，就给假期。
             holidayCard(message: todayMessage)
         }
     }
@@ -2091,7 +2166,7 @@ private struct AfterClassView: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.72)
-            if let footnote = countdown.flatMap(Self.holidayFootnote) {
+            if let footnote = countdown.flatMap({ Self.holidayFootnote($0) }) {
                 Text(footnote)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(WidgetPalette.muted)
@@ -2131,6 +2206,7 @@ private struct AfterClassView: View {
         case .none: return false
         case .holiday: return true
         case .tomorrow: return payload.tomorrow(now: now)?.courseList.isEmpty ?? true
+        case .nextCourseDay: return payload.nextCourseDay(after: now) == nil
         }
     }
 }
@@ -2249,6 +2325,7 @@ private enum WidgetPalette {
 struct ScheduleEntry: TimelineEntry {
     let date: Date
     let state: ScheduleEntryState
+    var configuration = ScheduleWidgetConfiguration()
 
     var appURL: URL {
         guard case .loaded(let payload) = state else { return NextWidgetConfiguration.appURL }
@@ -2298,15 +2375,9 @@ enum ScheduleEntryState {
     case failed(String)
 }
 
-struct ScheduleTimelineProvider: TimelineProvider {
-    func placeholder(in context: Context) -> ScheduleEntry { .placeholder }
-
-    func getSnapshot(in context: Context, completion: @escaping (ScheduleEntry) -> Void) {
-        completion(.placeholder)
-    }
-
-    func getTimeline(in context: Context, completion: @escaping (Timeline<ScheduleEntry>) -> Void) {
-        let now = Date.now
+/// 从 App Group 里读课表生成时间线；各个小组件的配置由 `ScheduleIntentTimelineProvider` 再套上。
+enum ScheduleTimeline {
+    static func make(now: Date) -> Timeline<ScheduleEntry> {
         let entry: ScheduleEntry
         let payload = ScheduleWidgetStore.load()
         if let payload {
@@ -2317,7 +2388,7 @@ struct ScheduleTimelineProvider: TimelineProvider {
         let periodic = Calendar.current.date(byAdding: .minute, value: 30, to: now) ?? now.addingTimeInterval(1800)
         // 下课那一刻就该换内容（划掉已结束的课、放学后切到明天），别等下一个半小时。
         let refresh = payload.flatMap { Self.nextBoundary(in: $0, now: now) }.map { min($0, periodic) } ?? periodic
-        completion(Timeline(entries: [entry], policy: .after(refresh)))
+        return Timeline(entries: [entry], policy: .after(refresh))
     }
 
     /// 今天剩下的课程边界里最近的一个（开始或结束），没有就返回 nil。

@@ -161,6 +161,25 @@ struct ChineseCalendarChecks {
         expect(schoolDay.upcoming(now: moment(thursday, hour: 18)).1.isEmpty, "放学后今天没有剩余课程")
         expect(schoolDay.tomorrow(now: moment(thursday, hour: 18))?.date == friday, "放学后能取到明天")
 
+        // 「最近有课的一天」：放学后换到下一个有课的日期，中间空着的日子跳过
+        let afterSchool = moment(thursday, hour: 18)
+        let rolled = schoolDay.upcoming(now: afterSchool, afterClass: .nextCourseDay)
+        expect(rolled.0.date == friday && rolled.1.first?.displayName == "有机化学", "放学后临近课程换到明天的课")
+        expect(schoolDay.upcoming(now: afterSchool, afterClass: .tomorrow).1.isEmpty, "其他选项放学后不换日子")
+        expect(schoolDay.preferredCourseDay(now: moment(thursday, hour: 8)).offset == 0, "今天还有课就从今天起")
+        expect(schoolDay.preferredCourseDay(now: afterSchool).day.date == friday, "今天上完了从最近有课的一天起")
+        expect(payload.nextCourseDay(after: sundayDate)?.day.date == monday, "最近有课的一天可以跨到下一周")
+        let quietWeek = WidgetSchedulePayload(
+            title: nil, sourceLabel: nil, generatedAt: nil, semester: nil, currentWeek: 4,
+            today: widgetDay(thursday, day: 4, week: 4, courses: []),
+            days: nil,
+            weekDays: [widgetDay(thursday, day: 4, week: 4, courses: [])],
+            nextWeekDays: nil
+        )
+        expect(quietWeek.nextCourseDay(after: afterSchool) == nil, "一周内都没课时返回 nil")
+        expect(quietWeek.preferredCourseDay(now: afterSchool).day.date == thursday, "一周内都没课时退回今天")
+        expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "最近有课的一天", "新选项的名字")
+
         // 旧 payload 没有 nextWeekDays，解码后应为 nil 而不是失败
         let legacyPayload = Data("""
         {"title":"课表","currentWeek":4,"weekDays":[]}

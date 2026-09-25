@@ -219,14 +219,45 @@ struct WidgetSchedulePayload: Codable, Equatable {
         fullDay(for: Self.dateString(now), fallbackOffset: 0)
     }
 
-    /// Today's classes that have not finished yet, at most two.
-    func upcoming(now: Date = .now) -> (WidgetDay, [WidgetCourse]) {
+    /// Today's classes that have not finished yet, at most two. With
+    /// `.nextCourseDay` a finished day rolls forward to the nearest day that
+    /// has classes, and shows that day's first two.
+    func upcoming(
+        now: Date = .now,
+        afterClass: ScheduleWidgetAfterClassStyle = .tomorrow
+    ) -> (WidgetDay, [WidgetCourse]) {
         let day = currentDay(now: now)
-        let minutes = Self.minutesSinceMidnight(now)
-        let courses = day.courseList.filter {
-            $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
+        let courses = remainingCourses(in: day, now: now)
+        if courses.isEmpty, afterClass == .nextCourseDay, let next = nextCourseDay(after: now) {
+            return (next.day, Array(next.day.courseList.prefix(2)))
         }
         return (day, Array(courses.prefix(2)))
+    }
+
+    /// 今天还没上完的课（包括没有具体时间、没法判断的）。
+    func remainingCourses(in day: WidgetDay, now: Date = .now) -> [WidgetCourse] {
+        let minutes = Self.minutesSinceMidnight(now)
+        return day.courseList.filter {
+            $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
+        }
+    }
+
+    /// 今天之后一周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
+    func nextCourseDay(after now: Date = .now) -> (day: WidgetDay, offset: Int)? {
+        for offset in 1...7 {
+            guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: offset, to: now),
+                  let day = knownDay(for: Self.dateString(date)),
+                  !day.courseList.isEmpty else { continue }
+            return (day, offset)
+        }
+        return nil
+    }
+
+    /// 今天还有课就是今天，否则是最近一个有课的日期；两个都没有时退回今天。
+    func preferredCourseDay(now: Date = .now) -> (day: WidgetDay, offset: Int) {
+        let today = currentDay(now: now)
+        if !remainingCourses(in: today, now: now).isEmpty { return (today, 0) }
+        return nextCourseDay(after: now) ?? (today, 0)
     }
 
     static func dateString(_ date: Date) -> String {
