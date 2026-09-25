@@ -45,7 +45,7 @@ struct NativeScheduleDayColumn: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                            .minimumScaleFactor(0.6)
                         if let adjustment {
                             Text(adjustment.badge)
                                 .font(.system(size: 8, weight: .semibold))
@@ -53,13 +53,16 @@ struct NativeScheduleDayColumn: View {
                                 .fixedSize()
                                 .frame(width: 11, height: 11, alignment: .center)
                                 // 小字号汉字做光学居中，仅移动文字，不移动底色。
-                                .offset(x: 0.15)
+                                .offset(x: 0.2)
                                 .background(
                                     (adjustment.kind == .off ? Color.pink : Color.orange).opacity(0.85),
                                     in: RoundedRectangle(cornerRadius: 3, style: .continuous)
                                 )
                         }
                     }
+                    // The badge is fixed-size, so cap the row to the header's
+                    // inner box and let the date shrink instead of spilling out.
+                    .frame(maxWidth: max(0, columnWidth - 8))
                 }
                 .frame(width: columnWidth, height: Self.dateHeaderHeight)
                 .background {

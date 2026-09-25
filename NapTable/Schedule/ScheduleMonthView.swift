@@ -104,7 +104,7 @@ struct NativeScheduleMonthView: View {
                         .fixedSize()
                         .frame(width: 13, height: 13, alignment: .center)
                         // 小字号汉字做光学居中，仅移动文字，不移动底色。
-                        .offset(x: 0.15)
+                        .offset(x: 0.2)
                         .background(
                             (adjustment.kind == .off ? Color.pink : Color.orange).opacity(0.9),
                             in: RoundedRectangle(cornerRadius: 3, style: .continuous)
