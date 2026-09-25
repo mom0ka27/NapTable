@@ -27,6 +27,7 @@ struct NativeScheduleMonthView: View {
     }
 
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var themeSettings = NativeThemeSettings.shared
 
     private static let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
     private static let gutterWidth: CGFloat = 26
@@ -104,7 +105,7 @@ struct NativeScheduleMonthView: View {
                         .fixedSize()
                         .frame(width: 13, height: 13, alignment: .center)
                         // 小字号汉字做光学居中，仅移动文字，不移动底色。
-                        .offset(x: 0.15)
+                        .offset(x: 0.2)
                         .background(
                             (adjustment.kind == .off ? Color.pink : Color.orange).opacity(0.9),
                             in: RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -134,7 +135,7 @@ struct NativeScheduleMonthView: View {
         HStack(spacing: 2) {
             ForEach(Array(day.courses.prefix(3).enumerated()), id: \.offset) { _, block in
                 Circle()
-                    .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: colorScheme))
+                    .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: colorScheme, solid: themeSettings.solidCourseColor))
                     .frame(width: 4, height: 4)
             }
             if day.courses.count > 3 {
@@ -228,7 +229,7 @@ struct NativeScheduleMonthView: View {
         } label: {
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: colorScheme))
+                    .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: colorScheme, solid: themeSettings.solidCourseColor))
                     .frame(width: 4, height: 34)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(block.course.name)

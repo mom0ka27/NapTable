@@ -171,6 +171,9 @@ struct WidgetCourseWindow {
 /// The payload the app writes into the App Group container. `weekDays` carries
 /// the whole selected week so the two-day widget can show tomorrow.
 struct WidgetSchedulePayload: Codable, Equatable {
+    /// 「最近有课的一天」往后找几天。一周跨不过中秋接国庆这样的长假，三周连寒暑假前后的空档也够用。
+    static let lookaheadDays = 21
+
     let title: String?
     let sourceLabel: String?
     let generatedAt: String?
@@ -179,7 +182,8 @@ struct WidgetSchedulePayload: Codable, Equatable {
     let today: WidgetDay?
     let days: [WidgetDay]?
     let weekDays: [WidgetDay]?
-    /// 当前这一周的下一周。周日晚上要显示「明天」时，那一天已经不在 `weekDays` 里了。
+    /// `weekDays` 之外、今天所在这一周和之后三周的日子。周日晚上的「明天」、
+    /// 「最近有课的一天」（最多往后三周）都在这里找。名字沿用最早只带下一周时的叫法。
     /// 旧版本写的 payload 没有这个字段，解码成 `nil` 即可。
     let nextWeekDays: [WidgetDay]?
 
@@ -219,14 +223,38 @@ struct WidgetSchedulePayload: Codable, Equatable {
         fullDay(for: Self.dateString(now), fallbackOffset: 0)
     }
 
-    /// Today's classes that have not finished yet, at most two.
-    func upcoming(now: Date = .now) -> (WidgetDay, [WidgetCourse]) {
+    /// Today's classes that have not finished yet, at most two. With
+    /// `.nextCourseDay` a finished day rolls forward to the nearest day that
+    /// has classes, and shows that day's first two.
+    func upcoming(
+        now: Date = .now,
+        afterClass: ScheduleWidgetAfterClassStyle = .tomorrow
+    ) -> (WidgetDay, [WidgetCourse]) {
         let day = currentDay(now: now)
-        let minutes = Self.minutesSinceMidnight(now)
-        let courses = day.courseList.filter {
-            $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
+        let courses = remainingCourses(in: day, now: now)
+        if courses.isEmpty, afterClass == .nextCourseDay, let next = nextCourseDay(after: now) {
+            return (next.day, Array(next.day.courseList.prefix(2)))
         }
         return (day, Array(courses.prefix(2)))
+    }
+
+    /// 今天还没上完的课（包括没有具体时间、没法判断的）。
+    func remainingCourses(in day: WidgetDay, now: Date = .now) -> [WidgetCourse] {
+        let minutes = Self.minutesSinceMidnight(now)
+        return day.courseList.filter {
+            $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
+        }
+    }
+
+    /// 今天之后三周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
+    func nextCourseDay(after now: Date = .now) -> (day: WidgetDay, offset: Int)? {
+        for offset in 1...Self.lookaheadDays {
+            guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: offset, to: now),
+                  let day = knownDay(for: Self.dateString(date)),
+                  !day.courseList.isEmpty else { continue }
+            return (day, offset)
+        }
+        return nil
     }
 
     static func dateString(_ date: Date) -> String {

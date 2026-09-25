@@ -179,9 +179,14 @@ final class NativeWidgetSettings: ObservableObject {
         }
 
         let weekDays = days(for: week)
-        // 周日晚上要显示「明天」，那一天属于下一周。
-        let nextWeekDays = calendar.weeks.first(where: { $0.week == week.week + 1 }).map(days(for:))
         let currentWeekData = calendar.weeks.first(where: { $0.week == calendar.currentWeek }) ?? week
+        // 周日晚上要显示「明天」，那一天属于下一周；「最近有课的一天」最多往后看三周。
+        // 所以按真正的当前周带上这一周和之后三周（翻到别的周时 weekDays 不是当前周），去掉和 weekDays 重复的日子。
+        var knownDates = Set(weekDays.compactMap(\.date))
+        let nextWeekDays = (0...3)
+            .compactMap { offset in calendar.weeks.first(where: { $0.week == currentWeekData.week + offset }) }
+            .flatMap(days(for:))
+            .filter { day in day.date.map { knownDates.insert($0).inserted } ?? false }
         let todayDate = WidgetSchedulePayload.dateString(.now)
         let today = days(for: currentWeekData).first(where: { $0.date == todayDate })
             ?? days(for: currentWeekData).first(where: { $0.day == Self.chinaWeekday })

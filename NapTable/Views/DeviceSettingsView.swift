@@ -195,7 +195,8 @@ struct WidgetSettingsScreen: View {
                 Text("状态")
             } footer: {
                 Text("平时自动同步，迟迟不更新时才用这个按钮催一次。\n"
-                     + "长按桌面空白处添加「临近课程」「今日课表」或「两日课表」。")
+                     + "长按桌面空白处添加「临近课程」「今日课表」或「两日课表」。"
+                     + "今天的课上完后显示什么、两日课表显示哪两天，长按小组件选「编辑小组件」设置。")
             }
 
             Section {
@@ -216,25 +217,6 @@ struct WidgetSettingsScreen: View {
                 Text("日期信息")
             } footer: {
                 Text("只标法定假日和传统节日。当年的调休上班安排来自学校配置，会直接改课表和小组件里的课程。")
-            }
-
-            Section {
-                Picker("今天的课上完后", selection: Binding(
-                    get: { settings.options.afterClass },
-                    set: { value in
-                        var options = settings.options
-                        options.afterClass = value
-                        settings.setDisplayOptions(options)
-                    }
-                )) {
-                    ForEach(ScheduleWidgetAfterClassStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-            } header: {
-                Text("下课之后")
-            } footer: {
-                Text("明天也没课时自动改显示假期。「两日课表」不受影响。")
             }
         }
         .navigationTitle("桌面小组件")
@@ -318,6 +300,15 @@ struct GlobalThemeSettingsSection: View {
             Text("主题色")
         } footer: {
             Text("同时应用到课表、小组件、实时活动和灵动岛。")
+        }
+
+        Section {
+            Toggle("纯色模式", isOn: Binding(
+                get: { settings.solidCourseColors },
+                set: { settings.setSolidCourseColors($0) }
+            ))
+        } footer: {
+            Text("开启后，课表和小组件里的课程都使用主题色；关闭时每门课各有颜色，课表和小组件里同一门课颜色一致。")
         }
     }
 
