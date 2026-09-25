@@ -14,7 +14,7 @@ struct HiddenCoursesView: View {
         Form {
             Section {
                 if hidden.isEmpty {
-                    Text("这张课表没有收起来的课。")
+                    Text("本课表没有收起的课程。")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(hidden) { course in
@@ -38,7 +38,7 @@ struct HiddenCoursesView: View {
                     }
                 }
             } footer: {
-                Text("恢复之后这节课会回到原来的时段，和当初让位的那节并排显示。左滑可以彻底删掉。")
+                Text("恢复后，课程将回到原时段，与替换它的课程并排显示。左滑可彻底删除。")
             }
         }
         .navigationTitle("收起的课程")

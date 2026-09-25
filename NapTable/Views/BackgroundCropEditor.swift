@@ -82,7 +82,7 @@ struct BackgroundCropEditor: View {
         .alert("背景图片", isPresented: $failed) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("这次调整没能保存，再调一下试试，或者换一张图片。")
+            Text("调整未能保存，请重试或更换图片。")
         }
         // 返回时还没轮到的那次裁剪马上写掉，不丢最后一下调整。
         .onDisappear { commitNow() }
@@ -214,7 +214,7 @@ struct BackgroundCropEditor: View {
             }
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Label("白框外变暗的部分会被裁掉", systemImage: "crop")
+                    Label("白框外的变暗区域将被裁去", systemImage: "crop")
                         .font(.footnote.weight(.medium))
                     Text("拖动调整位置，双指缩放调整大小")
                         .font(.footnote)

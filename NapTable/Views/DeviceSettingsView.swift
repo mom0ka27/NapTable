@@ -19,7 +19,7 @@ struct NativeDeviceSettingsContent: View {
         Section {
             SettingsDestinationRow(
                 title: "桌面小组件",
-                detail: widgetSettings.isConfigured ? "已同步，可在桌面添加" : "还没有可显示的课表",
+                detail: widgetSettings.isConfigured ? "已同步，可添加到桌面" : "暂无可显示的课表",
                 systemImage: "square.grid.2x2"
             ) {
                 WidgetSettingsScreen(settings: widgetSettings, store: scheduleStore)
@@ -89,7 +89,7 @@ struct ScheduleBackgroundSettingsScreen: View {
                 Section {
                     Toggle("显示背景图片", isOn: $preferences.backgroundEnabled)
                 } footer: {
-                    Text("关闭后课表上不显示背景，图片和设置都保留，打开就恢复。")
+                    Text("关闭后课表不显示背景，图片与设置仍会保留。")
                 }
             }
             ScheduleBackgroundSection(preferences: preferences, dark: false, pendingBackground: $editingBackground)
@@ -168,7 +168,7 @@ struct ScheduleSettingsSection: View {
         } header: {
             Text("节次")
         } footer: {
-            Text("没课的晚间行收起来，课表更紧凑。这周有更晚的课时，整周都显示到最后一节课那一行。")
+            Text("隐藏无课的晚间节次。若本周有更晚的课程，则显示至最后一节课。")
         }
     }
 
@@ -225,7 +225,7 @@ private struct ScheduleBackgroundSection: View {
                 Button(role: .destructive) {
                     confirmingRemoval = true
                 } label: {
-                    Text(preferences.hasOwnBackground(dark: !dark) ? "移除，改为跟随\(otherName)" : "移除背景图片")
+                    Text(preferences.hasOwnBackground(dark: !dark) ? "移除，改用\(otherName)的图片" : "移除背景图片")
                 }
                 .disabled(backgroundBusy)
                 .confirmationDialog("移除\(name)的背景图片？", isPresented: $confirmingRemoval, titleVisibility: .visible) {
@@ -235,8 +235,8 @@ private struct ScheduleBackgroundSection: View {
                     Button("取消", role: .cancel) {}
                 } message: {
                     Text(preferences.hasOwnBackground(dark: !dark)
-                         ? "移除后\(name)改用\(otherName)的图片。原图和调整过的位置会一起删掉。"
-                         : "原图和调整过的位置会一起删掉。只想暂时不显示的话，可以关掉上面的「显示背景图片」。")
+                         ? "移除后，\(name)将改用\(otherName)的图片，原图与调整记录将一并删除。"
+                         : "原图与调整记录将一并删除。如仅需暂时隐藏，请关闭「显示背景图片」。")
                 }
             }
         } header: {
@@ -244,8 +244,8 @@ private struct ScheduleBackgroundSection: View {
         } footer: {
             if ownImage == nil {
                 Text(followsOther
-                     ? "不单独选的话，\(name)沿用\(otherName)的图片。"
-                     : (dark ? "只选一张的话，浅色和深色模式都用它。" : ""))
+                     ? "未单独设置时，\(name)沿用\(otherName)的图片。"
+                     : (dark ? "仅设置一张时，浅色与深色模式共用。" : ""))
             }
         }
         .onChange(of: selectedBackground) { _, item in
@@ -261,7 +261,7 @@ private struct ScheduleBackgroundSection: View {
                     pendingBackground = PendingBackground(image: image, source: source, placement: .init(),
                                                           dark: dark, isNew: true)
                 } catch {
-                    backgroundError = "这张图片读不出来，换一张再试。"
+                    backgroundError = "无法读取该图片，请更换后重试。"
                 }
                 backgroundBusy = false
                 selectedBackground = nil
@@ -284,14 +284,14 @@ private struct ScheduleBackgroundSection: View {
     private func pickerTitle(hasOwn: Bool, followsOther: Bool) -> String {
         if backgroundBusy { return "正在读取图片…" }
         if hasOwn { return "更换图片" }
-        return followsOther ? "为\(name)单独选一张" : (dark ? "为深色模式单独选一张" : "选择背景图片")
+        return followsOther ? "为\(name)单独设置" : (dark ? "为深色模式单独设置" : "选择背景图片")
     }
 
     /// 用留着的原图和上次的摆放重新打开编辑页。
     private func adjustCurrentBackground() {
         guard let source = preferences.backgroundSourceData(dark: dark),
               let image = BackgroundCropEditor.decode(source) else {
-            backgroundError = "原图读不出来，重新选一张再试。"
+            backgroundError = "无法读取原图，请重新选择图片。"
             return
         }
         pendingBackground = PendingBackground(image: image, source: source,
@@ -315,7 +315,7 @@ struct WidgetSettingsScreen: View {
                 Button {
                     sync()
                 } label: {
-                    Label("立即同步一次", systemImage: "arrow.triangle.2.circlepath")
+                    Label("立即同步", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .disabled(store.snapshot(useSharedNotifications: false) == nil)
 
@@ -327,9 +327,8 @@ struct WidgetSettingsScreen: View {
             } header: {
                 Text("状态")
             } footer: {
-                Text("平时自动同步，迟迟不更新时才用这个按钮催一次。\n"
-                     + "长按桌面空白处添加「临近课程」「今日课表」或「两日课表」。"
-                     + "今天的课上完后显示什么、两日课表显示哪两天，长按小组件选「编辑小组件」设置。")
+                Text("课表会自动同步，仅在小组件长时间未更新时需要手动同步。\n"
+                     + "长按桌面空白处即可添加小组件；长按小组件并选择「编辑小组件」可调整显示内容。")
             }
 
             Section {
@@ -338,18 +337,18 @@ struct WidgetSettingsScreen: View {
                 Toggle("老师", isOn: optionBinding(\.showTeacher))
                 Toggle("上课时间", isOn: optionBinding(\.showTime))
             } header: {
-                Text("小组件上显示什么")
+                Text("显示内容")
             }
 
             Section {
                 Toggle("农历日期", isOn: optionBinding(\.showLunarDate))
                 Toggle("节假日提示", isOn: optionBinding(\.showHoliday))
-            Toggle("最近节假日常驻", isOn: optionBinding(\.holidayAlwaysVisible))
+            Toggle("始终显示最近节假日", isOn: optionBinding(\.holidayAlwaysVisible))
                 .disabled(!settings.options.showHoliday)
             } header: {
                 Text("日期信息")
             } footer: {
-                Text("只标法定假日和传统节日。当年的调休上班安排来自学校配置，会直接改课表和小组件里的课程。")
+                Text("仅标注法定节假日与传统节日。调休安排由学校配置提供，并直接体现在课表与小组件中。")
             }
         }
         .navigationTitle("桌面小组件")
@@ -369,7 +368,7 @@ struct WidgetSettingsScreen: View {
 
     private func sync() {
         guard let snapshot = store.snapshot(useSharedNotifications: false) else {
-            settings.status = "当前没有可同步的课表"
+            settings.status = "暂无可同步的课表"
             return
         }
         settings.writePayload(from: snapshot, selectedWeek: store.localSelectedWeek)
@@ -427,12 +426,12 @@ struct GlobalThemeSettingsSection: View {
             }
 
             if settings.theme == .custom {
-                ColorPicker("挑一个颜色", selection: customColorBinding, supportsOpacity: false)
+                ColorPicker("自定义颜色", selection: customColorBinding, supportsOpacity: false)
             }
         } header: {
             Text("主题色")
         } footer: {
-            Text("同时应用到课表、小组件、实时活动和灵动岛。")
+            Text("应用于课表、小组件、实时活动与灵动岛。")
         }
 
         Section {
@@ -441,7 +440,7 @@ struct GlobalThemeSettingsSection: View {
                 set: { settings.setSolidCourseColors($0) }
             ))
         } footer: {
-            Text("开启后，课表和小组件里的课程都使用主题色；关闭时每门课各有颜色，课表和小组件里同一门课颜色一致。")
+            Text("开启后，所有课程均使用主题色；关闭时，每门课程使用各自的颜色。")
         }
     }
 
@@ -526,7 +525,7 @@ struct LiveActivitySettingsScreen: View {
             } header: {
                 Text("总开关")
             } footer: {
-                Text("在锁屏和灵动岛上倒计时到上课 / 下课。")
+                Text("在锁屏与灵动岛上显示上课、下课倒计时。")
             }
 
             Section {
@@ -543,7 +542,7 @@ struct LiveActivitySettingsScreen: View {
                 }
                 .disabled(!enabled)
                 if controller.following {
-                    Picker("对方课程提前显示", selection: Binding(
+                    Picker("共享课程提前显示", selection: Binding(
                         get: { sharedLeadMinutes },
                         set: { value in
                             sharedLeadMinutes = value
@@ -560,8 +559,8 @@ struct LiveActivitySettingsScreen: View {
                 Text("什么时候出现")
             } footer: {
                 Text(controller.following
-                     ? "关心共享课表时，自己的课和对方的课分别按各自的提前量提醒；时间重叠的课合成一个活动。提醒不会占用上一门课的上课时间。"
-                     : "提醒不会占用上一门课的上课时间；每门课程在最后一节结束时收起。")
+                     ? "自己与共享课表的课程分别按各自的提前时间显示，时间重叠的课程合并显示。上一门课结束前不会显示下一门课。"
+                     : "上一门课结束前不会显示下一门课；课程在最后一节结束时收起。")
             }
 
             Section {
@@ -576,14 +575,14 @@ struct LiveActivitySettingsScreen: View {
             } header: {
                 Text("课程内计时")
             } footer: {
-                Text("开启后分别倒计时到每节课的边界；关闭后倒计时到整堂课结束。连堂课的课间保留同一活动。")
+                Text("开启后按每一节分别倒计时；关闭后倒计时至整堂课结束。")
             }
 
             Section("实际安排") {
                 Text(controller.coverage)
-                if controller.omitted > 0 { Text("\(controller.omitted) 门课程的上课时间不完整，没有安排提醒。") }
+                if controller.omitted > 0 { Text("\(controller.omitted) 门课程的上课时间不完整，未安排提醒。") }
                 if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
-                Text("不打开 App 也会按时出现。")
+                Text("无需打开 App，提醒也会按时显示。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !controller.conflicts.isEmpty {
@@ -624,11 +623,11 @@ struct LiveActivitySettingsScreen: View {
                             Text(controller.status.title)
                                 .font(.subheadline.weight(.medium))
                             if controller.isPreviewActive {
-                                Text("正在显示一节演示课程，锁屏后可以看到完整布局。")
+                                Text("正在显示演示课程，锁屏后可查看完整效果。")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             } else if controller.status == .active {
-                                Text("回到主屏幕或锁屏后即可看到。")
+                                Text("返回主屏幕或锁屏后即可查看。")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
@@ -636,7 +635,7 @@ struct LiveActivitySettingsScreen: View {
                     }
                 }
                 if !ActivityAuthorizationInfo().areActivitiesEnabled {
-                    Label("系统设置里还没允许「实时活动」", systemImage: "exclamationmark.triangle")
+                    Label("请在系统设置中允许「实时活动」", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }

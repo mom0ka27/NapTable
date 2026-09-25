@@ -128,13 +128,13 @@ final class NativeWidgetSettings: ObservableObject {
     @discardableResult
     func writePayload(from snapshot: NativeScheduleSnapshot, selectedWeek: Int?) -> Bool {
         guard let payload = Self.payload(from: snapshot, selectedWeek: selectedWeek) else {
-            status = "当前没有可同步的课表"
+            status = "暂无可同步的课表"
             return false
         }
         do {
             try ScheduleWidgetStore.save(payload)
         } catch {
-            status = "同步失败：\(error.localizedDescription)"
+            status = "同步失败，请稍后重试"
             return false
         }
         reloadScheduleWidgetTimelines()

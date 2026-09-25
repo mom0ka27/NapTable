@@ -76,7 +76,7 @@ struct SettingsView: View {
 
             SettingsDestinationRow(
                 title: "课表显示",
-                detail: "打开时的视图、卡片密度和显示的节次",
+                detail: "默认视图、卡片密度与节次",
                 systemImage: "calendar"
             ) {
                 ScheduleDisplaySettingsScreen()
@@ -122,7 +122,7 @@ struct SettingsView: View {
         } header: {
             Text("课表")
         } footer: {
-            Text("学期、周次和节次时间每张课表各自设置，在「我的课表」里点进对应的课表修改。")
+            Text("学期、周次与节次时间按课表分别设置，请在「我的课表」中修改。")
         }
     }
 
@@ -130,14 +130,14 @@ struct SettingsView: View {
         Section {
             SettingsDestinationRow(
                 title: "隐私与数据",
-                detail: privacyConsent.liveAccepted ? "已允许实时通知信息上传" : "只上传基础统计",
+                detail: privacyConsent.liveAccepted ? "已允许上传实时通知信息" : "仅上传基础统计",
                 systemImage: "hand.raised"
             ) {
                 PrivacySettingsView()
             }
             SettingsDestinationRow(
                 title: "数据与备份",
-                detail: "\(store.courses.count) 门课程 · 全部存在本机",
+                detail: "\(store.courses.count) 门课程 · 仅保存在本机",
                 systemImage: "externaldrive"
             ) {
                 Form { dataSection }
@@ -173,7 +173,7 @@ struct SettingsView: View {
     private var tablesSection: some View {
         Section {
             if store.tables.isEmpty {
-                Label("还没有课表，从学校导入一张吧", systemImage: "calendar")
+                Label("暂无课表，请从学校导入", systemImage: "calendar")
                     .foregroundStyle(.secondary)
             }
             ForEach(store.tables) { table in
@@ -204,7 +204,7 @@ struct SettingsView: View {
         } header: {
             Text("自己的课表")
         } footer: {
-            Text("点进去设置学期、周次和节次时间，也可以在里面切换、重命名或删除这张课表。")
+            Text("进入课表可设置学期、周次与节次时间，也可切换、重命名或删除课表。")
         }
     }
 
@@ -237,7 +237,7 @@ struct SettingsView: View {
         } header: {
             Text("导入与备份")
         } footer: {
-            Text("恢复备份会追加课表，并覆盖显示设置。")
+            Text("恢复备份将追加课表，并覆盖当前的显示设置。")
         }
 
         Section {
@@ -255,12 +255,12 @@ struct SettingsView: View {
                 Button("全部清除", role: .destructive) { store.eraseEverything() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("所有课表和课程都会被删除，无法撤销。")
+                Text("所有课表与课程都将被删除，此操作无法撤销。")
             }
         } header: {
             Text("清除")
         } footer: {
-            Text("无法撤销，清除前先导出备份。清空某张课表的课程，到那张课表里操作。")
+            Text("此操作无法撤销，建议先导出备份。如需清空单张课表的课程，请在该课表中操作。")
         }
     }
 
@@ -362,7 +362,7 @@ private struct SettingsDialogs: ViewModifier {
             ) { result in
                 switch result {
                 case .success: message = "备份已导出。"
-                case .failure(let error): message = "导出失败：\(error.localizedDescription)"
+                case .failure(let error): message = "导出失败，请稍后重试。"
                 }
             }
             .fileImporter(
@@ -378,17 +378,17 @@ private struct SettingsDialogs: ViewModifier {
                         try store.importData(data)
                         message = "已从备份恢复。"
                     } catch {
-                        message = "恢复失败：\(error.localizedDescription)"
+                        message = "恢复失败，请确认备份文件完整后重试。"
                     }
                 case .failure(let error):
-                    message = "恢复失败：\(error.localizedDescription)"
+                    message = "恢复失败，请确认备份文件完整后重试。"
                 }
             }
             .alert("提示", isPresented: Binding(
                 get: { message != nil },
                 set: { if !$0 { message = nil } }
             )) {
-                Button("好") { message = nil }
+                Button("确定") { message = nil }
             } message: {
                 Text(message ?? "")
             }
