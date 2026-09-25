@@ -205,7 +205,7 @@ enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable,
     case tomorrow
     /// 最近的一段法定假期。
     case holiday
-    /// 换成最近一个有课的日期（三周之内）的课：日期栏照旧是今天，标上「x 天后的课」，课程压暗；三周内都没课时退回最近的节假日。
+    /// 换成最近一个有课的日期（三周之内）的课：日期栏照旧是今天，标上「明天的课」「10/2 的课」，课程压暗；三周内都没课时退回最近的节假日。
     case nextCourseDay
 
     var id: String { rawValue }
