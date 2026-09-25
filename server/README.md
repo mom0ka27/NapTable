@@ -81,7 +81,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 完整协议、迁移、测试与已知边界见 [Live Activity v2](../docs/live-activity-v2.md)。
 
-App 保存个人展示内容；服务器只接收课程实例 ID、实际日期和节次，使用不可变学校作息还原启动时间。iOS 18 使用逐设备 push-to-start 并直接订阅最终节次频道；iOS 26 完成远程模式交接后本地预约未来 168 小时，不使用远程兜底；关心共享课表时 iOS 26 通过 `remote-resume` 切回远程启动，与 iOS 18 相同。iOS 17 只保留前台本地能力。
+App 保存个人展示内容；服务器只接收课表的时间结构（星期、节次、周次、课程 ID，不含课程名）和提醒设置，由服务器计算每一节课的提醒（`PUT /v2/live-activity/devices/{id}/timetable`）。iOS 18 由服务器远程启动；iOS 26 用 `POST /devices/{id}/claims` 认领最近几节在本地预约，其余由服务器远程启动。iOS 17 只保留前台预览。设计与取舍见 [服务端排程的实时活动提醒](../docs/server-scheduled-reminders.md)。
 
 在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`me.mom0ka27.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。管理页展示频道健康和失败原因，后台自动创建与回收，无需填写 Apple channel ID。
 
@@ -98,9 +98,9 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 新接口前缀 `/v2/live-activity`。旧接口返回 426 提示升级，保留认证撤销及旧日期频道的短期排空。关闭功能采用墓碑并保留提交历史；APNs 响应丢失不会自动重发 start。部署前必须备份数据库，回退不得直接恢复旧 pending 队列。
 
-APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。
+APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。今明两天的提醒只放在内存里，每次启动按库里的课表重算（一万台设备约 1.3 秒、30 MB），库里只留课表、令牌和已有人负责的启动记录 `la_starts`。
 
-关心共享课表时客户端改用令牌模式：`PUT/DELETE /v2/live-activity/devices/{id}/activities/{occurrenceId}` 上传每个活动的推送令牌与刷新时间点（仅时间；其中需要响「课程提醒」的时刻另列在 `alertAt`），存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）和 `la_token_updates`；`token-updates` 工作循环每秒按时逐个推送 update/end，管理页健康数据里的 `tokenUpdates` 按状态计数，不含令牌。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
+关心共享课表时改用令牌模式：`PUT /v2/live-activity/devices/{id}/activities/{occurrenceId}` 只上传这个活动的推送令牌 `{"token": "…"}`，存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）；刷新和响铃时刻由服务器按排程计算，在内存中排队，`token-updates` 工作循环每秒按时推送 update/end，管理页健康数据里的 `tokenUpdates` 只给活动数和待发数，不含令牌。`DELETE` 同一路径停止刷新。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
 ## 分享课表
 
