@@ -932,7 +932,7 @@ struct NativeScheduleView: View {
     private var weekGridRowHeight: CGFloat {
         switch preferences.density {
         case "compact": 40
-        case "relaxed": 52
+        case "relaxed": 49
         default: NativeScheduleDayColumn.slotHeight
         }
     }
@@ -942,7 +942,7 @@ struct NativeScheduleView: View {
     private var dayGridRowHeight: CGFloat {
         switch preferences.density {
         case "compact": 37
-        case "relaxed": 49
+        case "relaxed": 46
         default: NativeScheduleDayColumn.daySlotHeight
         }
     }

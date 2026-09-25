@@ -2,7 +2,7 @@ import SwiftUI
 
 struct NativeScheduleDayColumn: View {
     // Fixed heights match CpuTime: compact uses 40/37, comfortable 44/41.
-    // NapTable adds relaxed at 52/49 for people who want more air between rows.
+    // NapTable adds relaxed at 49/46 for people who want more air between rows.
     static let slotHeight: CGFloat = 44
     // The day layout has an extra seven-day picker above the grid, so its rows
     // stay 3pt shorter to keep the eleventh slot clear of the native tab bar.
