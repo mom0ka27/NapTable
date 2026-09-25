@@ -706,6 +706,11 @@ struct NativeScheduleView: View {
         return day >= 6 ? Color.pink.opacity(0.75) : Color.secondary
     }
 
+    /// The page-style TabView keeps its hosted pages at their first height, so a
+    /// taller week would be centred in a stale page and cut at both edges. The
+    /// pager is always laid out for every slot; the outer frame crops it to the
+    /// tallest of the current and adjacent pages, so a page swiping in is never
+    /// cut before its week is committed.
     private func weekGrid(_ result: NativeScheduleResult) -> some View {
         let rowHeight = weekGridRowHeight
         return VStack(alignment: .leading, spacing: 8) {
@@ -730,12 +735,21 @@ struct NativeScheduleView: View {
                         .frame(minWidth: contentWidth, alignment: .leading)
                         .padding(.horizontal, Self.contentInset)
                 }
+                .frame(height: Self.scheduleGridHeight(
+                    rowHeight: rowHeight,
+                    includesDateHeader: preferences.showDateHeader
+                ), alignment: .top)
             }
             .frame(height: Self.scheduleGridHeight(
                 rowHeight: rowHeight,
-                slotCount: slotCount(week: weekNumber(store.selectedWeek), result: result),
+                slotCount: pagerSlotCount(
+                    weeks: [adjacentWeekValue(-1, result: result), store.selectedWeek, adjacentWeekValue(1, result: result)],
+                    result: result
+                ),
                 includesDateHeader: preferences.showDateHeader
-            ))
+            ), alignment: .top)
+            .clipped()
+            .contentShape(Rectangle())
         }
     }
 
@@ -758,12 +772,18 @@ struct NativeScheduleView: View {
                     .frame(width: contentWidth, alignment: .leading)
                     .padding(.horizontal, Self.contentInset)
                 }
+                .frame(height: Self.scheduleGridHeight(rowHeight: rowHeight, includesDateHeader: false), alignment: .top)
             }
             .frame(height: Self.scheduleGridHeight(
                 rowHeight: rowHeight,
-                slotCount: slotCount(week: weekNumber(store.selectedWeek), result: result),
+                slotCount: pagerSlotCount(
+                    weeks: [adjacentDayPage(-1, result: result)?.week, store.selectedWeek, adjacentDayPage(1, result: result)?.week],
+                    result: result
+                ),
                 includesDateHeader: false
-            ))
+            ), alignment: .top)
+            .clipped()
+            .contentShape(Rectangle())
         }
     }
 
@@ -922,6 +942,13 @@ struct NativeScheduleView: View {
             .map(\.endSlot)
             .max() ?? 0
         return preferences.visibleSlotCount(total: ScheduleSlot.all.count, lastOccupiedSlot: lastOccupied)
+    }
+
+    /// 分页器可见的几页里最多的行数。
+    private func pagerSlotCount(weeks: [String?], result: NativeScheduleResult) -> Int {
+        weeks.compactMap { $0 }
+            .map { slotCount(week: weekNumber($0), result: result) }
+            .max() ?? slotCount(week: nil, result: result)
     }
 
     /// 还没有课表数据时（加载中）按没有课算。
@@ -1915,13 +1942,19 @@ struct NativeScheduleView: View {
             + CGFloat(max(0, slotCount - 1)) * NativeScheduleDayColumn.slotGap
     }
 
-    private static var todayDate: String? {
+    /// Every day column asks for today's date, three pager pages at a time, so
+    /// the formatter is built once instead of on each body evaluation.
+    private static let todayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: .now)
+        return formatter
+    }()
+
+    private static var todayDate: String? {
+        todayFormatter.string(from: .now)
     }
 
     private static var chinaWeekday: Int {
