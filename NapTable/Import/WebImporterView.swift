@@ -21,6 +21,7 @@ struct WebImporterView: View {
     let onFinish: (ImportedSchedule, AppStore.ImportMode) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: AppStore
     @State private var state: WebImportState = .loading
     @State private var didStartExtraction = false
     @State private var statusMessage = "正在打开登录页面…"
@@ -31,6 +32,10 @@ struct WebImporterView: View {
     /// Bumped to ask the web view to run its extractor again.
     @State private var extractToken = 0
     @State private var mode: AppStore.ImportMode
+    /// 确认页上可以改的课表名称，每次解析成功后重置成默认名。
+    @State private var tableName = ""
+    /// 避开同名课表后的默认名，名称留空时用它。
+    @State private var defaultName = ""
     /// 撞车的时段选了哪一节：组 id -> `parsed.courses` 下标。每次重新解析清空。
     @State private var conflictChoice: [Int: Int] = [:]
     /// 只有部分周次重叠的那几节怎么处理：`parsed.courses` 下标 -> 处理方式。
@@ -57,7 +62,8 @@ struct WebImporterView: View {
             Group {
                 if let parsed {
                     ImportedScheduleForm(
-                        schedule: parsed, mode: $mode,
+                        schedule: parsed, mode: $mode, tableName: $tableName,
+                        defaultName: defaultName, nameTaken: nameTaken,
                         conflicts: conflicts, conflictChoice: $conflictChoice,
                         conflictDispositions: $conflictDispositions
                     )
@@ -98,7 +104,7 @@ struct WebImporterView: View {
                             dismiss()
                         }
                         // 冲突没选完就导入，等于替用户随便留一节，所以先拦住。
-                        .disabled((requiresCourses && parsed.courses.isEmpty) || hasUnresolvedConflicts)
+                        .disabled((requiresCourses && parsed.courses.isEmpty) || hasUnresolvedConflicts || nameTaken)
                     } else {
                         Button("重新解析") { retry() }
                             .disabled(state == .importing)
@@ -106,6 +112,16 @@ struct WebImporterView: View {
                 }
             }
         }
+    }
+
+    private var effectiveName: String {
+        let name = tableName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? defaultName : name
+    }
+
+    /// 只有新建课表才用这个名字；覆盖和追加都沿用当前课表的名字。
+    private var nameTaken: Bool {
+        mode == .newTable && store.isTableNameTaken(effectiveName)
     }
 
     /// 同一时段撞在一起的课。下标指向 `parsed.courses`，所以每次重新解析都要
@@ -126,6 +142,7 @@ struct WebImporterView: View {
     /// 写库之前把没选中的那几节收起来。
     private func resolved(_ schedule: ImportedSchedule) -> ImportedSchedule {
         var value = schedule
+        value.name = effectiveName
         value.courses = ImportConflictFinder.apply(
             keeping: conflictChoice, dispositions: conflictDispositions,
             to: schedule.courses, groups: conflicts
@@ -244,6 +261,8 @@ struct WebImporterView: View {
                     conflictChoice = [:]
                     conflictDispositions = [:]
                     parsed = schedule
+                    defaultName = store.uniqueTableName(schedule.name)
+                    tableName = defaultName
                 case .failure(let error):
                     state = .failed
                     statusMessage = error.localizedDescription

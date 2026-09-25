@@ -67,7 +67,7 @@ struct ManualScheduleWizard: View {
             }
         }
         .onAppear {
-            if draft.name.isEmpty { draft.name = school.map { "\($0)课表" } ?? "我的课表" }
+            if draft.name.isEmpty { draft.name = store.uniqueTableName(school.map { "\($0)课表" } ?? "我的课表") }
         }
         .onChange(of: draft.classTimes.count) { _, count in clampMeetings(periodCount: count) }
     }
@@ -119,7 +119,8 @@ struct ManualScheduleWizard: View {
     private var blocker: String? {
         switch step {
         case .semester:
-            return draft.trimmedName.isEmpty ? "请填写课表名称" : nil
+            if draft.trimmedName.isEmpty { return "请填写课表名称" }
+            return store.isTableNameTaken(draft.trimmedName) ? "已有同名课表，换个名称吧" : nil
         case .periods:
             return draft.classTimesProblem
         case .courses, .review:

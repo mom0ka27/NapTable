@@ -103,10 +103,12 @@ struct ImportView: View {
                         importError = "没有读取到课程，请确认学期和导入入口后重试。"
                         return
                     }
-                    store.install(payload: schedule, mode: mode)
+                    // 覆盖和追加沿用原课表的名字，完成页要显示实际写进去的那张。
+                    var installed = schedule
+                    installed.name = store.install(payload: schedule, mode: mode).name
                     semesterStart = WeekCalculator.parseDay(store.semesterStartMonday) ?? WeekCalculator.monday(of: Date())
                     path = []
-                    imported = schedule
+                    imported = installed
                 }
             }
         }
@@ -151,6 +153,12 @@ extension SchoolConfig {
 struct ImportedScheduleForm: View {
     let schedule: ImportedSchedule
     @Binding var mode: AppStore.ImportMode
+    /// 用户改过的课表名称；清空就用解析出来的默认名。
+    @Binding var tableName: String
+    /// 名称留空时用的名字，已经避开了同名课表。
+    var defaultName: String = ""
+    /// 填的名称和别的课表重复，导入按钮会被禁用。
+    var nameTaken = false
     /// 同一时段撞在一起的课。空数组表示这次导入没有冲突。
     var conflicts: [ImportConflictGroup] = []
     /// 每组选中保留的那一节：组 id -> `ImportedSchedule.courses` 下标。
@@ -164,12 +172,18 @@ struct ImportedScheduleForm: View {
     init(
         schedule: ImportedSchedule,
         mode: Binding<AppStore.ImportMode>,
+        tableName: Binding<String> = .constant(""),
+        defaultName: String = "",
+        nameTaken: Bool = false,
         conflicts: [ImportConflictGroup] = [],
         conflictChoice: Binding<[Int: Int]> = .constant([:]),
         conflictDispositions: Binding<[Int: ImportConflictDisposition]> = .constant([:])
     ) {
         self.schedule = schedule
         _mode = mode
+        _tableName = tableName
+        self.defaultName = defaultName
+        self.nameTaken = nameTaken
         self.conflicts = conflicts
         _conflictChoice = conflictChoice
         _conflictDispositions = conflictDispositions
@@ -180,7 +194,17 @@ struct ImportedScheduleForm: View {
             Section("解析结果") {
                 Label("解析成功", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(Color.accentColor)
-                LabeledContent("课表名称", value: schedule.name)
+                // 覆盖和追加都沿用当前课表的名字，只有新建课表才能起名。
+                if mode == .newTable {
+                    LabeledContent("课表名称") {
+                        TextField("课表名称", text: $tableName, prompt: Text(defaultName.isEmpty ? schedule.name : defaultName))
+                            .multilineTextAlignment(.trailing)
+                    }
+                    if nameTaken {
+                        Label("已有同名课表，换个名称吧", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
                 LabeledContent("课程条数", value: "\(schedule.courses.count)")
                 if let start = schedule.semesterStartMonday, !start.isEmpty {
                     LabeledContent("学期开始", value: start)

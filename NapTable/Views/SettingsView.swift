@@ -51,7 +51,6 @@ struct SettingsView: View {
             #endif
             .modifier(SettingsDialogs(
                 store: store,
-                confirmEraseAll: $confirmEraseAll,
                 exporting: $exporting,
                 importingBackup: $importingBackup,
                 exportDocument: $exportDocument,
@@ -224,6 +223,17 @@ struct SettingsView: View {
             } label: {
                 Label("清除全部本地数据", systemImage: "trash")
             }
+            // 挂在按钮上：iOS 26 起确认框从触发它的视图旁边弹出。
+            .confirmationDialog(
+                "清除全部本地数据？",
+                isPresented: $confirmEraseAll,
+                titleVisibility: .visible
+            ) {
+                Button("全部清除", role: .destructive) { store.eraseEverything() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("所有课表和课程都会被删除，无法撤销。")
+            }
         } header: {
             Text("清除")
         } footer: {
@@ -314,7 +324,6 @@ struct SettingsView: View {
 /// Split out so `SettingsView.body` stays readable.
 private struct SettingsDialogs: ViewModifier {
     let store: AppStore
-    @Binding var confirmEraseAll: Bool
     @Binding var exporting: Bool
     @Binding var importingBackup: Bool
     @Binding var exportDocument: BackupDocument
@@ -322,16 +331,6 @@ private struct SettingsDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(
-                "清除全部本地数据？",
-                isPresented: $confirmEraseAll,
-                titleVisibility: .visible
-            ) {
-                Button("全部清除", role: .destructive) { store.eraseEverything() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("所有课表和课程都会被删除，无法撤销。")
-            }
             .fileExporter(
                 isPresented: $exporting,
                 document: exportDocument,

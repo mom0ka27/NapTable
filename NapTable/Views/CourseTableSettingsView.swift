@@ -24,15 +24,16 @@ struct CourseTableSettingsView: View {
         }
         .navigationTitle(table?.name ?? "课表")
         .appInlineNavigationTitle()
-        // 挂在 Form 外面：挂在里面时，输入框会沿用表单行「标题在左、内容在右」的排版，
-        // 在弹窗里整个往右偏。
         .alert("重命名课表", isPresented: $renaming) {
             TextField("", text: $renameText, prompt: Text("课表名称"))
                 .labelsHidden()
                 .multilineTextAlignment(.leading)
             Button("取消", role: .cancel) {}
             Button("保存") { store.renameTable(tableId, to: renameText) }
-                .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || store.isTableNameTaken(renameText, except: tableId))
+        } message: {
+            Text("课表名称不能和其他课表重复。")
         }
     }
 
@@ -46,21 +47,6 @@ struct CourseTableSettingsView: View {
             semesterSection(table)
             scheduleSection(table)
             dangerSection(table)
-        }
-        .confirmationDialog("清空「\(table.name)」的课程？", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("清空课程", role: .destructive) { store.deleteAllCourses(inTable: tableId) }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("课表和它的学期、节次设置保留，里面的课程全部删除，无法撤销。")
-        }
-        .confirmationDialog("删除课表「\(table.name)」？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除课表及其课程", role: .destructive) {
-                dismiss()
-                store.deleteTable(tableId)
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("这张课表里的课程会一起删掉，无法撤销。")
         }
     }
 
@@ -91,9 +77,13 @@ struct CourseTableSettingsView: View {
             LabeledContent("课程", value: "\(courseCount) 门")
 
             if table.id == store.selectedTableId {
+                // 右边不能放 `Label`：表单会把它当成多个子视图拆开排，状态下面凭空多出一块空行。
                 LabeledContent("状态") {
-                    Label("正在使用", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.accentColor)
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("正在使用")
+                    }
+                    .foregroundStyle(Color.accentColor)
                 }
             } else {
                 Button("切换到这张课表") { store.selectTable(tableId) }
@@ -217,12 +207,29 @@ struct CourseTableSettingsView: View {
 
     private func dangerSection(_ table: CourseTable) -> some View {
         Section {
+            // 确认框分别挂在各自的按钮上：iOS 26 起它从触发的视图旁边弹出，
+            // 挂在整个 Form 上会飘到不相干的位置。
             Button(role: .destructive) { confirmClear = true } label: {
                 Label("清空这张课表的课程", systemImage: "eraser")
             }
             .disabled(courseCount == 0)
+            .confirmationDialog("清空「\(table.name)」的课程？", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("清空课程", role: .destructive) { store.deleteAllCourses(inTable: tableId) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("课表和它的学期、节次设置保留，里面的课程全部删除，无法撤销。")
+            }
             Button(role: .destructive) { confirmDelete = true } label: {
                 Label("删除这张课表", systemImage: "trash")
+            }
+            .confirmationDialog("删除课表「\(table.name)」？", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("删除课表及其课程", role: .destructive) {
+                    dismiss()
+                    store.deleteTable(tableId)
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("这张课表里的课程会一起删掉，无法撤销。")
             }
         }
     }

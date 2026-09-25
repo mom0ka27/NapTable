@@ -2426,6 +2426,15 @@ struct NativeCourseEditorSheet: View {
                         .tint(.red)
                         .foregroundStyle(.red)
                         .disabled(saving)
+                        // 挂在垃圾桶按钮上，确认框从导航栏的按钮旁边弹出，而不是飘在表单中间。
+                        .confirmationDialog("删除这门课程？", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                            Button("删除", role: .destructive) { deleteCourse() }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text(selection?.course.customId != nil
+                                 ? "这门自定义课程会被移除。"
+                                 : "这门教务课程会从课表中隐藏，之后可以在“已编辑课程”里恢复。")
+                        }
                     }
                     Button { saveCourse() } label: {
                         if saving {
@@ -2438,14 +2447,6 @@ struct NativeCourseEditorSheet: View {
                     }
                     .disabled(saving)
                 }
-            }
-            .confirmationDialog("删除这门课程？", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                Button("删除", role: .destructive) { deleteCourse() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text(selection?.course.customId != nil
-                     ? "这门自定义课程会被移除。"
-                     : "这门教务课程会从课表中隐藏，之后可以在“已编辑课程”里恢复。")
             }
         }
     }

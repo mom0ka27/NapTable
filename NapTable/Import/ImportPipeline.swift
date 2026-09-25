@@ -31,7 +31,6 @@ final class ImportPipeline {
                     completion(.failure(.emptyResult("课表页面没有课程，可能是当前学期没有选课")))
                     return
                 }
-                schedule.name = normalizedName(schedule.name, school: school)
                 // The extractors only return `{name, courses}`. The bell
                 // schedule and the semester anchor ship with the school entry —
                 // the same data the Flutter app writes out of
@@ -64,14 +63,14 @@ final class ImportPipeline {
     private func completeWithSchoolTemplate(
         _ schedule: ImportedSchedule, school: SchoolConfig?, completion: @escaping (Outcome) -> Void
     ) {
-        guard let school else { completion(.success(schedule)); return }
+        guard let school else { completion(.success(named(schedule))); return }
         Task { @MainActor in
             do {
                 let schools = try await ScheduleSharingService.shared.loadSchools()
                 let resolved = try SchoolTemplateResolver.applying(
                     to: schedule, schoolID: school.serviceSchoolID, schools: schools
                 )
-                completion(.success(resolved))
+                completion(.success(named(resolved)))
             } catch {
                 completion(.failure(.malformedPayload("无法读取对应学校的学期配置：\(error.localizedDescription)。课程尚未写入，可重试导入。")))
             }
@@ -102,7 +101,7 @@ final class ImportPipeline {
             return .failure(.emptyResult("没有在页面中找到课程，可能是页面结构已变化或尚未进入课表页"))
         }
         return .success(ImportedSchedule(
-            name: normalizedName(name, school: school),
+            name: name ?? "",
             courses: courses,
             classTimeList: school?.classTimeList,
             semesterStartMonday: school?.semesterStartMonday
@@ -127,10 +126,10 @@ final class ImportPipeline {
         return first == "{" || first == "["
     }
 
-    private func normalizedName(_ raw: String?, school: SchoolConfig?) -> String {
-        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !value.isEmpty { return value }
-        if let school { return school.title }
-        return CoursePayloadCodec.defaultTableName()
+    /// 页面上读到的课表名只拿来匹配学期，写进 App 的统一是「2026 秋」这种。
+    private func named(_ schedule: ImportedSchedule) -> ImportedSchedule {
+        var result = schedule
+        result.name = SchoolTemplateResolver.semesterName(startMonday: schedule.semesterStartMonday, hint: schedule.name)
+        return result
     }
 }
