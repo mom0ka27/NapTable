@@ -21,6 +21,7 @@ struct NativeScheduleView: View {
     private let onWatch: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var selectedDay = 1
     @State private var didInitializeDay = false
@@ -29,6 +30,10 @@ struct NativeScheduleView: View {
     @State private var addCourseContext: AddCourseContext?
     @State private var weekPickerPresented = false
     @State private var freeCoursesPresented = false
+    #if DEBUG
+    @State private var debugCropImage: DebugCropImage?
+    @State private var debugCropOpacity = BackgroundCropEditor.Opacity(light: 0.18, dark: 0.28)
+    #endif
     // Horizontal week paging state. The track holds the previous, current and
     // next week so a swipe drags the neighbouring timetable into view instead
     // of replacing the grid in place.
@@ -61,6 +66,18 @@ struct NativeScheduleView: View {
         self.onWatch = onWatch
     }
 
+    /// 当前外观下铺在课表后面的图。深色没单独设图时沿用浅色的，反之亦然；
+    /// 「显示背景图片」关着就是没有。
+    private var displayedBackground: ScheduleBackgroundImage? {
+        preferences.visibleBackgroundImage(dark: colorScheme == .dark)
+    }
+
+    /// 顶栏和课表区域自己的底色。有背景图片时必须透明，否则整张图会被这层
+    /// 底色盖住；图片下面那层 `appGroupedBackground` 由 `body` 的背景统一铺满全屏。
+    private var chromeBackground: Color {
+        displayedBackground == nil ? Color.appGroupedBackground : .clear
+    }
+
     private var showsFreeTimeEntry: Bool {
         preferences.showFreeTimeCourses && store.result != nil && !weeklyFreeCourses().isEmpty
     }
@@ -74,14 +91,14 @@ struct NativeScheduleView: View {
                     .padding(.horizontal, Self.contentInset)
                     .padding(.top, 8)
                     .padding(.bottom, 8)
-                    .background(Color.appGroupedBackground.opacity(preferences.backgroundImage == nil ? 1 : 0.86))
+                    .background(chromeBackground)
             }
 
             if showsFreeTimeEntry {
                 freeTimeEntry(weeklyFreeCourses())
                     .padding(.horizontal, Self.contentInset)
                     .padding(.vertical, 8)
-                    .background(Color.appGroupedBackground)
+                    .background(chromeBackground)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
 
@@ -130,20 +147,21 @@ struct NativeScheduleView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(Color.appGroupedBackground.opacity(preferences.backgroundImage == nil ? 1 : 0.86).ignoresSafeArea(.container, edges: [.horizontal, .bottom]))
+                .background(chromeBackground.ignoresSafeArea(.container, edges: [.horizontal, .bottom]))
             }
             // Keep slot heights stable when the pinned free-time entry changes.
             // Smaller screens scroll to the final period instead of squeezing text.
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: showsFreeTimeEntry)
+        .environment(\.scheduleHasBackgroundImage, displayedBackground != nil)
         .background {
             ZStack {
                 Color.appGroupedBackground
-                if let image = preferences.backgroundImage {
+                if let image = displayedBackground {
                     Image(platformImage: image)
                         .resizable()
                         .scaledToFill()
-                        .opacity(preferences.backgroundOpacity)
+                        .opacity(preferences.backgroundOpacity(dark: colorScheme == .dark))
                         .ignoresSafeArea()
                         .allowsHitTesting(false)
                 }
@@ -230,6 +248,16 @@ struct NativeScheduleView: View {
                 .appSheetDetents([.medium, .large])
                 .appDragIndicatorVisible()
         }
+        #if DEBUG && os(iOS)
+        .fullScreenCover(item: $debugCropImage) { item in
+            NavigationStack {
+                // 调试截图用：不透明度只在这一页里变，摆放也不写回设置。
+                BackgroundCropEditor(image: item.image, initialPlacement: item.placement,
+                                     opacity: $debugCropOpacity,
+                                     onDone: { debugCropImage = nil }, onCommit: { _, _ in })
+            }
+        }
+        #endif
         .alert("教务课表已更新", isPresented: scheduleChangeNoticePresented) {
             Button("我知道了") { store.dismissScheduleChangeNotice() }
         } message: {
@@ -298,7 +326,7 @@ struct NativeScheduleView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             // A plain card, not glass: this row is a NapTable addition, and the
             // glass material belongs to the CpuTime controls around the grid.
-            .background(Color.appSecondaryGroupedBackground)
+            .background(ScheduleCardSurface(hasBackground: displayedBackground != nil))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .contentShape(Rectangle())
         }
@@ -539,7 +567,7 @@ struct NativeScheduleView: View {
             .padding(.horizontal, 12)
             // Reserve the available header width regardless of the selected name.
             .frame(maxWidth: .infinity, minHeight: 34)
-            .background(Color.appSecondaryGroupedBackground, in: Capsule())
+            .background(ScheduleCardSurface(hasBackground: displayedBackground != nil), in: Capsule())
         }
         // A source change may also animate the free-time entry below the header.
         // Keep the menu's anchor and label out of that layout animation.
@@ -703,7 +731,11 @@ struct NativeScheduleView: View {
                         .padding(.horizontal, Self.contentInset)
                 }
             }
-            .frame(height: Self.scheduleGridHeight(rowHeight: rowHeight, includesDateHeader: preferences.showDateHeader))
+            .frame(height: Self.scheduleGridHeight(
+                rowHeight: rowHeight,
+                slotCount: slotCount(week: weekNumber(store.selectedWeek), result: result),
+                includesDateHeader: preferences.showDateHeader
+            ))
         }
     }
 
@@ -729,6 +761,7 @@ struct NativeScheduleView: View {
             }
             .frame(height: Self.scheduleGridHeight(
                 rowHeight: rowHeight,
+                slotCount: slotCount(week: weekNumber(store.selectedWeek), result: result),
                 includesDateHeader: false
             ))
         }
@@ -868,27 +901,50 @@ struct NativeScheduleView: View {
             && selectedDay == Self.chinaWeekday
     }
 
-    /// 每周独立判断调休日，翻页时不会漏掉相邻周的周末安排。
+    /// 每周独立判断调休日和周末课程，翻页时不会漏掉相邻周的周末安排。
     private var visibleDays: [Int] {
         guard let result = store.result else { return preferences.visibleDays }
         return visibleDays(week: weekNumber(store.selectedWeek), result: result)
     }
 
     private func visibleDays(week: Int?, result: NativeScheduleResult) -> [Int] {
-        let adjustedDays = Set((6...7).filter {
+        let pinnedDays = Set((6...7).filter {
             adjustment(day: $0, week: week, result: result) != nil
+                || !blocks(for: $0, week: week, result: result).isEmpty
         })
-        return preferences.visibleDays(adjustedDays: adjustedDays)
+        return preferences.visibleDays(pinnedDays: pinnedDays)
+    }
+
+    /// 这一周要画几行。按整周最晚的一节课算，同一周翻到哪天行数都不变。
+    private func slotCount(week: Int?, result: NativeScheduleResult) -> Int {
+        let lastOccupied = (1...7)
+            .flatMap { blocks(for: $0, week: week, result: result) }
+            .map(\.endSlot)
+            .max() ?? 0
+        return preferences.visibleSlotCount(total: ScheduleSlot.all.count, lastOccupiedSlot: lastOccupied)
+    }
+
+    /// 还没有课表数据时（加载中）按没有课算。
+    private var emptySlotCount: Int {
+        preferences.visibleSlotCount(total: ScheduleSlot.all.count, lastOccupiedSlot: 0)
     }
 
     private var weekGridRowHeight: CGFloat {
-        preferences.density == "compact" ? 40 : NativeScheduleDayColumn.slotHeight
+        switch preferences.density {
+        case "compact": 40
+        case "relaxed": 52
+        default: NativeScheduleDayColumn.slotHeight
+        }
     }
 
     /// The day layout carries an extra weekday picker above the grid, so it
     /// keeps the same 3pt deficit it had when both heights were constants.
     private var dayGridRowHeight: CGFloat {
-        preferences.density == "compact" ? 37 : NativeScheduleDayColumn.daySlotHeight
+        switch preferences.density {
+        case "compact": 37
+        case "relaxed": 49
+        default: NativeScheduleDayColumn.daySlotHeight
+        }
     }
 
     /// Daily mode uses the same native page controller as the weekly pager. A
@@ -1059,8 +1115,9 @@ struct NativeScheduleView: View {
         rowHeight: CGFloat = NativeScheduleDayColumn.slotHeight,
         showsDateHeader: Bool = true
     ) -> some View {
-        HStack(alignment: .top, spacing: Self.columnGap) {
-            slotAxis(rowHeight: rowHeight, showsHeader: showsDateHeader)
+        let slotCount = slotCount(week: week, result: result)
+        return HStack(alignment: .top, spacing: Self.columnGap) {
+            slotAxis(rowHeight: rowHeight, slotCount: slotCount, showsHeader: showsDateHeader)
 
             ForEach(days, id: \.self) { day in
                 let slot = effectiveSlot(day: day, week: week, result: result)
@@ -1071,6 +1128,7 @@ struct NativeScheduleView: View {
                     adjustment: adjustment(day: day, week: week, result: result),
                     columnWidth: columnWidth,
                     rowHeight: rowHeight,
+                    slotCount: slotCount,
                     compactCards: compactCards,
                     showsDateHeader: showsDateHeader,
                     blocks: blocks(for: day, week: week, result: result),
@@ -1093,6 +1151,7 @@ struct NativeScheduleView: View {
 
     private func slotAxis(
         rowHeight: CGFloat = NativeScheduleDayColumn.slotHeight,
+        slotCount: Int = ScheduleSlot.all.count,
         showsHeader: Bool = true
     ) -> some View {
         VStack(spacing: 0) {
@@ -1104,7 +1163,7 @@ struct NativeScheduleView: View {
             }
 
             VStack(spacing: NativeScheduleDayColumn.slotGap) {
-                ForEach(ScheduleSlot.all, id: \.number) { slot in
+                ForEach(ScheduleSlot.all.prefix(slotCount), id: \.number) { slot in
                     VStack(spacing: 2) {
                         Text("\(slot.number)")
                             .font(.caption.weight(.bold).monospacedDigit())
@@ -1201,7 +1260,7 @@ struct NativeScheduleView: View {
 
             GeometryReader { proxy in
                 HStack(alignment: .top, spacing: 0) {
-                    slotAxis(rowHeight: weekGridRowHeight)
+                    slotAxis(rowHeight: weekGridRowHeight, slotCount: emptySlotCount)
                     ForEach(visibleDays, id: \.self) { day in
                         NativeScheduleDayColumn(
                             day: day,
@@ -1210,6 +1269,7 @@ struct NativeScheduleView: View {
                             adjustment: nil,
                             columnWidth: max(1, (proxy.size.width - Self.slotAxisWidth) / CGFloat(visibleDays.count)),
                             rowHeight: weekGridRowHeight,
+                            slotCount: emptySlotCount,
                             compactCards: true,
                             showsDateHeader: true,
                             blocks: [],
@@ -1219,7 +1279,7 @@ struct NativeScheduleView: View {
                     }
                 }
             }
-            .frame(height: Self.scheduleGridHeight(rowHeight: weekGridRowHeight))
+            .frame(height: Self.scheduleGridHeight(rowHeight: weekGridRowHeight, slotCount: emptySlotCount))
             .accessibilityHidden(true)
         }
     }
@@ -1469,6 +1529,12 @@ struct NativeScheduleView: View {
     /// Opens one of the surface's sheets from an environment variable so a
     /// headless simulator can screenshot it. Mirrors CpuTime's `CPU_DEBUG_TAB`.
     /// Usage: `SIMCTL_CHILD_NAPTABLE_DEBUG_SHEET=editor xcrun simctl launch …`
+    private struct DebugCropImage: Identifiable {
+        let id = UUID()
+        let image: CGImage
+        var placement = NativeSchedulePreferences.BackgroundPlacement()
+    }
+
     private func applyDebugSheetIfNeeded() {
         guard let raw = ProcessInfo.processInfo.environment["NAPTABLE_DEBUG_SHEET"] else { return }
         switch raw {
@@ -1478,6 +1544,20 @@ struct NativeScheduleView: View {
             weekPickerPresented = true
         case "free":
             freeCoursesPresented = true
+        case "crop":
+            // 相册选择器没法在无界面模拟器里点，直接拿 NAPTABLE_DEBUG_CROP_IMAGE 指向的文件打开编辑页。
+            guard let path = ProcessInfo.processInfo.environment["NAPTABLE_DEBUG_CROP_IMAGE"],
+                  let data = FileManager.default.contents(atPath: path),
+                  let image = BackgroundCropEditor.decode(data) else { return }
+            debugCropOpacity = .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark)
+            debugCropImage = DebugCropImage(image: image)
+        case "recrop":
+            // 和设置里的「调整位置和大小」一样：原图加上次的摆放。
+            guard let data = preferences.backgroundSourceData(dark: colorScheme == .dark)
+                    ?? preferences.backgroundSourceData(dark: colorScheme != .dark),
+                  let image = BackgroundCropEditor.decode(data) else { return }
+            debugCropOpacity = .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark)
+            debugCropImage = DebugCropImage(image: image, placement: preferences.backgroundPlacement(dark: colorScheme == .dark))
         case "detail":
             guard let result = store.result else { return }
             for cell in result.cells {
@@ -1823,15 +1903,16 @@ struct NativeScheduleView: View {
     private static let slotAxisWidth: CGFloat = 38
     private static let columnGap: CGFloat = 4
 
-    /// Eleven teaching slots plus the date header, sized to keep a complete
+    /// The drawn teaching slots plus the date header, sized to keep a complete
     /// day visible above the native tab bar on an iPhone-sized surface.
     private static func scheduleGridHeight(
         rowHeight: CGFloat = NativeScheduleDayColumn.slotHeight,
+        slotCount: Int = ScheduleSlot.all.count,
         includesDateHeader: Bool = true
     ) -> CGFloat {
         (includesDateHeader ? NativeScheduleDayColumn.dateHeaderHeight : 0)
-            + CGFloat(ScheduleSlot.all.count) * rowHeight
-            + CGFloat(max(0, ScheduleSlot.all.count - 1)) * NativeScheduleDayColumn.slotGap
+            + CGFloat(slotCount) * rowHeight
+            + CGFloat(max(0, slotCount - 1)) * NativeScheduleDayColumn.slotGap
     }
 
     private static var todayDate: String? {

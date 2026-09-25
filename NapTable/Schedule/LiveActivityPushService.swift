@@ -162,13 +162,23 @@ final class LiveActivityPushService: ObservableObject {
                 do { try await synchronize(generation: captured) }
                 catch {
                     guard captured == generation else { continue }
-                    status = .failed(error.localizedDescription)
-                    controller.setServiceFailure(error.localizedDescription)
+                    let message = Self.userMessage(for: error)
+                    status = .failed(message)
+                    controller.setServiceFailure(message)
                     scheduleRetry()
                 }
             }
             worker = nil
         }
+    }
+    /// What the settings page shows for a failed sync. The server's own
+    /// Chinese messages are meant for the reader; raw protocol errors
+    /// (「not found」, 「HTTP 500」) are not.
+    static func userMessage(for error: Error) -> String {
+        if error is URLError { return "网络连接不可用，恢复后会自动重试。" }
+        if case ScheduleServiceError.server(let reason) = error,
+           reason.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return reason }
+        return "提醒服务暂时不可用，稍后会自动重试。"
     }
     private func scheduleRetry() {
         guard retryTask == nil, isEnabled || defaults.bool(forKey: Self.revokeKey) else { return }
