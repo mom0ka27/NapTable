@@ -33,7 +33,7 @@ struct CourseTableSettingsView: View {
                 .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                           || store.isTableNameTaken(renameText, except: tableId))
         } message: {
-            Text("课表名称不能和其他课表重复。")
+            Text("课表名称不能与其他课表重复。")
         }
     }
 
@@ -145,11 +145,11 @@ struct CourseTableSettingsView: View {
             Text("学期与周次")
         } footer: {
             if isServerManaged(table) {
-                Text("由学校的学期配置提供，不用自己填。")
+                Text("由学校的学期配置提供，无需手动设置。")
             } else if table.semesterStartMonday.isEmpty, BundledConfig.fallbackSemesterStartMonday != nil {
-                Text("还没填，暂时按内置校历（\(store.semesterStartMondayDisplay(of: table))）算。对不上就改掉。")
+                Text("尚未设置，暂按内置校历（\(store.semesterStartMondayDisplay(of: table))）计算。如有出入，请手动修改。")
             } else {
-                Text("填开学那周的星期一，周次会自动往后推。只影响这张课表。")
+                Text("请填写开学第一周的星期一，之后的周次将自动推算。仅对本课表生效。")
             }
         }
     }
@@ -180,7 +180,7 @@ struct CourseTableSettingsView: View {
             if !hidden.isEmpty {
                 SettingsDestinationRow(
                     title: "收起的课程",
-                    detail: "导入时让位的 \(hidden.count) 门课，可恢复",
+                    detail: "导入时被替换的 \(hidden.count) 门课程，可恢复",
                     systemImage: "eye.slash"
                 ) {
                     HiddenCoursesView(tableId: tableId)
@@ -217,7 +217,7 @@ struct CourseTableSettingsView: View {
                 Button("清空课程", role: .destructive) { store.deleteAllCourses(inTable: tableId) }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("课表和它的学期、节次设置保留，里面的课程全部删除，无法撤销。")
+                Text("课表及其学期、节次设置将保留，其中的课程将全部删除，此操作无法撤销。")
             }
             Button(role: .destructive) { confirmDelete = true } label: {
                 Label("删除这张课表", systemImage: "trash")
@@ -229,7 +229,7 @@ struct CourseTableSettingsView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("这张课表里的课程会一起删掉，无法撤销。")
+                Text("课表中的课程将一并删除，此操作无法撤销。")
             }
         }
     }
@@ -289,7 +289,7 @@ private struct ClassTimesEditor: View {
                         list.append(ClassTime(start: last.end, end: last.end))
                         store.updateClassTimeList(list, tableId: tableId)
                     } label: {
-                        Label("加一节", systemImage: "plus")
+                        Label("添加节次", systemImage: "plus")
                     }
                     if !(table?.classTimeList.isEmpty ?? true) {
                         Button("恢复默认节次时间", role: .destructive) {
@@ -301,9 +301,9 @@ private struct ClassTimesEditor: View {
                 Text("每节课的起止时间")
             } footer: {
                 if isServerManaged {
-                    Text("由学校的学期配置提供，改不了。")
+                    Text("由学校的学期配置提供，不可修改。")
                 } else {
-                    Text("24 小时制，如 08:00。左滑可删。只影响「\(table?.name ?? "这张课表")」。")
+                    Text("采用 24 小时制，如 08:00；左滑可删除。仅对「\(table?.name ?? "本课表")」生效。")
                 }
             }
         }
@@ -339,7 +339,7 @@ private struct CalendarAdjustmentsList: View {
                         LabeledContent(item.date, value: index[item.date]?.detail ?? item.note)
                     }
                 } footer: {
-                    Text("由学校配置下发，课表、月历、小组件和灵动岛都会按这些日期覆盖课程。")
+                    Text("由学校配置提供。课表、月历、小组件与灵动岛将按这些日期调整课程。")
                 }
             }
         }

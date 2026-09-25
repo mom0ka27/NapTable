@@ -191,7 +191,7 @@ struct ChineseCalendarChecks {
         expect(rolledAfterBreak?.day.date == "2026-09-30" && rolledAfterBreak?.offset == 13, "十三天后的课要找得到")
         expect(longBreak.nextCourseDay(after: moment("2026-09-09", hour: 18))?.offset == 21, "隔了二十一天也要找得到")
         expect(longBreak.nextCourseDay(after: moment("2026-09-08", hour: 18)) == nil, "隔了二十二天就不找了")
-        expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "最近有课的一天", "新选项的名字")
+        expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "显示下一个有课日", "新选项的名字")
 
         // 旧 payload 没有 nextWeekDays，解码后应为 nil 而不是失败
         let legacyPayload = Data("""

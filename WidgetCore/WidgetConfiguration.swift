@@ -212,10 +212,10 @@ enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable,
 
     var title: String {
         switch self {
-        case .none: return "今天没有课程"
-        case .tomorrow: return "明天的课程"
-        case .holiday: return "最近的节假日"
-        case .nextCourseDay: return "最近有课的一天"
+        case .none: return "不显示其他内容"
+        case .tomorrow: return "显示明日课程"
+        case .holiday: return "显示最近的节假日"
+        case .nextCourseDay: return "显示下一个有课日"
         }
     }
 }

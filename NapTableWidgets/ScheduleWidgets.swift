@@ -1018,7 +1018,7 @@ private struct UpcomingScheduleWidget: Widget {
             }
         }
         .configurationDisplayName("临近课程")
-        .description("在桌面或锁屏显示当前课程和接下来一节课。")
+        .description("在桌面或锁屏显示当前与下一节课程。")
         .supportedFamilies([
             .systemSmall,
             .systemMedium,
@@ -1043,7 +1043,7 @@ private struct TodayScheduleWidget: Widget {
             }
         }
         .configurationDisplayName("今日课表")
-        .description("查看今天的完整课程安排。")
+        .description("显示今日的完整课程安排。")
         .supportedFamilies([.systemMedium, .systemLarge])
     }
 }
@@ -1062,7 +1062,7 @@ private struct TwoDayScheduleWidget: Widget {
             }
         }
         .configurationDisplayName("两日课表")
-        .description("并排显示今天和明天的课程。")
+        .description("并排显示两日的课程安排。")
         .supportedFamilies([.systemLarge])
     }
 }

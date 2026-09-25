@@ -119,7 +119,7 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 
 - 渲染：App 用本机课表（关注时加上本机的分享快照）按 §4.1 的规则算出今天、明天的画面帧，存进 App Group。小组件重画时按活动的 `scheduleScope`、`dateKey` 和时间段（`reminderDate` ～ `reservationEnd`）找覆盖当前时刻的帧，不看服务端的编号；服务端的提醒比本地早时先显示下一帧的倒计时；这段时间本地没有课（本机的分享快照比服务端旧）时，才用 attributes 里的 `shared` 画对方的课。小组件扩展里没有排程代码，只能读 App 预先算好的帧，所以 `shared` 是兜底而不是主要来源。本地规则只影响「这一刻显示什么」，与服务端稍有出入时只会让重画早晚一点，不会影响提醒和启动。
 - 本地预约（iOS 26）：打开 App 时调用 `POST /devices/{id}/claims`，请求体为 `{"slots": n}`（n = 4 减去本机仍在等待的预约数；系统一般只留约 5 个名额，留 1 个给预览）。服务端在一个事务里，从内存的「今天 + 明天」中挑出最近的 n 节还没有账本行的课，在账本写入 `local`，并返回它们的 occurrence ID、提醒时刻、起止时刻、`shared` 和频道；之前认领过、仍未开始的课一并返回，已经发出或结果不明的课不会被选中。App 照着返回的内容预约；预约失败的课用 `DELETE /devices/{id}/claims/{occurrenceId}` 交还，服务端删掉账本行，这节课重新入堆。周末等没课的时候返回为空，全部交给服务端。关心共享课表时同样可以本地预约：模拟器上活动开始时 App 会在后台被拉起并拿到令牌（真机待验证，见 §7）。
-- 设置页：关心共享课表时显示第二个提前量选项「对方课程提前显示」。
+- 设置页：关心共享课表时显示第二个提前量选项「共享课程提前显示」。
 - 删除：`LiveActivityTimeline.build` 的排程部分、计划上传、`local-handoff`、`remote-resume`、`foreground-recovery`、`broadcast-config` 凭证与 7 天租约、iOS 17 的前台提醒。保留前台和后台的 `reconcile`，用于在推送没到时纠正画面。
 
 ## 6. 接口变化一览

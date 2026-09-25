@@ -18,12 +18,12 @@ enum AfterClassOption: String, AppEnum {
     case holiday
     case nextCourseDay
 
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "今天的课上完后"
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "今日课程结束后"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .none: "今天没有课程",
-        .tomorrow: "明天的课程",
-        .holiday: "最近的节假日",
-        .nextCourseDay: "最近有课的一天",
+        .none: "不显示其他内容",
+        .tomorrow: "显示明日课程",
+        .holiday: "显示最近的节假日",
+        .nextCourseDay: "显示下一个有课日",
     ]
 
     var style: ScheduleWidgetAfterClassStyle { ScheduleWidgetAfterClassStyle(rawValue: rawValue) ?? .tomorrow }
@@ -33,10 +33,10 @@ enum UpcomingCourseCountOption: Int, AppEnum {
     case one = 1
     case two = 2
 
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "显示几节课"
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "显示课程数"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .one: "只显示一节",
-        .two: "当前和下一节",
+        .one: "仅当前一节",
+        .two: "当前与下一节",
     ]
 }
 
@@ -47,10 +47,10 @@ enum TwoDayStartOption: String, AppEnum {
     /// rawValue 沿用旧名，已经放好的小组件不用重新设置。
     case nextCourseDay
 
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "显示哪两天"
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "显示日期"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
-        .today: "今天和明天",
-        .nextCourseDay: "今天和最近有课的一天",
+        .today: "今日与明日",
+        .nextCourseDay: "今日与下一个有课日",
     ]
 }
 
@@ -60,9 +60,9 @@ protocol ScheduleWidgetIntent: WidgetConfigurationIntent {
 
 struct TodayScheduleWidgetIntent: ScheduleWidgetIntent {
     static let title: LocalizedStringResource = "今日课表"
-    static let description = IntentDescription("选择今天的课上完后小组件显示什么。")
+    static let description = IntentDescription("设置今日课程结束后小组件显示的内容。")
 
-    @Parameter(title: "今天的课上完后", default: .tomorrow)
+    @Parameter(title: "今日课程结束后", default: .tomorrow)
     var afterClass: AfterClassOption
 
     var configuration: ScheduleWidgetConfiguration {
@@ -72,12 +72,12 @@ struct TodayScheduleWidgetIntent: ScheduleWidgetIntent {
 
 struct UpcomingScheduleWidgetIntent: ScheduleWidgetIntent {
     static let title: LocalizedStringResource = "临近课程"
-    static let description = IntentDescription("选择今天的课上完后显示什么，以及小号显示几节课。")
+    static let description = IntentDescription("设置今日课程结束后显示的内容，以及小尺寸组件显示的课程数。")
 
-    @Parameter(title: "今天的课上完后", default: .tomorrow)
+    @Parameter(title: "今日课程结束后", default: .tomorrow)
     var afterClass: AfterClassOption
 
-    @Parameter(title: "显示几节课", default: .one)
+    @Parameter(title: "显示课程数", default: .one)
     var courseCount: UpcomingCourseCountOption
 
     /// 中号本来就是「当前 / 接下来」两栏，锁屏也只放得下一节，节数只在小号上给选。
@@ -101,9 +101,9 @@ struct UpcomingScheduleWidgetIntent: ScheduleWidgetIntent {
 
 struct TwoDayScheduleWidgetIntent: ScheduleWidgetIntent {
     static let title: LocalizedStringResource = "两日课表"
-    static let description = IntentDescription("选择两日课表显示哪两天。")
+    static let description = IntentDescription("设置两日课表显示的日期。")
 
-    @Parameter(title: "显示哪两天", default: .today)
+    @Parameter(title: "显示日期", default: .today)
     var start: TwoDayStartOption
 
     var configuration: ScheduleWidgetConfiguration {

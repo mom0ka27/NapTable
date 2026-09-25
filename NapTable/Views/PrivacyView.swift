@@ -104,7 +104,7 @@ struct PrivacySettingsView: View {
             }
             Section {
                 NavigationLink(PrivacyPolicy.liveTitle) { PrivacyDocumentView(liveActivities: true) }
-                Toggle("允许实时通知信息上传", isOn: Binding(
+                Toggle("允许上传实时通知信息", isOn: Binding(
                     get: { consent.liveAccepted },
                     set: { value in
                         if value { showLiveConsent = true }
@@ -117,7 +117,7 @@ struct PrivacySettingsView: View {
                     }
                 ))
             } footer: {
-                Text("撤回后实时通知会关闭。网络不可用时，服务端信息清除将在恢复连接后重试。")
+                Text("撤回后，实时通知将关闭；服务端数据将随之清除，网络不可用时将在恢复连接后完成。")
             }
         }
         .navigationTitle("隐私与数据")
