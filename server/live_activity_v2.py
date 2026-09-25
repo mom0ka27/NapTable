@@ -535,16 +535,16 @@ class Service:
         attributes = {"semester": "", "week": 0, "dateKey": occurrence['dateKey'], "protocolVersion": 2,
                       "scheduleScope": scope, "occurrenceId": occurrence['occurrenceId'], "scheduleVersion": stored['version'],
                       "reservationStart": occurrence['start'] - 978307200, "reservationEnd": occurrence['end'] - 978307200,
-                      "reminderDate": occurrence['reminder'] - 978307200, "frames": occurrence['frames']}
+                      "reminderDate": occurrence['reminder'] - 978307200}
         if tokens:
             attributes['pushMode'] = 'token'
         else:
             attributes['broadcastChannel'] = channel
-        # Share courses may travel with their text: the share already lives here.
-        shown = {ref['course'] for frame in occurrence['frames'] for ref in (frame['lead'], frame['companion'])
-                 if ref and ref['table'] == 'share'}
-        if shown:
-            attributes['texts'] = {course: texts[course] for course in sorted(shown) if course in texts}
+        # The phone renders its own courses from its timetable by the time alone.
+        # Their classes travel with periods, times and text, the share living here:
+        # the phone's copy of the share may be older.
+        if occurrence['shared']:
+            attributes['shared'] = [dict(item, **texts.get(item['course'], {})) for item in occurrence['shared']]
         payload = {"aps": {"timestamp": int(self.now()), "event": "start", "attributes-type": "ScheduleLiveActivityAttributes",
                            "attributes": attributes,
                            "content-state": public_state(occurrence['dateKey'], None if tokens else occurrence['lastPeriod'], 'upcoming', occurrence['reminder']),
@@ -553,9 +553,11 @@ class Service:
             payload['aps']['input-push-token'] = 1
         else:
             payload['aps']['input-push-channel'] = channel
-        # APNs refuses Live Activity payloads over 4 KB: text goes first, the frames never.
+        # APNs refuses Live Activity payloads over 4 KB: text goes first, then the list.
         if len(canonical(payload).encode()) > 3900:
-            attributes.pop('texts', None)
+            attributes['shared'] = [{key: item[key] for key in ('course', 'first', 'last', 'start', 'end')} for item in attributes['shared']]
+        if len(canonical(payload).encode()) > 3900:
+            attributes.pop('shared')
         return payload
 
     def _build(self, db, device, day, now):
@@ -654,13 +656,11 @@ class Service:
                 if occurrence is None:
                     continue
                 attributes = self._payload(occurrence, stored, texts, scope, row['channel'] if row['channel_state'] == 'ready' else None)['aps']['attributes']
-                refresh = json.loads(row['refresh'] or '{}')
                 claimed.append({"occurrenceId": row['occurrence'], "dateKey": row['day'], "reminder": row['fire_at'],
                                 "start": occurrence['start'], "end": occurrence['end'], "pushMode": stored['push_mode'],
                                 "scheduleScope": scope, "scheduleVersion": stored['version'],
                                 "channel": row['channel'] if row['channel_key'] and row['channel_state'] == 'ready' else None,
-                                "frames": occurrence['frames'], "texts": attributes.get('texts', {}),
-                                "alertAt": refresh.get('alertAt', []), "refreshAt": refresh.get('refreshAt', [])})
+                                "shared": attributes.get('shared', [])})
         return {"claims": claimed}
 
     def release(self, device, occurrence):

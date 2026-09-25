@@ -81,11 +81,12 @@ class ScheduledTests(unittest.TestCase):
         self.assertTrue(today['channel_key'].endswith(':end-period-2'))
         # The row keeps a digest; the push is built from the timetable.
         self.assertEqual(len(today['payload']), 64)
+        # My own courses travel as the time window alone; the phone renders them itself.
         attributes = self.payload(today)['aps']['attributes']
-        self.assertEqual(attributes['frames'][0]['lead']['course'], 'math')
+        self.assertEqual((attributes['reservationStart'] + 978307200, attributes['reservationEnd'] + 978307200), (at("08:00"), at("09:50")))
         self.assertEqual(attributes['broadcastChannel'], 'channel-id')
-        self.assertNotIn('texts', attributes)
-        self.assertNotIn('pushMode', attributes)
+        for field in ('frames', 'shared', 'pushMode'):
+            self.assertNotIn(field, attributes)
         # A mapping the school's bells do not match falls back to per-activity pushes.
         other = copy.deepcopy(self.body['own'])
         other['periods'] = [dict(period, start="07:55") if index == 0 else period for index, period in enumerate(PERIODS)]
@@ -159,9 +160,13 @@ class ScheduledTests(unittest.TestCase):
         merged = self.jobs()[0]
         # Mine 08:00–09:50 reminds at 07:00; theirs 09:30–10:30 joins at 09:15.
         self.assertEqual((merged['fire_at'], merged['expires_at']), (at("07:00"), at("10:30")))
-        attributes = self.payload(merged)['aps']['attributes']
+        payload = self.payload(merged)
+        attributes = payload['aps']['attributes']
         self.assertEqual(attributes['scheduleScope'], 'share-scope')
-        self.assertEqual(attributes['texts'], {"7": {"name": "高数", "teacher": "王", "location": "A101"}})
+        # Their class travels whole, in case the phone's copy of the share is older.
+        self.assertEqual(attributes['shared'], [{"course": "7", "first": 1, "last": 1, "start": at("09:30"), "end": at("10:30"),
+                                                 "name": "高数", "teacher": "王", "location": "A101"}])
+        self.assertLess(len(json.dumps(payload, ensure_ascii=False).encode()), 1500)
         self.assertEqual(json.loads(merged['refresh'])['alertAt'], [at("09:15")])
         self.assertNotIn('高数', json.dumps(json.loads(self.db.execute("SELECT body FROM la_timetables").fetchone()[0])))
         with self.assertRaises(ProtocolError) as error:
@@ -184,7 +189,7 @@ class ScheduledTests(unittest.TestCase):
         # Revoked for good: only my own courses remain.
         self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
         self.service.follow_shares()
-        self.assertEqual([self.payload(row)['aps']['attributes']['frames'][0]['lead']['table'] for row in self.jobs()], ['own', 'own'])
+        self.assertEqual(['shared' in self.payload(row)['aps']['attributes'] for row in self.jobs()], [False, False])
         self.service.follow_shares()
 
     # MARK: Claims, tokens and dispatch
@@ -193,8 +198,8 @@ class ScheduledTests(unittest.TestCase):
         self.upload()
         claimed = self.service.claim(self.id, {"slots": 1})['claims']
         self.assertEqual([item['dateKey'] for item in claimed], ["2026-09-22"])
-        self.assertEqual(claimed[0]['frames'][0]['lead']['course'], 'math')
-        self.assertEqual(claimed[0]['reminder'], at("07:30"))
+        self.assertEqual((claimed[0]['reminder'], claimed[0]['start'], claimed[0]['end']), (at("07:30"), at("08:00"), at("09:50")))
+        self.assertEqual((claimed[0]['pushMode'], claimed[0]['shared']), ('channel', []))
         # Claimed reminders stay with the phone; asking again returns them with the next one.
         again = self.service.claim(self.id, {"slots": 1})['claims']
         self.assertEqual([item['dateKey'] for item in again], ["2026-09-22", "2026-09-23"])

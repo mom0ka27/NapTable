@@ -136,15 +136,17 @@ class MergedTests(unittest.TestCase):
         merged = occurrences[0]
         # My course reminds at 09:00, before theirs at 09:15: it opens the countdown.
         self.assertEqual((merged["reminder"], merged["start"], merged["end"]), (at("09:00"), at("09:30"), at("10:45")))
+        # My class leads while it runs; theirs leads while only theirs runs; else the nearest countdown.
         self.assertEqual(spans(merged), [
             (at("09:00"), at("09:15"), "own", "mine", "upcoming", None),
             (at("09:15"), at("09:30"), "share", "theirs", "upcoming", "mine"),
             (at("09:30"), at("10:00"), "share", "theirs", "inProgress", "mine"),
-            (at("10:00"), at("10:30"), "share", "theirs", "inProgress", "mine"),
+            (at("10:00"), at("10:30"), "own", "mine", "inProgress", "theirs"),
             (at("10:30"), at("10:45"), "own", "mine", "inProgress", None)])
         self.assertEqual(merged["alertAt"], [at("09:15")])
         self.assertEqual(merged["frames"][2]["companion"]["phase"], "upcoming")
         self.assertEqual(merged["frames"][3]["companion"]["phase"], "inProgress")
+        self.assertEqual(merged["shared"], [{"course": "theirs", "first": 1, "last": 1, "start": at("09:30"), "end": at("10:30")}])
         self.assertIn(at("09:15"), refresh_at(merged))
 
     def test_same_lead_matches_a_single_reminder(self):

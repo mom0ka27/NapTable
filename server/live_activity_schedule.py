@@ -430,7 +430,9 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
                 "reminder": reminder if index == 0 else begin,
                 "firstPeriod": opening.first, "lastPeriod": opening.last,
                 "alertAt": sorted(stamp for stamp in alerts if begin < stamp < until)[:16], "frames": chunk,
-                "overlaps": [(piece.table, piece.course, piece.start, piece.end) for piece in pieces]})
+                # The share's classes in this activity: the phone may not have their latest version.
+                "shared": [{"course": piece.course, "first": piece.first, "last": piece.last, "start": piece.start, "end": piece.end}
+                           for piece in pieces if piece.table == "share" and piece.start < until and piece.end > begin]})
 
     if share is None:
         for piece in _lead_pieces("own", own, day, own_lead, per_period, conflicts, report):
@@ -440,15 +442,7 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
 
     share_lead = settings.get("sharedLeadMinutes", own_lead)
     mine = _own_courses(own, day, per_period) if own is not None else []
-    companions = []
-    for course in mine:
-        for span in [_lead_span(course, own_lead, day)] + course["spans"]:
-            if span not in companions:
-                companions.append(span)
-    companions.sort(key=lambda span: (span["from"], span["until"]))
     pieces = _lead_pieces("share", share, day, share_lead, per_period, conflicts, report)
-    for piece in pieces:
-        piece.frames = _attach(companions, piece.frames)
     for course in mine:
         if course["end"] - course["start"] > EIGHT_HOURS:
             continue
@@ -468,12 +462,23 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
         # Each course reminds by its own table's lead; the cluster opens at the earliest.
         reminder = max(min(piece.reminder for piece in cluster), previous)
         previous = end
-        shared = [frame for piece in cluster if not piece.own for frame in piece.frames]
-        owned = sorted((frame for piece in cluster if piece.own for frame in piece.frames),
-                       key=lambda frame: (0 if frame["lead"]["phase"] == "inProgress" else 1, frame["from"]))
+
+        def spans_of(own_side):
+            return sorted(({"from": frame["from"], "until": frame["until"], "ref": frame["lead"]}
+                           for piece in cluster if piece.own == own_side for frame in piece.frames),
+                          key=lambda span: (span["from"], span["until"]))
+
+        # Each table's frames carry the other table's course running then.
+        owned = _attach(spans_of(False), [frame for piece in cluster if piece.own for frame in piece.frames])
+        shared = _attach(spans_of(True), [frame for piece in cluster if not piece.own for frame in piece.frames])
+        # My class leads; else their class; else the countdown to the nearest class.
+        running = [frame for frame in owned if frame["lead"]["phase"] == "inProgress"] + \
+                  [frame for frame in shared if frame["lead"]["phase"] == "inProgress"]
+        waiting = sorted((frame for frame in owned + shared if frame["lead"]["phase"] != "inProgress"),
+                         key=lambda frame: (frame["lead"]["start"], 0 if frame["lead"]["table"] == "own" else 1))
         first = min(cluster, key=lambda piece: (piece.reminder, piece.start))
         fallback = [_frame(reminder, first.start, first.upcoming(reminder))] if reminder < first.start else []
-        frames = _overlay(shared + owned + fallback, reminder, end)
+        frames = _overlay(running + waiting + fallback, reminder, end)
         # Every course reminding later than the opening sounds its own reminder.
         joins = {max(piece.reminder, reminder) for piece in cluster} - {reminder}
         if end > now:
