@@ -353,6 +353,9 @@ class Service:
             if not isinstance(code, str) or not 1 <= len(code) <= 32:
                 raise ProtocolError("follow needs a share code")
             normalized["follow"] = {"share": code.upper()}
+            # The phone's own name for the share's timetable: its activities carry it.
+            if follow.get("scope") is not None:
+                normalized["follow"]["scope"] = identifier(follow["scope"])
         conflicts = body.get("conflicts", {})
         if not isinstance(conflicts, dict) or len(conflicts) > 2000:
             raise ProtocolError("invalid conflicts")
@@ -478,7 +481,7 @@ class Service:
         body, own, share, texts, record = self._tables(db, stored)
         # A followed share that went away leaves the reader's own courses only.
         conflicts = body.get('conflicts', {}) if share is not None or not stored['follow_scope'] else {}
-        scope = record['schedule_scope'] if record is not None else body['own']['scope']
+        scope = body['own']['scope'] if record is None else body['follow'].get('scope', record['schedule_scope'])
         return stored, body, own, share, texts, conflicts, scope
 
     @staticmethod

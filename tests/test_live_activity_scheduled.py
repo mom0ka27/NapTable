@@ -188,6 +188,10 @@ class ScheduledTests(unittest.TestCase):
         payload = self.payload(merged)
         attributes = payload['aps']['attributes']
         self.assertEqual(attributes['scheduleScope'], 'share-scope')
+        # The phone names the share's timetable itself; its activities carry that name.
+        self.upload(revision=2, follow={"share": "share1", "scope": "phone-scope"}, settings={"leadMinutes": 60, "sharedLeadMinutes": 15})
+        self.assertEqual(self.payload(self.jobs()[0])['aps']['attributes']['scheduleScope'], 'phone-scope')
+        self.upload(revision=3, follow={"share": "share1"}, settings={"leadMinutes": 60, "sharedLeadMinutes": 15})
         # Their class travels whole, in case the phone's copy of the share is older.
         self.assertEqual(attributes['shared'], [{"course": "7", "first": 1, "last": 1, "start": at("09:30"), "end": at("10:30"),
                                                  "name": "高数", "teacher": "王", "location": "A101"}])
@@ -195,7 +199,7 @@ class ScheduledTests(unittest.TestCase):
         self.assertEqual(merged['alerts'], (at("09:15"),))
         self.assertNotIn('高数', json.dumps(json.loads(self.db.execute("SELECT body FROM la_timetables").fetchone()[0])))
         with self.assertRaises(ProtocolError) as error:
-            self.upload(revision=2, follow={"share": "NOPE"})
+            self.upload(revision=4, follow={"share": "NOPE"})
         self.assertEqual(error.exception.status, 404)
 
     def test_a_changed_or_revoked_share_rebuilds_its_followers(self):
