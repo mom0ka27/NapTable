@@ -57,7 +57,7 @@
   const viewCopy = {
     schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
-    stats: ["使用统计", "查看近 30 天各学校使用设备数、系统版本和设备型号。"],
+    stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
     apns: ["APNs 推送", "配置实况通知的推送凭据。"]
   };
   const mobileNavigation = window.matchMedia("(max-width: 760px)");
@@ -269,9 +269,13 @@
   };
   const renderStats = () => {
     const schools = state.stats.schools || [];
-    $("totalUserCount").textContent = state.stats.totalUsers || 0;
+    const count = value => Number(value || 0).toLocaleString("zh-CN");
+    $("todayUserCount").textContent = count(state.stats.todayUsers);
+    $("todayUserDetail").textContent = `新设备 ${count(state.stats.newUsersToday)} · 昨日 ${count(state.stats.yesterdayUsers)}`;
+    $("weeklyUserCount").textContent = count(state.stats.weeklyUsers);
+    $("totalUserCount").textContent = count(state.stats.totalUsers);
+    $("monthlyUserDetail").textContent = `按安装去重 · 未关联学校 ${count(state.stats.unassignedUsers)}`;
     $("activeSchoolCount").textContent = schools.filter(school => school.users > 0).length;
-    $("unassignedUserCount").textContent = state.stats.unassignedUsers || 0;
     const updatedAt = new Date(state.stats.updatedAt);
     $("statsUpdatedAt").textContent = Number.isNaN(updatedAt.getTime()) ? "近 30 天的设备使用情况" : `近 30 天 · 更新于 ${updatedAt.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}`;
     const list = $("statsList");
@@ -279,7 +283,7 @@
     schools.forEach(school => {
       const row = document.createElement("div");
       row.className = "stats-row";
-      row.innerHTML = `<div class="school-cell"><span class="school-avatar" aria-hidden="true">${escapeHTML(school.name.slice(0, 1))}</span><strong>${escapeHTML(school.name)}</strong></div><code>${escapeHTML(school.id)}</code><span>${Number(school.users || 0).toLocaleString("zh-CN")}</span>`;
+      row.innerHTML = `<div class="school-cell"><span class="school-avatar" aria-hidden="true">${escapeHTML(school.name.slice(0, 1))}</span><strong>${escapeHTML(school.name)}</strong></div><code>${escapeHTML(school.id)}</code><span class="today-cell">${count(school.todayUsers)}</span><span>${count(school.users)}</span>`;
       list.append(row);
     });
     $("unassignedStats").textContent = `未关联当前学校目录：${Number(state.stats.unassignedUsers || 0)} 台`;
@@ -290,6 +294,7 @@
     filter.value = schools.some(school => school.id === selected) ? selected : "";
     renderDeviceStats();
     renderSchoolShare();
+    renderDailyTrend();
     if (!schools.length) {
       const empty = document.createElement("div");
       empty.className = "inline-empty";
@@ -323,10 +328,68 @@
     if (!rows.length) legend.innerHTML = '<p class="chart-empty">等待第一台设备<br>用户同意基础协议后开始统计</p>';
   };
 
+  const renderDailyTrend = () => {
+    const days = state.stats.daily || [];
+    const chart = $("dailyTrend"), table = $("dailyTable"), tooltip = $("trendTooltip");
+    chart.replaceChildren(); table.replaceChildren(); tooltip.hidden = true;
+    // Round the axis up to a friendly step so a quiet month still has headroom.
+    const peak = Math.max(0, ...days.map(day => Number(day.users || 0)));
+    const step = peak <= 5 ? 5 : 10 ** Math.floor(Math.log10(peak)) * (peak / 10 ** Math.floor(Math.log10(peak)) <= 2 ? 2 : peak / 10 ** Math.floor(Math.log10(peak)) <= 5 ? 5 : 10);
+    const top = Math.max(step, Math.ceil(peak / step) * step);
+    $("trendMax").textContent = top.toLocaleString("zh-CN");
+    const label = date => date.slice(5).replace("-", "/");
+    const show = (bar, day) => {
+      const users = Number(day.users || 0), fresh = Number(day.newUsers || 0);
+      tooltip.innerHTML = "";
+      const title = document.createElement("span"); title.textContent = day.date;
+      tooltip.append(title);
+      for (const [name, value, kind] of [["打开设备", users, ""], ["新设备", fresh, "is-new"], ["回访设备", users - fresh, "is-returning"]]) {
+        const row = document.createElement("div");
+        row.innerHTML = `<i class="${kind}"></i><strong></strong><em></em>`;
+        row.querySelector("strong").textContent = value.toLocaleString("zh-CN");
+        row.querySelector("em").textContent = name;
+        tooltip.append(row);
+      }
+      const box = chart.getBoundingClientRect(), mark = bar.getBoundingClientRect();
+      tooltip.hidden = false;
+      const left = mark.left - box.left + mark.width / 2 + chart.offsetLeft;
+      tooltip.style.left = `${Math.min(Math.max(left, tooltip.offsetWidth / 2), chart.offsetLeft + box.width - tooltip.offsetWidth / 2)}px`;
+    };
+    days.forEach((day, index) => {
+      const users = Number(day.users || 0), fresh = Math.min(users, Number(day.newUsers || 0));
+      const bar = document.createElement("button");
+      bar.type = "button";
+      bar.className = "trend-bar" + (index === days.length - 1 ? " is-today" : "");
+      bar.setAttribute("aria-label", `${day.date}：打开 ${users} 台，其中新设备 ${fresh} 台`);
+      const stack = document.createElement("span");
+      stack.className = "trend-stack";
+      stack.style.height = `${users / top * 100}%`;
+      if (users - fresh > 0) { const seg = document.createElement("i"); seg.className = "is-returning"; seg.style.flexGrow = users - fresh; stack.append(seg); }
+      if (fresh > 0) { const seg = document.createElement("i"); seg.className = "is-new"; seg.style.flexGrow = fresh; stack.append(seg); }
+      bar.append(stack);
+      if (index % 7 === (days.length - 1) % 7) {
+        const tick = document.createElement("small"); tick.textContent = index === days.length - 1 ? "今天" : label(day.date);
+        bar.append(tick);
+      }
+      bar.addEventListener("pointerenter", () => show(bar, day));
+      bar.addEventListener("focus", () => show(bar, day));
+      bar.addEventListener("pointerleave", () => { tooltip.hidden = true; });
+      bar.addEventListener("blur", () => { tooltip.hidden = true; });
+      chart.append(bar);
+    });
+    [...days].reverse().forEach(day => {
+      const row = document.createElement("tr");
+      for (const value of [day.date, Number(day.users || 0).toLocaleString("zh-CN"), Number(day.newUsers || 0).toLocaleString("zh-CN")]) {
+        const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+      }
+      table.append(row);
+    });
+  };
+
   const renderDeviceStats = () => {
     const selected = $("statsSchoolFilter").value;
     const stats = (state.stats.schools || []).find(school => school.id === selected) || state.stats;
-    for (const [id, key] of [["systemVersionStats", "systemVersions"], ["deviceModelStats", "deviceModels"]]) {
+    for (const [id, key] of [["systemVersionStats", "systemVersions"], ["deviceModelStats", "deviceModels"], ["appVersionStats", "appVersions"]]) {
       const list = $(id);
       list.replaceChildren();
       const items = stats[key] || [];

@@ -73,9 +73,13 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
    已添加学校的 ID 可在「学校信息与节次」中修改，单独点击「更新 ID」确认；服务端会同步迁移学期、使用统计、分享关联和旧通知设备。已有分享的课程与时间快照不变；v2 已提交的通知与旧频道保持原标识直至自然排空，客户端需同步新学校 ID 后获取新的频道映射。
 4. 在「统一调休」维护所有学校共用的放假、补班日期；「导入国务院安排」可直接拉取当年的官方放假安排，补班日需要自己选定上哪天的课。
 5. 在「APNs 推送」保存凭据，服务端会按客户端签发的作息映射自动维护版本和最终节次频道。
-6. 在「使用统计」查看近 30 天各学校的使用设备数，并选择学校查看系统版本、设备型号分布。基础统计独立于实时通知注册，只有同意基础隐私协议的新版客户端才会上报。
+6. 在「使用统计」查看今日打开、近 7/30 天活跃设备、近 30 天每日打开趋势和各学校使用设备数，并选择学校查看系统版本、设备型号、App 版本分布。基础统计独立于实时通知注册，只有同意基础隐私协议的新版客户端才会上报。
 
-管理员令牌仅在当前页面使用，刷新页面后需要重新输入；不放入网址或浏览器持久存储。学校目录 `/v1/schools` 可公开读取，管理接口必须携带正确令牌。修改学校节次或统一调休时，相关学期版本会递增；已经生成的分享继续保留其原版本快照。
+| 学校配置 | 使用统计 |
+| --- | --- |
+| ![学校配置](../docs/screenshots/admin-schools.png) | ![使用统计](../docs/screenshots/admin-statistics.png) |
+
+管理员令牌只用于登录：服务端换发 HttpOnly 会话 Cookie 后页面即丢弃令牌，不放入网址或浏览器持久存储。学校目录 `/v1/schools` 可公开读取，管理接口必须携带正确令牌。修改学校节次或统一调休时，相关学期版本会递增；已经生成的分享继续保留其原版本快照。
 
 ## 课程实时活动 v2
 
@@ -83,7 +87,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 App 保存个人展示内容；服务器只接收课表的时间结构（星期、节次、周次、课程 ID，不含课程名）和提醒设置，由服务器计算每一节课的提醒（`PUT /v2/live-activity/devices/{id}/timetable`）。iOS 18 由服务器远程启动；iOS 26 用 `POST /devices/{id}/claims` 认领最近几节在本地预约，其余由服务器远程启动。iOS 17 只保留前台预览。设计与取舍见 [服务端排程的实时活动提醒](../docs/server-scheduled-reminders.md)。
 
-在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`me.mom0ka27.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。管理页展示频道健康和失败原因，后台自动创建与回收，无需填写 Apple channel ID。
+在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`me.mom0ka27.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。频道由后台自动创建与回收，无需填写 Apple channel ID，管理页不再展示频道列表。
 
 远程 token 使用 Fernet 认证加密：在运行服务的虚拟环境中安装依赖，把独立 Fernet key 保存在 release/数据库目录之外，通过 `NAPTABLE_LA_TOKEN_KEY_PATH` 指定。文件仅供服务账号读取，并独立备份。未配置该密钥时远程 token 注册返回 503，本地预约设备不受此 token 存储要求影响。
 
@@ -98,7 +102,7 @@ export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key
 
 新接口前缀 `/v2/live-activity`。旧接口返回 426 提示升级，保留认证撤销及旧日期频道的短期排空。关闭功能采用墓碑并保留提交历史；APNs 响应丢失不会自动重发 start。部署前必须备份数据库，回退不得直接恢复旧 pending 队列。
 
-APNs HTTP/2/JWT 连接实现仍在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。今明两天的提醒只放在内存里，每次启动按库里的课表重算（一万台设备约 1.3 秒、30 MB），库里只留课表、令牌和已有人负责的启动记录 `la_starts`。
+APNs HTTP/2/JWT 连接实现在 `server/apns.py`；缺失 HTTP 状态视为结果不明。发送前先读掉空闲期间 APNs 发来的帧，遇到 GOAWAY 或对端关闭就换新连接；空闲超过 10 分钟直接重连；GOAWAY 的 last-stream-id 小于本请求、REFUSED_STREAM 或请求未写完都归为未发送，可安全重试。start 的 `apns-expiration` 为课程结束时刻，手机在提醒时刻离线也能在课内补收。单进程调度，独立任务循环、短 SQLite 写事务和进程排他锁；不要通过多 worker 启动同一数据库提升吞吐。今明两天的提醒只放在内存里，每次启动按库里的课表重算（一万台设备约 1.3 秒、30 MB），库里只留课表、令牌和已有人负责的启动记录 `la_starts`。
 
 关心共享课表时改用令牌模式：`PUT /v2/live-activity/devices/{id}/activities/{occurrenceId}` 只上传这个活动的推送令牌 `{"token": "…"}`，存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）；刷新和响铃时刻由服务器按排程计算，在内存中排队，`token-updates` 工作循环每秒按时推送 update/end，管理页健康数据里的 `tokenUpdates` 只给活动数和待发数，不含令牌。`DELETE` 同一路径停止刷新。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
@@ -172,7 +176,7 @@ curl --fail-with-body -X POST http://127.0.0.1:8787/v1/admin/calendar/import \
 
 ## 管理边界
 
-首次初始化只提供南京大学模板；升级时移除旧版自动内置的中国药科大学配置，管理员自行维护的配置保留。学校删除后重启不会自动恢复。NapTable App 暂时仅显示南京大学，其他导入器保留供后续启用。v2 推送首版仅服务配置中的 NapTable Bundle ID，不将其他 App 的频道、凭据或调度混用。
+首次初始化只提供南京大学模板；升级时移除旧版自动内置的中国药科大学配置，管理员自行维护的配置保留。学校删除后重启不会自动恢复。NapTable App 目前开放南京大学和中山大学的教务导入，其他导入器保留供后续启用；不在列表里的学校可手动创建课表。v2 推送首版仅服务配置中的 NapTable Bundle ID，不将其他 App 的频道、凭据或调度混用。
 
 学校配置读取不需要管理员令牌，修改需要 `X-Admin-Token` 与服务进程的 `NAPTABLE_ADMIN_TOKEN` 一致。未设置令牌时，学校管理接口保持只读。
 
@@ -240,6 +244,6 @@ App 选择学校导入入口后自动读取配置；没有明确学期时使用�
 
 请求仅允许 `consentVersion: 1`、`schoolID`（可为空）、`systemName`、`systemVersion`、`deviceModel`、`appVersion`。不接受课程、姓名等额外字段。服务端记录首次与最近上报时间；客户端同意基础协议后于启动、回前台、学校变化时自动上报，相同属性在同一进程内最多每小时成功上报一次。失败不阻止导入，下次前台或属性变化时重试。
 
-`GET /v1/admin/stats` 仍需管理员认证，返回近 30 天按安装去重的 `totalUsers`、各学校 `users`、`unassignedUsers`，以及全局和各学校的 `systemVersions` / `deviceModels` 分布。学校以当前选中的课表为准，单台安装仅归属一个学校；重装可能重复计数，所以界面同时标注设备数。原始记录在最后上报超过 90 天后，于下一次写入或统计查询时清理；备份保留最近 14 份。不会从旧版实时通知设备记录推断用户已同意隐私协议。
+`GET /v1/admin/stats` 仍需管理员认证，返回近 30 天按安装去重的 `totalUsers`、各学校 `users`、`unassignedUsers`，以及全局和各学校的 `systemVersions` / `deviceModels` / `appVersions` 分布。按 UTC+8 自然日另返回 `todayUsers`（各学校也有）、`newUsersToday`、`yesterdayUsers`、`weeklyUsers`（含今天的 7 天）和 30 项 `daily`（`date`、`users`、`newUsers`）。每日数据存于 `usage_daily`，只有日期与计数两列：设备当天首次上报时累加，不保存单台设备的使用日期，保留 90 天；今天一项直接由设备记录计算。客户端在跨过 UTC+8 零点后的首次打开会绕过一小时节流再上报一次。学校以当前选中的课表为准，单台安装仅归属一个学校；重装可能重复计数，所以界面同时标注设备数。原始记录在最后上报超过 90 天后，于下一次写入或统计查询时清理；备份保留最近 14 份。不会从旧版实时通知设备记录推断用户已同意隐私协议。
 
 客户端首次进入需明确同意基础统计协议，第二项实时通知上传许可为可选，均默认不勾选。未同意基础协议不挂载主界面或发送统计；同意后需成功导入至少一门课程才完成首次引导，取消或空导入不能跳过。已有课程的升级用户只需补充隐私选择，无需重新导入。实时通知许可同时保护 ActivityKit 控制器和网络协调器；可在设置的「隐私与数据」中撤回，撤回后的网络仅执行旧设备清除，离线时重试。iOS 26+ 本地预约不上传远程课表计划，仍独立参与基础使用统计。

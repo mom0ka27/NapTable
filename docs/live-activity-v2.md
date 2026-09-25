@@ -1,6 +1,6 @@
 # Live Activity v2
 
-课程实时活动的现状。设计理由与取舍见 `server-scheduled-reminders.md`；更早的客户端计划方案（`plan`、`local-handoff`、`broadcast-config` 等）已经删除，历史见 `naptable-live-activity-migration.md` 与 `live-activity-token-mode.md`。本文件记录实现与本地验证，不代表部署、真机送达或容量验收。
+课程实时活动的现状。设计理由与取舍见 `server-scheduled-reminders.md`；更早的客户端计划方案（`plan`、`local-handoff`、`broadcast-config` 等）已经删除。本文件记录实现与本地验证，不代表部署、真机送达或容量验收。
 
 ## 分工
 

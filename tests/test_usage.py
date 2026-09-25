@@ -93,3 +93,41 @@ class UsageTests(JSONClientMixin, unittest.TestCase):
             self.assertEqual(reopened.usage_stats()['totalUsers'], 1)
         finally:
             reopened.close()
+
+    def test_today_week_new_and_daily_counts(self):
+        self.report(); self.report()
+        stats = self.stats()
+        self.assertEqual((stats['todayUsers'], stats['newUsersToday'], stats['weeklyUsers']), (1, 1, 1))
+        self.assertEqual(len(stats['daily']), 30)
+        self.assertEqual(stats['daily'][-1], {'date': datetime.now(timezone(timedelta(hours=8))).date().isoformat(),
+                                              'users': 1, 'newUsers': 1})
+        self.assertEqual(stats['schools'][0]['todayUsers'], 1)
+        self.assertEqual(stats['appVersions'], [{'name': '1.0', 'users': 1}])
+        # Seen three days ago and back today: active again, not new.
+        with self.store.lock, self.store.db:
+            self.store.db.execute('UPDATE usage_devices SET first_seen=?,last_seen=?',
+                                  ((datetime.now(timezone.utc) - timedelta(days=3)).isoformat(),) * 2)
+            self.store.db.execute('DELETE FROM usage_daily')
+        stats = self.stats()
+        self.assertEqual((stats['todayUsers'], stats['newUsersToday'], stats['weeklyUsers']), (0, 0, 1))
+        self.report()
+        self.assertEqual((self.stats()['todayUsers'], self.stats()['newUsersToday']), (1, 0))
+        with self.store.lock:
+            row = self.store.db.execute('SELECT * FROM usage_daily').fetchone()
+        self.assertEqual((row['active'], row['new']), (1, 0))
+
+    def test_daily_table_holds_counts_only_and_keeps_yesterday(self):
+        self.report()
+        yesterday = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).date().isoformat()
+        with self.store.lock, self.store.db:
+            self.store.db.execute("INSERT INTO usage_daily VALUES (?,5,2)", (yesterday,))
+            self.store.db.execute("INSERT INTO usage_daily VALUES ('2000-01-01',9,9)")
+            columns = [row[1] for row in self.store.db.execute('PRAGMA table_info(usage_daily)')]
+        self.assertEqual(columns, ['day', 'active', 'new'])
+        stats = self.stats()
+        self.assertEqual(stats['yesterdayUsers'], 5)
+        self.assertEqual(stats['daily'][-2], {'date': yesterday, 'users': 5, 'newUsers': 2})
+        self.report(device=str(uuid.uuid4()))
+        with self.store.lock:
+            days = [row[0] for row in self.store.db.execute('SELECT day FROM usage_daily ORDER BY day')]
+        self.assertNotIn('2000-01-01', days)

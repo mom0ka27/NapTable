@@ -19,6 +19,12 @@ NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 
 | --- | --- |
 | ![NapTable 周视图](docs/screenshots/week-view.png) | ![NapTable 月视图](docs/screenshots/month-view.png) |
 
+### 首次引导
+
+| 隐私许可 | 实时通知许可 | 导入课表 |
+| --- | --- | --- |
+| ![基础隐私许可](docs/screenshots/onboarding-privacy.png) | ![实时通知上传许可](docs/screenshots/onboarding-live-consent.png) | ![导入课表](docs/screenshots/onboarding-import.png) |
+
 ### 小组件与设置
 
 | 今日课表小组件 | 两日课表小组件 | 设备设置 |
@@ -30,6 +36,7 @@ NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 
 - [功能说明](docs/FEATURES.md)：课表视图、农历节日、调休、小组件、实时活动和分享行为。
 - [开发与构建](docs/DEVELOPMENT.md)：项目结构、平台目标、App Group、构建和测试命令。
 - [服务端部署与配置](server/README.md)：本地启动、网页管理、学校学期配置、分享 API 和 APNs 推送。
+- [Live Activity v2](docs/live-activity-v2.md)：实时活动的客户端行为、HTTP 契约、调度与验收边界。
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ## 快速开始

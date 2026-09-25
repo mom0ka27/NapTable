@@ -41,7 +41,9 @@ import Darwin
                 "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
             ]
             guard let body = try? JSONSerialization.data(withJSONObject: payload, options: .sortedKeys) else { return }
-            if body == lastPayload, url == lastURL, Date().timeIntervalSince(lastSent) < 3600 { continue }
+            // A new UTC+8 day always reports, so the first open after midnight counts toward that day.
+            if body == lastPayload, url == lastURL, Date().timeIntervalSince(lastSent) < 3600,
+               Self.usageDay(Date()) == Self.usageDay(lastSent) { continue }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.timeoutInterval = 15
@@ -59,6 +61,9 @@ import Darwin
     private func storedValue(_ key: String, make: () -> String) -> String {
         if let value = defaults.string(forKey: key) { return value }
         let value = make(); defaults.set(value, forKey: key); return value
+    }
+    nonisolated static func usageDay(_ date: Date) -> Int {
+        Int((date.timeIntervalSince1970 + 8 * 3600) / 86_400)
     }
     private static var systemName: String {
         #if canImport(UIKit)
