@@ -129,14 +129,14 @@ final class NativeLiveActivityController: ObservableObject {
         epoch += 1
         task?.cancel()
         guard isEnabled else { status = .disabled; return }
-        guard let scope = snapshot.scheduleScope else { status = .unavailable("课表缺少稳定身份，请重新打开课表。"); return }
+        guard let scope = snapshot.scheduleScope else { status = .unavailable("请重新打开一次课表后再试。"); return }
         let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, now: now(), lead: leadMinutes, sharedLead: sharedLeadMinutes,
                                                perPeriod: perPeriod, choices: choices)
         conflicts = built.conflicts
         omitted = built.omitted
         let value = LiveActivityDisplaySnapshot(scope: scope, sourceLabel: snapshot.sourceLabel, occurrences: built.occurrences)
         do { try value.save(); display = value }
-        catch { status = .failed(error.localizedDescription); return }
+        catch { status = .failed("暂时无法保存提醒，请稍后重试。"); return }
         planDidChange?()
         let generation = epoch
         task = Task { [weak self] in
@@ -219,8 +219,8 @@ final class NativeLiveActivityController: ObservableObject {
     private func reconcile(generation: Int) async {
         guard valid(generation), let display else { return }
         guard #available(iOS 18.0, *) else {
-            coverage = "iOS 17 仅支持预览"
-            status = .unavailable("自动提醒需要 iOS 18 或更新版本；iOS 17 仍可预览效果。")
+            coverage = "当前系统仅支持预览效果"
+            status = .unavailable("自动提醒需要 iOS 18 或更新版本。")
             return
         }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { status = .unavailable("请在系统设置中允许实时活动。"); return }
@@ -243,7 +243,7 @@ final class NativeLiveActivityController: ObservableObject {
         // Without a push at the end (offline), the next wakeup still retires it.
         if let end = running.compactMap(\.attributes.reservationEnd).min() { scheduleBackgroundWakeup?(end) }
         if case .limited = status { return }
-        coverage = reservationCount > 0 ? "本机预约最近 \(reservationCount) 节，其余由服务端远程启动" : "由服务端远程启动"
+        coverage = "已开启自动提醒"
         status = running.isEmpty ? .waiting : .active
     }
     /// Reserves the reminders the server handed to the phone and returns the
@@ -261,12 +261,11 @@ final class NativeLiveActivityController: ObservableObject {
             await activity.end(nil, dismissalPolicy: .immediate)
         }
         var release: [String] = []
-        var accepted = 0
         var quotaReached = false
         var failure: String?
         for claim in claims.sorted(by: { $0.reminder < $1.reminder }) {
             let attributes = claim.attributes(semester: semester)
-            if courseActivities.contains(where: { $0.attributes.occurrenceId == claim.occurrenceId }) { accepted += 1; continue }
+            if courseActivities.contains(where: { $0.attributes.occurrenceId == claim.occurrenceId }) { continue }
             // Already started (or dismissed): nothing left to reserve.
             guard claim.reminder > current else { continue }
             let pushType: PushType
@@ -282,20 +281,17 @@ final class NativeLiveActivityController: ObservableObject {
                 _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: claim.end)),
                     pushType: pushType, style: .standard, alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default),
                     start: Date(timeIntervalSince1970: claim.reminder))
-                accepted += 1
             } catch {
                 release.append(claim.occurrenceId)
-                if Self.isCapacityError(error) { quotaReached = true } else { failure = error.localizedDescription }
+                if Self.isCapacityError(error) { quotaReached = true } else { failure = "部分提醒暂时没能安排，稍后会自动重试。" }
             }
         }
         observeTokenActivities()
         announceTokens()
-        coverage = "本机预约最近 \(reservationCount) 节，其余由服务端远程启动"
+        coverage = "已开启自动提醒"
         if let failure { status = .unavailable(failure) }
         else if quotaReached {
-            status = .limited(accepted > 0
-                ? "本机已预约 \(accepted) 节，其余因系统名额限制交给服务端远程启动。"
-                : "系统暂无可用的实时活动名额，提醒交给服务端远程启动。")
+            status = .limited("系统的实时活动数量已达上限，课程提醒仍会照常出现。")
         } else if case .limited = status { status = .waiting }
         return release
     }
@@ -333,7 +329,7 @@ final class NativeLiveActivityController: ObservableObject {
                 self.isPreviewActive = false
                 self.status = Self.isCapacityError(error)
                     ? .limited("系统暂无可用的实时活动名额，请稍后重试预览。")
-                    : .failed(error.localizedDescription)
+                    : .failed("预览没能启动，请稍后重试。")
             }
         }
     }
