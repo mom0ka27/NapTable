@@ -3,6 +3,10 @@ import ActivityKit
 import Combine
 import Foundation
 
+/// The phone's half of the course reminders. The server computes when each
+/// activity starts and ends from the uploaded timetable; this renders them
+/// from the local timetables, reserves the few the server hands over on
+/// iOS 26, and collects the push tokens of token-mode activities.
 @available(iOS 17.0, *)
 @MainActor
 final class NativeLiveActivityController: ObservableObject {
@@ -23,49 +27,40 @@ final class NativeLiveActivityController: ObservableObject {
             switch self { case .unavailable(let text), .failed(let text), .limited(let text): return text; default: return nil }
         }
     }
-    struct LedgerEntry: Codable {
-        var activityID: String?
-        var state: String
-        var end: Double
-    }
     static let shared = NativeLiveActivityController()
     static let enabledKey = "scheduleLiveActivityEnabled"
     static let leadMinutesKey = "scheduleLiveActivityLeadMinutes"
+    static let sharedLeadMinutesKey = "naptable.liveActivity.sharedLeadMinutes"
     static let defaultLeadMinutes = 60
     static let leadMinuteOptions = [15, 30, 60]
     static let perPeriodKey = "naptable.liveActivity.perPeriod"
-    private static let ledgerKey = "naptable.liveActivity.v2.ledger"
+    /// Reservations to keep at most. The system allows about five pending
+    /// activities; one stays free for the preview.
+    static let reservationSlots = 4
 
     @Published private(set) var status: Status = .waiting
     @Published private(set) var isPreviewActive = false
     @Published private(set) var coverage = "尚未安排"
     @Published private(set) var conflicts: [LiveActivityTimeline.Conflict] = []
     @Published private(set) var omitted = 0
-    /// Set for this session once the server turned token mode down (an older
-    /// deployment); followed shares then fall back to the broadcast channel.
-    @Published private(set) var tokenModeUnsupported = false
+    /// Asks the system to wake the app around an instant (see `LiveActivityBackgroundRefresh`).
     var scheduleBackgroundWakeup: ((Date) -> Void)?
+    /// The timetable or a setting changed: the push service uploads it again.
     var planDidChange: (() -> Void)?
-    /// A token-mode activity got a token, rotated it, changed its refresh times
-    /// or went away: the push service reconciles the server's registrations.
+    /// A token-mode activity got a token, rotated it or went away: the push
+    /// service reconciles the server's registrations.
     var activityTokensDidChange: (() -> Void)?
+    /// The displayed timetable: the reader's own, or a followed share.
     private(set) var currentScheduleMetadata: NativeScheduleSnapshot?
-    /// The reader's own timetable while `currentScheduleMetadata` is a
-    /// followed share. Display only: it never changes the scope, the plan or
-    /// the broadcast mapping, it just rides along as each frame's companion.
-    private var ownScheduleMetadata: NativeScheduleSnapshot?
+    /// The reader's own timetable while `currentScheduleMetadata` is a followed share.
+    private(set) var ownScheduleMetadata: NativeScheduleSnapshot?
     private(set) var display: LiveActivityDisplaySnapshot?
-    private(set) var mapping: LiveActivityMapping?
-    private var handoffConfirmed = false
-    private var submitted: Set<String> = []
     private var task: Task<Void, Never>?
     private var retirementTask: Task<Void, Never>?
     private var epoch = 0
     private let now: () -> Date
     private let privacyDefaults: UserDefaults
     private let defaults: UserDefaults
-    private var ledger: [String: LedgerEntry]
-    private var removedThisSession: Set<String> = []
     /// Activity ID → hex push token. Subscriptions live only as long as the process.
     private var activityTokens: [String: String] = [:]
     private var tokenObservers: [String: Task<Void, Never>] = [:]
@@ -75,34 +70,15 @@ final class NativeLiveActivityController: ObservableObject {
         self.privacyDefaults = privacyDefaults
         self.now = now
         defaults = UserDefaults(suiteName: NextWidgetConfiguration.appGroup) ?? .standard
-        ledger = defaults.data(forKey: Self.ledgerKey).flatMap { try? JSONDecoder().decode([String: LedgerEntry].self, from: $0) } ?? [:]
         if !isEnabled { status = .disabled }
     }
     var isEnabled: Bool { PrivacyPolicy.liveAllowed(privacyDefaults) && (defaults.object(forKey: Self.enabledKey) as? Bool ?? true) }
-    var leadMinutes: Int {
-        let value = defaults.integer(forKey: Self.leadMinutesKey)
-        return Self.leadMinuteOptions.contains(value) ? value : Self.defaultLeadMinutes
-    }
-    var leadTime: TimeInterval { Double(leadMinutes * 60) }
+    var leadMinutes: Int { Self.lead(defaults.integer(forKey: Self.leadMinutesKey)) ?? Self.defaultLeadMinutes }
+    /// Minutes ahead for a followed share's courses; the reader's own lead until set.
+    var sharedLeadMinutes: Int { Self.lead(defaults.integer(forKey: Self.sharedLeadMinutesKey)) ?? leadMinutes }
     var perPeriod: Bool { defaults.bool(forKey: Self.perPeriodKey) }
-    /// `"token"` while following a share: the reader's own course boundaries are
-    /// not on the share's school channel, so each activity is pushed on its own.
-    /// Follows the scope (a share has its own), so the modes never mix in one scope.
-    var pushMode: String {
-        guard #available(iOS 18.0, *), currentScheduleMetadata?.sourceLabel != nil, !tokenModeUnsupported else { return "channel" }
-        return "token"
-    }
-    /// Following a share also reminds the reader of their own courses. Those
-    /// run on their own school's bells, so the server must place them by
-    /// instant: only a token-mode plan can, or iOS 17, which plans nothing.
-    var mergesOwnCourses: Bool {
-        guard currentScheduleMetadata?.sourceLabel != nil else { return false }
-        if #available(iOS 18.0, *) { return pushMode == "token" }
-        return true
-    }
-    var tokenNotice: String? {
-        tokenModeUnsupported && currentScheduleMetadata?.sourceLabel != nil ? "服务端尚不支持共享课表的实时刷新，暂时只提醒共享课表的课" : nil
-    }
+    var following: Bool { currentScheduleMetadata?.sourceLabel != nil }
+    private static func lead(_ value: Int) -> Int? { leadMinuteOptions.contains(value) ? value : nil }
 
     func setEnabled(_ requested: Bool) {
         let value = requested && PrivacyPolicy.liveAllowed(privacyDefaults)
@@ -113,47 +89,38 @@ final class NativeLiveActivityController: ObservableObject {
         #endif
     }
     func setLeadMinutes(_ value: Int) {
-        defaults.set(Self.leadMinuteOptions.contains(value) ? value : Self.defaultLeadMinutes, forKey: Self.leadMinutesKey)
+        defaults.set(Self.lead(value) ?? Self.defaultLeadMinutes, forKey: Self.leadMinutesKey)
+        rebuild()
+    }
+    func setSharedLeadMinutes(_ value: Int) {
+        defaults.set(Self.lead(value) ?? Self.defaultLeadMinutes, forKey: Self.sharedLeadMinutesKey)
         rebuild()
     }
     func setPerPeriod(_ value: Bool) { defaults.set(value, forKey: Self.perPeriodKey); rebuild() }
-    func selectedSource(for conflict: LiveActivityTimeline.Conflict) -> String {
-        guard let scope = currentScheduleMetadata?.scheduleScope else { return "" }
-        return (defaults.dictionary(forKey: "naptable.liveActivity.conflicts." + scope) as? [String: String])?[conflict.id] ?? ""
+    /// Conflict choices of the displayed table, `date:period` → source.
+    var choices: [String: String] {
+        guard let scope = currentScheduleMetadata?.scheduleScope else { return [:] }
+        return defaults.dictionary(forKey: "naptable.liveActivity.conflicts." + scope) as? [String: String] ?? [:]
     }
+    func selectedSource(for conflict: LiveActivityTimeline.Conflict) -> String { choices[conflict.id] ?? "" }
     func selectSource(_ source: String, for conflict: LiveActivityTimeline.Conflict) {
         guard let scope = currentScheduleMetadata?.scheduleScope else { return }
-        let key = "naptable.liveActivity.conflicts." + scope
-        var selections = defaults.dictionary(forKey: key) as? [String: String] ?? [:]
+        var selections = choices
         selections[conflict.id] = source
-        defaults.set(selections, forKey: key)
+        defaults.set(selections, forKey: "naptable.liveActivity.conflicts." + scope)
         rebuild()
+    }
+    /// What the server needs to compute the reminders; `nil` without a usable semester.
+    func timetable() -> [String: Any]? {
+        guard let snapshot = currentScheduleMetadata, let own = following ? ownScheduleMetadata : snapshot else { return nil }
+        return LiveActivityTimeline.timetable(own: own, share: following ? snapshot : nil, choices: choices,
+                                              lead: leadMinutes, sharedLead: sharedLeadMinutes, perPeriod: perPeriod)
     }
     func accept(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil) {
         guard !snapshot.cancelled else { return }
+        // Activities of another table end; the server plans the new one once it is uploaded.
+        if currentScheduleMetadata?.scheduleScope != snapshot.scheduleScope { end() }
         ownScheduleMetadata = snapshot.sourceLabel == nil ? nil : own
-        if let previousScope = currentScheduleMetadata?.scheduleScope, previousScope != snapshot.scheduleScope {
-            #if os(iOS)
-            if #available(iOS 17.2, *) { LiveActivityPushService.shared.invalidatePlan() }
-            #endif
-        }
-        if currentScheduleMetadata?.scheduleScope != snapshot.scheduleScope {
-            mapping = nil
-            handoffConfirmed = false
-            end()
-        } else if currentScheduleMetadata?.periods != snapshot.periods || currentScheduleMetadata?.timeZone != snapshot.timeZone || currentScheduleMetadata?.schoolID != snapshot.schoolID {
-            mapping = nil
-            handoffConfirmed = false
-            #if os(iOS)
-            if #available(iOS 17.2, *) { LiveActivityPushService.shared.invalidatePlan() }
-            #endif
-            if #available(iOS 26.0, *) {
-                let pending = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState == .pending }
-                for activity in pending { if let id = activity.attributes.occurrenceId { ledger[id] = nil } }
-                saveLedger()
-                retirementTask = Task { for activity in pending { await activity.end(nil, dismissalPolicy: .immediate) } }
-            }
-        }
         currentScheduleMetadata = snapshot
         rebuild()
     }
@@ -163,10 +130,11 @@ final class NativeLiveActivityController: ObservableObject {
         task?.cancel()
         guard isEnabled else { status = .disabled; return }
         guard let scope = snapshot.scheduleScope else { status = .unavailable("课表缺少稳定身份，请重新打开课表。"); return }
-        let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, mergesOwn: mergesOwnCourses, scope: scope, now: now(), lead: leadMinutes, perPeriod: perPeriod, defaults: defaults)
+        let built = LiveActivityTimeline.build(snapshot, own: ownScheduleMetadata, now: now(), lead: leadMinutes, sharedLead: sharedLeadMinutes,
+                                               perPeriod: perPeriod, choices: choices)
         conflicts = built.conflicts
         omitted = built.omitted
-        let value = LiveActivityDisplaySnapshot(scope: scope, scheduleVersion: mapping?.scheduleVersion ?? "local", occurrences: built.occurrences)
+        let value = LiveActivityDisplaySnapshot(scope: scope, sourceLabel: snapshot.sourceLabel, occurrences: built.occurrences)
         do { try value.save(); display = value }
         catch { status = .failed(error.localizedDescription); return }
         planDidChange?()
@@ -175,56 +143,21 @@ final class NativeLiveActivityController: ObservableObject {
             guard let self else { return }
             await self.retirementTask?.value
             await self.reconcile(generation: generation)
-            if #available(iOS 18.0, *) { return }
-            while self.valid(generation) {
-                let current = self.now().timeIntervalSince1970
-                guard let boundary = self.display?.occurrences.flatMap({ [$0.reminder, $0.start, $0.end] }).filter({ $0 > current }).min() else { return }
-                do { try await Task.sleep(for: .seconds(max(1, boundary - current))) } catch { return }
-                await self.reconcile(generation: generation)
-            }
         }
-    }
-    func applyMapping(_ value: LiveActivityMapping, localHandoff: Bool, submitted: Set<String>) {
-        guard let snapshot = currentScheduleMetadata, snapshot.schoolID == value.schoolID,
-              snapshot.periods.map({ LiveActivityMapping.Period(number: $0.number, start: $0.startTime, end: $0.endTime) }) == value.periods,
-              snapshot.timeZone == value.timeZone else {
-            mapping = nil
-            handoffConfirmed = false
-            setServiceFailure("课表节次或时区与学校作息不一致，请同步学校配置。")
-            return
-        }
-        let changed = mapping != value || handoffConfirmed != localHandoff || self.submitted != submitted
-        mapping = value
-        handoffConfirmed = localHandoff
-        self.submitted = submitted
-        if changed { rebuild() }
     }
     func setServiceFailure(_ reason: String) { status = .unavailable(reason) }
-    /// An older server refused token mode: use the broadcast channel for the rest of this session.
-    func disableTokenMode() {
-        guard !tokenModeUnsupported else { return }
-        tokenModeUnsupported = true
-        rebuild()
-    }
-    /// Token-mode activities still worth refreshing and what the server should
-    /// hold for each. `live` also names those whose token this process has not
-    /// received yet, so a cold start does not mistake them for gone.
+    /// Token-mode activities still running and their tokens. `live` also names
+    /// those whose token this process has not received yet, so a cold start
+    /// does not mistake them for gone.
     func tokenRegistrations() -> (registrations: [LiveActivityTokenRegistration], live: Set<String>) {
         guard let display else { return ([], []) }
-        let current = now().timeIntervalSince1970
         var registrations: [LiveActivityTokenRegistration] = []
         var live: Set<String> = []
         for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.attributes.pushMode == "token" &&
             activity.activityState != .ended && activity.activityState != .dismissed && activity.attributes.scheduleScope == display.scope {
-            guard let occurrence = display.occurrences.first(where: { $0.item.occurrenceId == activity.attributes.occurrenceId && $0.item.dateKey == activity.attributes.dateKey }),
-                  occurrence.end > current, !live.contains(occurrence.item.occurrenceId) else { continue }
-            live.insert(occurrence.item.occurrenceId)
-            guard let token = activityTokens[activity.id] else { continue }
-            let stamps = { (values: [Double]) in values.map { String(format: "%.0f", $0) } }
-            let signature = ([token, occurrence.item.dateKey] + stamps(occurrence.refreshAt() + [occurrence.end]) + (occurrence.alertAt().isEmpty ? [] : ["!"] + stamps(occurrence.alertAt()))).joined(separator: ",")
-            let refresh = Array(occurrence.refreshAt(after: current).prefix(64))
-            registrations.append(.init(occurrenceId: occurrence.item.occurrenceId, token: token, dateKey: occurrence.item.dateKey,
-                                       refreshAt: refresh, alertAt: occurrence.alertAt(after: current).filter(refresh.contains), end: occurrence.end, signature: signature))
+            guard let id = activity.attributes.occurrenceId, (activity.attributes.reservationEnd ?? .distantPast) > now(), !live.contains(id) else { continue }
+            live.insert(id)
+            if let token = activityTokens[activity.id] { registrations.append(.init(occurrenceId: id, token: token)) }
         }
         return (registrations, live)
     }
@@ -250,202 +183,131 @@ final class NativeLiveActivityController: ObservableObject {
     }
     private func announceTokens() {
         let state = tokenRegistrations()
-        let key = state.registrations.map(\.signature).sorted() + state.live.sorted()
+        let key = state.registrations.map { $0.occurrenceId + ":" + $0.token }.sorted() + state.live.sorted()
         guard key != announcedTokens else { return }
         announcedTokens = key
         activityTokensDidChange?()
     }
-    /// A token-mode activity whose token never reached the server gets no push;
-    /// going stale at its next display change makes the system redraw it once more.
-    private func staleDate(_ attributes: ScheduleLiveActivityAttributes, otherwise fallback: Date, in display: LiveActivityDisplaySnapshot?) -> Date {
-        guard attributes.pushMode == "token", let occurrence = display?.occurrences.first(where: { $0.item.occurrenceId == attributes.occurrenceId }) else { return fallback }
-        let current = now().timeIntervalSince1970
-        return Date(timeIntervalSince1970: occurrence.refreshAt().first { $0 > current } ?? occurrence.end)
+    /// A local update goes stale at the next display change, so the system
+    /// redraws then even if no push arrives.
+    private func staleDate(_ attributes: ScheduleLiveActivityAttributes, in display: LiveActivityDisplaySnapshot?) -> Date? {
+        display?.nextChange(attributes: attributes, after: now()) ?? attributes.reservationEnd
     }
-    func foreground() {
-        removedThisSession.removeAll()
-        if !isPreviewActive { rebuild() }
-    }
+    func foreground() { if !isPreviewActive { rebuild() } }
     func refreshForThemeChange() { rebuild() }
     func reset() {
         currentScheduleMetadata = nil
         ownScheduleMetadata = nil
         display = nil
-        mapping = nil
         defaults.removeObject(forKey: LiveActivityDisplaySnapshot.key)
         end()
         #if os(iOS)
         if #available(iOS 17.2, *) { LiveActivityPushService.shared.revoke() }
         #endif
     }
-    func replanForPush() { planDidChange?() }
 
-    private func saveLedger() {
-        if let data = try? JSONEncoder().encode(ledger) { defaults.set(data, forKey: Self.ledgerKey) }
-    }
     private func valid(_ generation: Int) -> Bool { generation == epoch && !Task.isCancelled && isEnabled && !isPreviewActive }
-    private func attributes(_ occurrence: LiveActivityOccurrence, display: LiveActivityDisplaySnapshot) -> ScheduleLiveActivityAttributes {
-        let token = pushMode == "token"
-        return .init(semester: currentScheduleMetadata?.data?.currentSemester ?? "", dateKey: occurrence.item.dateKey,
-              protocolVersion: 2, scheduleScope: display.scope, occurrenceId: occurrence.item.occurrenceId, scheduleVersion: display.scheduleVersion,
-              reservationStart: Date(timeIntervalSince1970: occurrence.start), reservationEnd: Date(timeIntervalSince1970: occurrence.end),
-              broadcastChannel: token ? nil : occurrence.item.endPeriod.flatMap { mapping?.channels[String($0)] }, reminderDate: Date(timeIntervalSince1970: occurrence.reminder),
-              pushMode: token ? "token" : nil)
+    private var courseActivities: [Activity<ScheduleLiveActivityAttributes>] {
+        Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.attributes.protocolVersion == 2 && $0.activityState != .ended && $0.activityState != .dismissed }
+    }
+    /// Reservations still waiting for their reminder.
+    var reservationCount: Int { courseActivities.filter { Self.isPending($0) && $0.attributes.scheduleScope == display?.scope }.count }
+    private static func isPending(_ activity: Activity<ScheduleLiveActivityAttributes>) -> Bool {
+        if #available(iOS 26.0, *) { return activity.activityState == .pending }
+        return false
     }
     private func reconcile(generation: Int) async {
         guard valid(generation), let display else { return }
+        guard #available(iOS 18.0, *) else {
+            coverage = "iOS 17 仅支持预览"
+            status = .unavailable("自动提醒需要 iOS 18 或更新版本；iOS 17 仍可预览效果。")
+            return
+        }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { status = .unavailable("请在系统设置中允许实时活动。"); return }
-        let current = now().timeIntervalSince1970
-        let live = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
-        for activity in live {
+        for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.activityState != .ended && activity.activityState != .dismissed {
             guard valid(generation) else { return }
             // One-time retirement is also safe after an interrupted upgrade.
             if (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= now() ||
-                activity.attributes.protocolVersion != 2 || activity.attributes.scheduleScope != display.scope ||
-                !display.occurrences.contains(where: { $0.item.occurrenceId == activity.attributes.occurrenceId }) {
+                activity.attributes.protocolVersion != 2 || activity.attributes.scheduleScope != display.scope {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
         observeTokenActivities()
         defer { announceTokens() }
-        if #available(iOS 18.0, *) {
-            guard let mapping else { status = .unavailable("等待学校作息映射；纯本地课表可使用前台预览。"); return }
-            // A followed share is pushed per activity, which a reservation cannot
-            // promise a token for; iOS 26 then starts remotely like iOS 18.
-            if #available(iOS 26.0, *), pushMode != "token" {
-                guard handoffConfirmed else { status = .unavailable("等待完成远程模式交接，联网后重试。"); return }
-                await reserve(display, mapping: mapping, generation: generation)
-            } else {
-                coverage = "远程启动：服务端滚动安排未来 48 小时"
-                for activity in live where activity.attributes.scheduleScope == display.scope {
-                    if let state = display.resolve(attributes: activity.attributes, at: now()) {
-                        await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, otherwise: state.endDate, in: display)))
-                    }
-                }
-                status = live.isEmpty ? .waiting : .active
+        let running = courseActivities.filter { $0.activityState == .active || $0.activityState == .stale }
+        for activity in running {
+            if let state = display.resolve(attributes: activity.attributes, at: now()) {
+                await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, in: display)))
             }
-        } else {
-            coverage = "iOS 17 仅支持前台本地提醒"
-            guard let occurrence = display.occurrences.first(where: { $0.reminder <= current && current < $0.end }), let state = occurrence.state(at: now()) else { status = .waiting; return }
-            if let activity = live.first(where: { $0.attributes.occurrenceId == occurrence.item.occurrenceId }) {
-                await activity.update(ActivityContent(state: state, staleDate: state.endDate))
-            } else {
-                do { _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes(occurrence, display: display), content: ActivityContent(state: state, staleDate: state.endDate), pushType: nil) }
-                catch { status = .failed(error.localizedDescription); return }
-            }
-            status = .active
-            scheduleBackgroundWakeup?(Date(timeIntervalSince1970: occurrence.end))
         }
+        // Without a push at the end (offline), the next wakeup still retires it.
+        if let end = running.compactMap(\.attributes.reservationEnd).min() { scheduleBackgroundWakeup?(end) }
+        if case .limited = status { return }
+        coverage = reservationCount > 0 ? "本机预约最近 \(reservationCount) 节，其余由服务端远程启动" : "由服务端远程启动"
+        status = running.isEmpty ? .waiting : .active
     }
+    /// Reserves the reminders the server handed to the phone and returns the
+    /// ones to give back: those it could not reserve. A reservation the server
+    /// no longer holds, or holds with other times, is withdrawn first.
     @available(iOS 26.0, *)
-    private func reserve(_ display: LiveActivityDisplaySnapshot, mapping: LiveActivityMapping, generation: Int) async {
+    func reserve(_ claims: [LiveActivityClaim]) async -> [String] {
+        guard let display, isEnabled, !isPreviewActive else { return [] }
+        await retirementTask?.value
         let current = now().timeIntervalSince1970
-        let desired = display.occurrences.filter { $0.end > current && $0.reminder < current + 168 * 3600 }.sorted { $0.reminder < $1.reminder }
+        let semester = currentScheduleMetadata?.data?.currentSemester ?? ""
+        let wanted = Dictionary(claims.map { ($0.occurrenceId, $0.attributes(semester: semester)) }, uniquingKeysWith: { first, _ in first })
+        for activity in courseActivities where activity.activityState == .pending {
+            guard let id = activity.attributes.occurrenceId, wanted[id] != activity.attributes else { continue }
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        var release: [String] = []
         var accepted = 0
         var quotaReached = false
         var failure: String?
-        for occurrence in desired {
-            guard valid(generation) else { return }
-            let id = occurrence.item.occurrenceId
-            let attributes = attributes(occurrence, display: display)
-            let all = Activity<ScheduleLiveActivityAttributes>.activities
-            if let activity = all.first(where: { $0.attributes == attributes && $0.activityState != .ended && $0.activityState != .dismissed }) {
-                ledger[id] = .init(activityID: activity.id, state: "scheduled", end: occurrence.end)
-                if activity.activityState == .active || activity.activityState == .stale,
-                   let state = display.resolve(attributes: activity.attributes, at: now()) {
-                    await activity.update(ActivityContent(state: state, staleDate: staleDate(attributes, otherwise: Date(timeIntervalSince1970: occurrence.end), in: display)))
-                }
-                accepted += 1
+        for claim in claims.sorted(by: { $0.reminder < $1.reminder }) {
+            let attributes = claim.attributes(semester: semester)
+            if courseActivities.contains(where: { $0.attributes.occurrenceId == claim.occurrenceId }) { accepted += 1; continue }
+            // Already started (or dismissed): nothing left to reserve.
+            guard claim.reminder > current else { continue }
+            let pushType: PushType
+            if claim.pushMode == "token" { pushType = .token }
+            else if let channel = claim.channel { pushType = .channel(channel) }
+            else { release.append(claim.occurrenceId); continue }
+            guard !quotaReached, claim.scheduleScope == display.scope,
+                  let state = display.resolve(attributes: attributes, at: Date(timeIntervalSince1970: claim.reminder)) else {
+                release.append(claim.occurrenceId)
                 continue
-            }
-            // Changed configuration cancels only pending reservations; active instances keep their broadcast commitment.
-            if let previous = all.first(where: { $0.attributes.occurrenceId == id && $0.activityState != .ended && $0.activityState != .dismissed }) {
-                if previous.activityState == .active || previous.activityState == .stale { accepted += 1; continue }
-                await previous.end(nil, dismissalPolicy: .immediate)
-                ledger[id] = nil
-            } else if ledger[id]?.state == "scheduled" {
-                ledger[id]?.state = "removed"
-                removedThisSession.insert(id)
-            }
-            guard !removedThisSession.contains(id), !submitted.contains(id),
-                  occurrence.item.supersedes.allSatisfy({ !submitted.contains($0) }) else { continue }
-            guard current < mapping.createBefore, occurrence.reminder < mapping.createBefore,
-                  occurrence.end <= mapping.broadcastUntil, let channel = occurrence.item.endPeriod.flatMap({ mapping.channels[String($0)] }) else {
-                failure = "部分频道缺失或映射已过期，联网后补充。"
-                continue
-            }
-            guard !quotaReached else { continue }
-            let plannedStart = max(current + 1, occurrence.reminder)
-            guard plannedStart < occurrence.end, let state = occurrence.state(at: Date(timeIntervalSince1970: max(plannedStart, occurrence.reminder))) else { continue }
-            ledger[id] = .init(activityID: nil, state: "requesting", end: occurrence.end)
-            saveLedger()
-            func request() throws -> Activity<ScheduleLiveActivityAttributes> {
-                try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: occurrence.end)), pushType: .channel(channel), style: .standard,
-                    alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default), start: Date(timeIntervalSince1970: plannedStart))
             }
             do {
-                let activity: Activity<ScheduleLiveActivityAttributes>
-                do { activity = try request() }
-                catch {
-                    // Only a quota error can justify displacing a later pending slot.
-                    guard Self.isCapacityError(error) else { throw error }
-                    guard let victim = all.filter({ $0.activityState == .pending && ($0.attributes.reminderDate?.timeIntervalSince1970 ?? 0) > plannedStart }).max(by: { ($0.attributes.reminderDate ?? .distantPast) < ($1.attributes.reminderDate ?? .distantPast) }) else { throw error }
-                    await victim.end(nil, dismissalPolicy: .immediate)
-                    if let victimID = victim.attributes.occurrenceId { ledger[victimID] = nil }
-                    guard valid(generation) else { return }
-                    activity = try request()
-                }
-                ledger[id] = .init(activityID: activity.id, state: "scheduled", end: occurrence.end)
+                _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: claim.end)),
+                    pushType: pushType, style: .standard, alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default),
+                    start: Date(timeIntervalSince1970: claim.reminder))
                 accepted += 1
             } catch {
-                if Self.isCapacityError(error) {
-                    ledger[id]?.state = "waitingForCapacity"
-                    quotaReached = true
-                } else {
-                    ledger[id]?.state = "failed"
-                    failure = error.localizedDescription
-                }
+                release.append(claim.occurrenceId)
+                if Self.isCapacityError(error) { quotaReached = true } else { failure = error.localizedDescription }
             }
-            saveLedger()
         }
-        ledger = ledger.filter { $0.value.end > current }
-        saveLedger()
-        coverage = "未来 168 小时已安排 \(accepted)/\(desired.count) 门课程" + (omitted > 0 ? "；\(omitted) 项无可靠时间，未安排" : "")
-        if let failure { status = .unavailable(failure); return }
-        if quotaReached {
+        observeTokenActivities()
+        announceTokens()
+        coverage = "本机预约最近 \(reservationCount) 节，其余由服务端远程启动"
+        if let failure { status = .unavailable(failure) }
+        else if quotaReached {
             status = .limited(accepted > 0
-                ? "已保留 \(accepted) 门课程的预约，其余课程因系统名额限制暂未安排。下次回到 App 时会尝试补充。"
-                : "系统暂无可用的实时活动名额。下次回到 App 时会重新尝试安排。")
-            return
-        }
-        status = (Activity<ScheduleLiveActivityAttributes>.activities.contains { $0.activityState == .active || $0.activityState == .stale } ? .active : .waiting)
+                ? "本机已预约 \(accepted) 节，其余因系统名额限制交给服务端远程启动。"
+                : "系统暂无可用的实时活动名额，提醒交给服务端远程启动。")
+        } else if case .limited = status { status = .waiting }
+        return release
     }
     private static func isCapacityError(_ error: Error) -> Bool {
         guard let error = error as? ActivityAuthorizationError else { return false }
         return error == .targetMaximumExceeded || error == .globalMaximumExceeded
-    }
-    /// Called only while the device is still in local mode, so every course
-    /// activity around was requested here. The server may start the same course
-    /// remotely once it resumes, so none of them may stay behind.
-    func retireLocalReservations() async {
-        let local = Activity<ScheduleLiveActivityAttributes>.activities.filter {
-            $0.attributes.protocolVersion == 2 && $0.activityState != .ended && $0.activityState != .dismissed
-        }
-        for activity in local {
-            if let id = activity.attributes.occurrenceId { ledger[id] = nil }
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
-        saveLedger()
     }
     func end() {
         epoch += 1
         task?.cancel()
         isPreviewActive = false
         let activities = Activity<ScheduleLiveActivityAttributes>.activities
-        for activity in activities {
-            if let id = activity.attributes.occurrenceId { ledger[id] = nil }
-        }
-        saveLedger()
         let tokens = activities.contains { $0.attributes.pushMode == "token" }
         retirementTask = Task { [weak self] in
             for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
@@ -475,19 +337,26 @@ final class NativeLiveActivityController: ObservableObject {
             }
         }
     }
+    /// The reservations the preview displaced come back with the next sync.
     func endPreview() { end(); rebuild() }
     func reconcileInBackground() async {
         guard !isPreviewActive else { return }
         let current = now()
         observeTokenActivities()
         let stored = display ?? LiveActivityDisplaySnapshot.load()
-        for activity in Activity<ScheduleLiveActivityAttributes>.activities {
+        for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.activityState != .ended && activity.activityState != .dismissed {
             if !isEnabled || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= current {
                 await activity.end(nil, dismissalPolicy: .immediate)
-            } else if let state = LiveActivityDisplaySnapshot.resolveStored(attributes: activity.attributes, at: current) {
-                await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, otherwise: state.endDate, in: stored)))
+            } else if !Self.isPending(activity), let state = stored?.resolve(attributes: activity.attributes, at: current) {
+                await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, in: stored)))
             }
         }
     }
+}
+
+/// One token-mode activity as the server should know it: its token, never any course content.
+nonisolated struct LiveActivityTokenRegistration: Equatable {
+    var occurrenceId: String
+    var token: String
 }
 #endif

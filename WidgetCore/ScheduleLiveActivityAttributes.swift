@@ -344,11 +344,37 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
     public let reservationEnd: Date?
     public let broadcastChannel: String?
     public let reminderDate: Date?
-    /// `"token"` when the activity is refreshed by its own push token (a
-    /// followed share); `nil` means the school's broadcast channel.
+    /// `"token"` when the activity is refreshed by its own push token;
+    /// `nil` means the school's broadcast channel.
     public let pushMode: String?
+    /// A followed share's classes in this activity, as the server holds them.
+    /// The phone's copy of the share may be older; see `LiveActivityDisplaySnapshot`.
+    public let shared: [SharedCourse]?
 
-    public init(semester: String, dateKey: String, week: Int = 0, protocolVersion: Int? = nil, scheduleScope: String? = nil, occurrenceId: String? = nil, scheduleVersion: String? = nil, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil, pushMode: String? = nil) {
+    /// One class of a followed share, from the server's copy. Instants are Unix seconds.
+    public struct SharedCourse: Codable, Hashable {
+        public let course: String
+        public let first: Int
+        public let last: Int
+        public let start: Double
+        public let end: Double
+        public let name: String?
+        public let teacher: String?
+        public let location: String?
+
+        public init(course: String, first: Int, last: Int, start: Double, end: Double, name: String? = nil, teacher: String? = nil, location: String? = nil) {
+            self.course = course
+            self.first = first
+            self.last = last
+            self.start = start
+            self.end = end
+            self.name = name
+            self.teacher = teacher
+            self.location = location
+        }
+    }
+
+    public init(semester: String, dateKey: String, week: Int = 0, protocolVersion: Int? = nil, scheduleScope: String? = nil, occurrenceId: String? = nil, scheduleVersion: String? = nil, reservationStart: Date? = nil, reservationEnd: Date? = nil, broadcastChannel: String? = nil, reminderDate: Date? = nil, pushMode: String? = nil, shared: [SharedCourse]? = nil) {
         self.protocolVersion = protocolVersion
         self.scheduleScope = scheduleScope
         self.occurrenceId = occurrenceId
@@ -361,6 +387,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
         self.broadcastChannel = broadcastChannel
         self.reminderDate = reminderDate
         self.pushMode = pushMode
+        self.shared = shared
     }
 
     /// The activity should open the exact timetable context represented by the

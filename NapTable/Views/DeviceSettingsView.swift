@@ -375,11 +375,13 @@ struct LiveActivitySettingsScreen: View {
     @State private var enabled: Bool
     @State private var perPeriod: Bool
     @State private var leadMinutes: Int
+    @State private var sharedLeadMinutes: Int
 
     init() {
         _enabled = State(initialValue: NativeLiveActivityController.shared.isEnabled)
         _perPeriod = State(initialValue: NativeLiveActivityController.shared.perPeriod)
         _leadMinutes = State(initialValue: NativeLiveActivityController.shared.leadMinutes)
+        _sharedLeadMinutes = State(initialValue: NativeLiveActivityController.shared.sharedLeadMinutes)
     }
 
     private func leadLabel(_ minutes: Int) -> String {
@@ -416,10 +418,26 @@ struct LiveActivitySettingsScreen: View {
                     }
                 }
                 .disabled(!enabled)
+                if controller.following {
+                    Picker("对方课程提前显示", selection: Binding(
+                        get: { sharedLeadMinutes },
+                        set: { value in
+                            sharedLeadMinutes = value
+                            NativeLiveActivityController.shared.setSharedLeadMinutes(value)
+                        }
+                    )) {
+                        ForEach(NativeLiveActivityController.leadMinuteOptions, id: \.self) { minutes in
+                            Text(leadLabel(minutes)).tag(minutes)
+                        }
+                    }
+                    .disabled(!enabled)
+                }
             } header: {
                 Text("什么时候出现")
             } footer: {
-                Text("提醒不会占用上一门课的上课时间；每门课程在最后一节结束时收起。")
+                Text(controller.following
+                     ? "关心共享课表时，自己的课和对方的课分别按各自的提前量提醒；时间重叠的课合成一个活动。提醒不会占用上一门课的上课时间。"
+                     : "提醒不会占用上一门课的上课时间；每门课程在最后一节结束时收起。")
             }
 
             Section {
@@ -441,8 +459,7 @@ struct LiveActivitySettingsScreen: View {
                 Text(controller.coverage)
                 if controller.omitted > 0 { Text("\(controller.omitted) 项课程缺少可靠时间或来源身份，未安排。") }
                 if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
-                if let notice = controller.tokenNotice { Text(notice).foregroundStyle(.secondary) }
-                Text("iOS 26 及以上预约未来 168 小时，回到前台后补充；离线漏收广播可能延迟收起。iOS 18 使用远程启动，iOS 17 仅支持前台本地提醒。关心共享课表时，由服务端逐个推送刷新。")
+                Text("提醒由服务端按上传的课表安排（只上传节次和周次，不含课程名），不打开 App 也会按时出现。iOS 26 及以上在本机预约最近几节，其余由服务端远程启动；iOS 17 仅支持预览效果。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             if !controller.conflicts.isEmpty {

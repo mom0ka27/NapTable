@@ -1,120 +1,102 @@
 #if os(iOS) || LIVE_ACTIVITY_CHECKS
 import Foundation
 
-/// v2 uses explicit Unix seconds throughout; legacy attributes retain their Date codec.
-nonisolated struct LiveActivityPlan: Codable, Equatable {
-    /// Placed either by the school's periods (channel mode, where the final
-    /// period names the channel) or, in token mode, by its own instants: a
-    /// followed share also reminds the reader of their own courses, which run
-    /// on their school's bells rather than the share's. Only one pair is set,
-    /// so the other never reaches the wire.
-    struct Item: Codable, Equatable {
-        var occurrenceId: String
-        var supersedes: [String]
-        var dateKey: String
-        var startPeriod: Int? = nil
-        var endPeriod: Int? = nil
-        var start: Double? = nil
-        var end: Double? = nil
-    }
-    struct BusyInterval: Codable, Equatable { var start: Double; var end: Double }
-    var protocolVersion = 2
-    var planRevision: Int
-    var scheduleScope: String
-    var schoolID: String
-    var scheduleId = "default"
-    var scheduleVersion: String
-    var coverageStart: Double
-    var coverageEndExclusive: Double
-    var leadMinutes: Int
-    var items: [Item]
-    var busyIntervals: [BusyInterval]
-    /// Only sent as `"token"`; a channel plan omits the key so its body and
-    /// digest stay exactly what older builds uploaded.
-    var pushMode: String? = nil
-}
-
-nonisolated struct LiveActivityMapping: Codable, Equatable {
-    struct Period: Codable, Equatable { var number: Int; var start: String; var end: String }
-    var schoolID: String
-    var scheduleId: String
-    var scheduleVersion: String
-    var periods: [Period]
-    var timeZone: String
-    var channels: [String: String]
-    var status: String
-    var issuedAt: Double
-    var createBefore: Double
-    var broadcastUntil: Double
-}
-
+/// The server decides when each activity starts and ends; the phone decides
+/// what it shows. Occurrences here are the app's own reading of today and
+/// tomorrow, built from the local timetables, and exist only to render: an
+/// activity is drawn from whatever local frame covers the moment within its
+/// own time window, whatever the server called it.
 nonisolated struct LiveActivityOccurrence: Codable, Equatable {
     struct Frame: Codable, Equatable {
         var from: Double
         var until: Double
         var state: ScheduleLiveActivityAttributes.ContentState
     }
-    var item: LiveActivityPlan.Item
+    var dateKey: String
     var sourceID: String
     var start: Double
     var end: Double
     var reminder: Double
     var frames: [Frame]
-    /// Reminders after the start: a course of either table joining a merged
-    /// activity already on screen sounds the same 课程提醒 its own start would.
-    var alerts: [Double]? = nil
 
     func state(at date: Date) -> ScheduleLiveActivityAttributes.ContentState? {
         let instant = date.timeIntervalSince1970
         return frames.first { $0.from <= instant && instant < $0.until }?.state
     }
 
-    /// When the display changes after the activity first renders: every frame
-    /// start but the first (class start, per-period breaks, the reader's own
-    /// course joining or leaving), plus the end of a frame followed by a gap,
-    /// plus every reminder. Token mode asks the server for a push at each of
-    /// these. Instants more than a minute before `now` are dropped, as the
-    /// server refuses them.
-    func refreshAt(after now: Double = -.infinity) -> [Double] {
-        let gaps = zip(frames, frames.dropFirst()).filter { $0.until != $1.from }.map { $0.0.until }
-        return Set(frames.dropFirst().map(\.from) + gaps + (alerts ?? [])).filter { $0 >= now - 60 && $0 < end }.sorted()
-    }
-    /// The refreshes that also sound the reminder, under the same cut-off.
-    func alertAt(after now: Double = -.infinity) -> [Double] {
-        (alerts ?? []).filter { $0 >= now - 60 && $0 < end }.sorted()
+    /// When the display next changes after `now`: a frame starting, or one
+    /// ending into a gap. A local update goes stale then, so the system redraws.
+    func nextChange(after now: Double) -> Double? {
+        frames.flatMap { [$0.from, $0.until] }.filter { $0 > now }.min()
     }
 }
 
-/// One token-mode activity as the server should know it: its token and the
-/// instants to push at, never any course content.
-nonisolated struct LiveActivityTokenRegistration: Equatable {
+/// One reminder the server handed to the phone's own reservations.
+nonisolated struct LiveActivityClaim: Codable, Equatable {
     var occurrenceId: String
-    var token: String
     var dateKey: String
-    var refreshAt: [Double]
-    /// The refreshes that also sound the course reminder.
-    var alertAt: [Double] = []
+    var reminder: Double
+    var start: Double
     var end: Double
-    /// Built from the unfiltered refresh list, so boundaries passing by do not
-    /// make an unchanged registration look new.
-    var signature: String
+    var pushMode: String
+    var scheduleScope: String
+    var scheduleVersion: String
+    var channel: String?
+    var shared: [ScheduleLiveActivityAttributes.SharedCourse]
+
+    /// The same attributes the server's own start would carry.
+    func attributes(semester: String) -> ScheduleLiveActivityAttributes {
+        .init(semester: semester, dateKey: dateKey, protocolVersion: 2, scheduleScope: scheduleScope, occurrenceId: occurrenceId,
+              scheduleVersion: scheduleVersion, reservationStart: Date(timeIntervalSince1970: start), reservationEnd: Date(timeIntervalSince1970: end),
+              broadcastChannel: pushMode == "token" ? nil : channel, reminderDate: Date(timeIntervalSince1970: reminder),
+              pushMode: pushMode == "token" ? "token" : nil, shared: shared.isEmpty ? nil : shared)
+    }
 }
 
 nonisolated struct LiveActivityDisplaySnapshot: Codable, Equatable {
     var scope: String
-    var scheduleVersion: String
+    /// Who the displayed timetable belongs to, when it is a followed share.
+    var sourceLabel: String? = nil
     var occurrences: [LiveActivityOccurrence]
     static let key = "naptable.liveActivity.v2.display"
 
+    /// What an activity shows at `date`: the local frame covering that moment
+    /// within the activity's window. Rendered before the reminder (ActivityKit
+    /// may prepare a scheduled activity's view at registration), it shows the
+    /// opening frame; once the window closes, nothing.
     func resolve(attributes: ScheduleLiveActivityAttributes, at date: Date) -> ScheduleLiveActivityAttributes.ContentState? {
         guard attributes.protocolVersion == 2, attributes.scheduleScope == scope,
-              attributes.scheduleVersion == scheduleVersion,
-              let occurrence = occurrences.first(where: { $0.item.occurrenceId == attributes.occurrenceId && $0.item.dateKey == attributes.dateKey }) else { return nil }
-        // ActivityKit may prepare a scheduled activity's view at registration,
-        // before the reminder window. Render its initial frame in that case so
-        // the cached view does not say there are no classes when it wakes up.
-        // Keep state(at:) strict for scheduling and preserve the end boundary.
-        return occurrence.state(at: max(date, Date(timeIntervalSince1970: occurrence.reminder)))
+              let end = attributes.reservationEnd?.timeIntervalSince1970,
+              let opening = (attributes.reminderDate ?? attributes.reservationStart)?.timeIntervalSince1970 else { return nil }
+        let instant = max(date.timeIntervalSince1970, opening)
+        guard instant < end else { return nil }
+        let frames = occurrences.filter { $0.dateKey == attributes.dateKey && $0.reminder < end && $0.end > opening }
+            .flatMap(\.frames).filter { $0.until > opening && $0.from < end }.sorted { $0.from < $1.from }
+        // The server's reminder may lead the local one: count down with the next frame meanwhile.
+        if let frame = frames.first(where: { $0.from <= instant && instant < $0.until }) ?? frames.first(where: { $0.from > instant }) {
+            return frame.state
+        }
+        return shared(attributes, at: instant)
+    }
+
+    /// No local course in the window: the phone's copy of the share is older
+    /// than the server's. The start push lists the share's classes itself.
+    private func shared(_ attributes: ScheduleLiveActivityAttributes, at instant: Double) -> ScheduleLiveActivityAttributes.ContentState? {
+        let classes = (attributes.shared ?? []).sorted { $0.start < $1.start }
+        guard let course = classes.first(where: { $0.start <= instant && instant < $0.end }) ?? classes.first(where: { $0.start > instant }) else { return nil }
+        let running = course.start <= instant
+        return .init(phase: running ? .inProgress : .upcoming, courseName: course.name ?? "", teacher: course.teacher ?? "", location: course.location ?? "",
+                     periodLabel: course.first == course.last ? "第 \(course.first) 节" : "第 \(course.first)–\(course.last) 节", dateLabel: attributes.dateKey,
+                     startDate: Date(timeIntervalSince1970: course.start), endDate: Date(timeIntervalSince1970: course.end),
+                     sourceLabel: sourceLabel, updatedAt: Date(timeIntervalSince1970: running ? course.start : instant))
+    }
+
+    /// When an activity's display next changes after `date`, for its stale date.
+    func nextChange(attributes: ScheduleLiveActivityAttributes, after date: Date) -> Date? {
+        guard let end = attributes.reservationEnd?.timeIntervalSince1970 else { return nil }
+        let now = date.timeIntervalSince1970
+        let next = occurrences.filter { $0.dateKey == attributes.dateKey }.compactMap { $0.nextChange(after: now) }.filter { $0 < end }.min()
+        return Date(timeIntervalSince1970: next ?? end)
     }
 
     static func load() -> Self? {
@@ -123,34 +105,16 @@ nonisolated struct LiveActivityDisplaySnapshot: Codable, Equatable {
     }
 
     static func resolveStored(attributes: ScheduleLiveActivityAttributes, at date: Date) -> ScheduleLiveActivityAttributes.ContentState? {
-        guard let current = load(), current.scope == attributes.scheduleScope else { return nil }
-        if current.scheduleVersion == attributes.scheduleVersion { return current.resolve(attributes: attributes, at: date) }
-        let archives = UserDefaults(suiteName: NextWidgetConfiguration.appGroup)?.data(forKey: key + ".versions")
-            .flatMap { try? JSONDecoder().decode([Self].self, from: $0) } ?? []
-        return archives.first { $0.scope == attributes.scheduleScope && $0.scheduleVersion == attributes.scheduleVersion }?.resolve(attributes: attributes, at: date)
+        load()?.resolve(attributes: attributes, at: date)
     }
 
     func save() throws {
-        let data = try JSONEncoder().encode(self)
         guard let defaults = UserDefaults(suiteName: NextWidgetConfiguration.appGroup) else {
             throw NSError(domain: "LiveActivity", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法保存实时活动本地快照"])
         }
-        // Keep the old clock's local display for already-active instances.
-        // Scope validation above prevents an old selected table from reappearing.
-        var archives = defaults.data(forKey: Self.key + ".versions").flatMap { try? JSONDecoder().decode([Self].self, from: $0) } ?? []
-        if let previous = Self.load(), previous.scope == scope, previous.scheduleVersion != scheduleVersion {
-            archives.removeAll { $0.scheduleVersion == previous.scheduleVersion }
-            archives.append(previous)
-        }
-        let current = Date().timeIntervalSince1970
-        archives = archives.filter { $0.scope == scope }.map { snapshot in
-            var retained = snapshot
-            retained.occurrences = snapshot.occurrences.filter { $0.end > current && $0.reminder < current + 8 * 86400 }
-            return retained
-        }.filter { !$0.occurrences.isEmpty }
-        defaults.set(try JSONEncoder().encode(archives), forKey: Self.key + ".versions")
         // One replacement publishes the whole scope atomically to the widget.
-        defaults.set(data, forKey: Self.key)
+        defaults.set(try JSONEncoder().encode(self), forKey: Self.key)
+        defaults.removeObject(forKey: Self.key + ".versions")
     }
 }
 #endif

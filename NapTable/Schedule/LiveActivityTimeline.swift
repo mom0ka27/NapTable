@@ -1,6 +1,10 @@
 #if os(iOS) || LIVE_ACTIVITY_CHECKS
 import Foundation
 
+/// The phone's own reading of today and tomorrow, for display only: the
+/// server computes the reminders, and this decides what each activity shows
+/// moment by moment. It follows the server's rules (`live_activity_schedule.py`)
+/// closely enough that a difference only moves a redraw, never a reminder.
 @MainActor
 struct LiveActivityTimeline {
     struct Conflict: Identifiable, Equatable {
@@ -15,31 +19,18 @@ struct LiveActivityTimeline {
         var conflicts: [Conflict]
         var omitted: Int
     }
-    struct Identity: Codable {
-        var id: String
-        var source: String
-        var day: String
-        var first: Int
-        var last: Int
-        var supersedes: [String]
-        /// The occurrence on the clock. Missing on identities stored before
-        /// the reader's own courses could merge in.
-        var start: Double? = nil
-        var end: Double? = nil
-    }
 
     /// - Parameters:
     ///   - own: The reader's own timetable. Only consulted when `snapshot` is a
-    ///     followed share (it carries a `sourceLabel`).
-    ///   - mergesOwn: Whether the reader's own courses get reminders too. When
-    ///     set, courses of both timetables that overlap in time become one
-    ///     occurrence (the share leads while it is in class, the reader's
-    ///     course rides along as the `companion`) and the rest of the reader's
-    ///     courses become occurrences of their own. Items are then placed by
-    ///     their instants, so only a token-mode plan can carry them. Otherwise
-    ///     the reader's courses are only attached to the share's frames.
-    static func build(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil, mergesOwn: Bool = false, scope: String, now: Date,
-                      lead: Int, perPeriod: Bool, defaults: UserDefaults) -> Result {
+    ///     followed share (it carries a `sourceLabel`): courses of both that
+    ///     overlap in time become one occurrence, and the rest of the reader's
+    ///     courses occurrences of their own.
+    ///   - lead: Minutes ahead for the reader's own courses.
+    ///   - sharedLead: Minutes ahead for a followed share's courses; `lead` when nil.
+    ///   - choices: The displayed table's conflict choices, `date:period` → source.
+    ///   - days: How far ahead to build: the server keeps today and tomorrow.
+    static func build(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil, now: Date, lead: Int, sharedLead: Int? = nil,
+                      perPeriod: Bool, choices: [String: String] = [:], days: Int = 2) -> Result {
         guard let data = snapshot.data, let calendar = snapshot.calendar,
               let zone = TimeZone(identifier: snapshot.timeZone ?? TimeZone.current.identifier) else {
             return Result(occurrences: [], conflicts: [], omitted: 0)
@@ -48,18 +39,14 @@ struct LiveActivityTimeline {
         func instant(day: String, clock: String, zone: TimeZone) -> Double? {
             Self.instant(day: day, clock: clock, zone: zone, formatter: formatter)
         }
-        let storage = "naptable.liveActivity.identities." + scope
-        var identities = defaults.data(forKey: storage).flatMap { try? JSONDecoder().decode([String: Identity].self, from: $0) } ?? [:]
-        let original = identities
-        let choices = defaults.dictionary(forKey: "naptable.liveActivity.conflicts." + scope) as? [String: String] ?? [:]
+        let following = snapshot.sourceLabel != nil
+        let tableLead = following ? sharedLead ?? lead : lead
         let periods = snapshot.periods
         let byNumber = Dictionary(periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
         var result = Result(occurrences: [], conflicts: [], omitted: 0)
         var unassigned: Set<String> = []
-        let limit = now.addingTimeInterval(180 * 86400).timeIntervalSince1970
-        let merging = mergesOwn && snapshot.sourceLabel != nil
-        let mine = snapshot.sourceLabel == nil ? [] : own.map { ownCourses($0, perPeriod: perPeriod, now: now, limit: limit) } ?? []
-        let companions = companionSpans(of: mine, lead: merging ? lead : nil)
+        let limit = now.addingTimeInterval(Double(days) * 86400).timeIntervalSince1970
+        let mine = following ? own.map { ownCourses($0, perPeriod: perPeriod, now: now, limit: limit) } ?? [] : []
         var pieces: [Piece] = []
         for week in calendar.weeks {
             for (index, day) in week.days.enumerated() {
@@ -106,7 +93,7 @@ struct LiveActivityTimeline {
                           let firstPeriod = byNumber[first.0], let lastPeriod = byNumber[last.0],
                           let start = instant(day: day, clock: firstPeriod.startTime, zone: zone),
                           let end = instant(day: day, clock: lastPeriod.endTime, zone: zone), end > start else { result.omitted += 1; continue }
-                    let reminder = max(start - Double(lead * 60), previousEnd)
+                    let reminder = max(start - Double(tableLead * 60), previousEnd)
                     previousEnd = end
                     guard end > now.timeIntervalSince1970, start < limit else { continue }
                     guard end - reminder <= 8 * 3600 else { result.omitted += 1; continue }
@@ -133,31 +120,16 @@ struct LiveActivityTimeline {
                             frames.append(.init(from: a, until: b, state: state(from: a, until: b, upcoming: false)))
                         }
                     } else { frames.append(.init(from: start, until: end, state: state(from: start, until: end, upcoming: false))) }
-                    if !companions.isEmpty { frames = attach(companions, to: frames) }
-                    pieces.append(Piece(key: "\(first.1):\(day):\(first.0):\(last.0)", source: first.1, day: day, first: first.0, last: last.0,
-                                        start: start, end: end, reminder: reminder, frames: frames,
+                    pieces.append(Piece(source: first.1, day: day, start: start, end: end, reminder: reminder, frames: frames,
                                         upcoming: { state(from: $0, until: end, upcoming: true) }))
                 }
             }
         }
-        // Occurrence ids survive rebuilds. A new one supersedes what it replaces:
-        // by periods of the same source, or when merging, anything on the clock it now covers.
-        func identify(_ key: String, source: String, day: String, first: Int, last: Int, start: Double, end: Double, sharing: [Piece]?) -> Identity {
-            if let identity = identities[key] { return identity }
-            let ancestors = original.values.filter { old in
-                guard old.day == day else { return false }
-                guard let sharing else { return old.source == source && old.first <= last && old.last >= first }
-                if let a = old.start, let b = old.end { return a < end && b > start }
-                return sharing.contains { old.source == $0.source && old.first <= $0.last && old.last >= $0.first }
-            }.map(\.id).sorted().prefix(64)
-            let identity = Identity(id: UUID().uuidString, source: source, day: day, first: first, last: last, supersedes: Array(ancestors), start: start, end: end)
-            identities[key] = identity
-            return identity
-        }
-        if merging {
+        if mine.isEmpty {
+            result.occurrences = pieces.map { .init(dateKey: $0.day, sourceID: $0.source, start: $0.start, end: $0.end, reminder: $0.reminder, frames: $0.frames) }
+        } else {
             let ownPieces = mine.filter { $0.end - $0.start <= 8 * 3600 }.map { course in
-                Piece(key: course.key, source: course.source, day: course.day, first: course.first, last: course.last,
-                      start: course.start, end: course.end, reminder: course.start - Double(lead * 60),
+                Piece(source: course.source, day: course.day, start: course.start, end: course.end, reminder: course.start - Double(lead * 60),
                       frames: ([course.lead(minutes: lead)].compactMap { $0 } + course.spans).map { .init(from: $0.start, until: $0.end, state: course.state($0.companion)) },
                       upcoming: { course.state(course.upcoming(from: $0)) }, isOwn: true)
             }
@@ -169,50 +141,23 @@ struct LiveActivityTimeline {
             var previousEnd: Double = 0
             for cluster in clusters {
                 let start = cluster.map(\.start).min()!, end = cluster.map(\.end).max()!
-                let reminder = max(start - Double(lead * 60), previousEnd)
+                // Each course reminds by its own table's lead; the cluster opens at the earliest.
+                let reminder = max(cluster.map(\.reminder).min()!, previousEnd)
                 previousEnd = end
-                // The share leads wherever it has a frame; the reader's own
-                // course fills the rest, a class before a break, the earliest
-                // first; the earliest course's countdown covers what is left
-                // of the reminder window.
-                let shared = cluster.filter { !$0.isOwn }.flatMap(\.frames)
-                let owned = cluster.filter(\.isOwn).flatMap(\.frames)
-                    .sorted { ($0.state.phase == .inProgress ? 0 : 1, $0.from) < ($1.state.phase == .inProgress ? 0 : 1, $1.from) }
-                let opening = cluster[0]
-                let fallback = reminder < opening.start ? [LiveActivityOccurrence.Frame(from: reminder, until: opening.start, state: opening.upcoming(reminder))] : []
-                let frames = overlay(shared + owned + fallback, from: reminder, until: end)
-                // Named after its opening course, so a course of either table
-                // joining or leaving later keeps an activity that already started.
-                let key = opening.key
-                // A chain of overlapping courses can outlast one activity: hand
-                // over to a fresh one at a frame boundary.
-                var chunks: [[LiveActivityOccurrence.Frame]] = []
-                for frame in frames {
-                    if let head = chunks.last?.first, frame.until - head.from <= 8 * 3600 { chunks[chunks.count - 1].append(frame) }
-                    else { chunks.append([frame]) }
-                }
-                // Every later course reminds when it would have on its own, if
-                // the activity is already on screen by then.
-                let joins = Set(cluster.dropFirst().map { max($0.reminder, reminder) }.filter { $0 > reminder })
+                // Each table's frames carry the other table's course running then.
+                let owned = attach(spans(cluster.filter { !$0.isOwn }), to: cluster.filter(\.isOwn).flatMap(\.frames))
+                let shared = attach(spans(cluster.filter(\.isOwn)), to: cluster.filter { !$0.isOwn }.flatMap(\.frames))
+                // My class leads; else their class; else the countdown to the nearest class.
+                let running = owned.filter { $0.state.phase == .inProgress } + shared.filter { $0.state.phase == .inProgress }
+                let waiting = (owned.map { ($0, 0) } + shared.map { ($0, 1) }).filter { $0.0.state.phase != .inProgress }
+                    .sorted { ($0.0.state.startDate, $0.1) < ($1.0.state.startDate, $1.1) }.map(\.0)
+                let first = cluster.min { ($0.reminder, $0.start) < ($1.reminder, $1.start) }!
+                let fallback = reminder < first.start ? [LiveActivityOccurrence.Frame(from: reminder, until: first.start, state: first.upcoming(reminder))] : []
                 guard end > now.timeIntervalSince1970 else { continue }
-                for (index, chunk) in chunks.enumerated() {
-                    guard let from = chunk.first?.from, let until = chunk.last?.until, until > now.timeIntervalSince1970 else { continue }
-                    let begins = index == 0 ? start : from
-                    let identity = identify(index == 0 ? key : key + "#\(index)", source: opening.source, day: opening.day,
-                                            first: opening.first, last: opening.last, start: begins, end: until, sharing: cluster.filter { !$0.isOwn })
-                    result.occurrences.append(.init(item: .init(occurrenceId: identity.id, supersedes: identity.supersedes, dateKey: opening.day, start: begins, end: until),
-                                                    sourceID: opening.source, start: begins, end: until, reminder: index == 0 ? reminder : from, frames: chunk,
-                                                    alerts: Array(joins.filter { from < $0 && $0 < until }.sorted().prefix(16))))
-                }
-            }
-        } else {
-            for piece in pieces {
-                let identity = identify(piece.key, source: piece.source, day: piece.day, first: piece.first, last: piece.last, start: piece.start, end: piece.end, sharing: nil)
-                result.occurrences.append(.init(item: .init(occurrenceId: identity.id, supersedes: identity.supersedes, dateKey: piece.day, startPeriod: piece.first, endPeriod: piece.last),
-                                                sourceID: piece.source, start: piece.start, end: piece.end, reminder: piece.reminder, frames: piece.frames))
+                result.occurrences.append(.init(dateKey: first.day, sourceID: first.source, start: start, end: end, reminder: reminder,
+                                                frames: overlay(running + waiting + fallback, from: reminder, until: end)))
             }
         }
-        if let encoded = try? JSONEncoder().encode(identities) { defaults.set(encoded, forKey: storage) }
         result.omitted += unassigned.count
         result.occurrences.sort { $0.reminder < $1.reminder }
         return result
@@ -220,11 +165,8 @@ struct LiveActivityTimeline {
 
     /// One course of either timetable placed on the clock, before merging.
     private struct Piece {
-        var key: String
         var source: String
         var day: String
-        var first: Int
-        var last: Int
         var start: Double
         var end: Double
         var reminder: Double
@@ -233,6 +175,55 @@ struct LiveActivityTimeline {
         var upcoming: (Double) -> ScheduleLiveActivityAttributes.ContentState
         var isOwn = false
     }
+
+    /// A table's frames as companion rows for the other table.
+    private static func spans(_ pieces: [Piece]) -> [CompanionSpan] {
+        pieces.flatMap(\.frames).map { frame in
+            let state = frame.state
+            return CompanionSpan(start: frame.from, end: frame.until, companion: .init(
+                phase: state.phase, courseName: state.courseName, teacher: state.teacher, location: state.location,
+                periodLabel: state.periodLabel, startDate: state.startDate, endDate: state.endDate, updatedAt: state.updatedAt))
+        }.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
+    }
+
+    /// What the server needs to compute the reminders: the time structure of
+    /// the reader's own timetable (never a course name, teacher or room), the
+    /// followed share by its code, and the settings. `nil` when the timetable
+    /// has no semester to place courses in.
+    ///
+    /// - Parameters:
+    ///   - own: The reader's own timetable.
+    ///   - share: The followed share's timetable, when following one; the server
+    ///     reads the share itself, only its code and the phone's scope go up.
+    ///   - choices: Conflict choices of the displayed table.
+    static func timetable(own: NativeScheduleSnapshot, share: NativeScheduleSnapshot?, choices: [String: String],
+                          lead: Int, sharedLead: Int, perPeriod: Bool) -> [String: Any]? {
+        guard let scope = own.scheduleScope, let calendar = own.calendar, let weeks = calendar.weeks.map(\.week).max(),
+              let monday = calendar.weeks.first(where: { $0.week == 1 })?.days.first else { return nil }
+        let courses: [[String: Any]] = (own.data?.cells ?? []).filter { (1...7).contains($0.day) && $0.bigSlot > 0 }.flatMap { cell in
+            cell.courses.compactMap { course -> [String: Any]? in
+                guard let id = course.liveActivitySourceID ?? course.nativeId, let first = course.startSlot, let last = course.endSlot,
+                      first >= 1, last >= first, last <= own.periods.count else { return nil }
+                return ["id": id, "day": cell.day, "first": first, "last": last, "weeks": course.weekList]
+            }
+        }
+        let adjustments: [[String: Any]] = calendar.adjustments.values.sorted { $0.date < $1.date }.map { item in
+            if item.kind == .swap, let source = item.sourceDate { return ["date": item.date, "kind": "swap", "source": source] }
+            return ["date": item.date, "kind": "off"]
+        }
+        var ownBody: [String: Any] = ["scope": scope, "periods": own.periods.map { ["start": $0.startTime, "end": $0.endTime] },
+                                      "semesterStartMonday": monday, "weekCount": weeks, "adjustments": adjustments, "courses": courses]
+        if let school = own.schoolID { ownBody["schoolID"] = school }
+        var settings: [String: Any] = ["leadMinutes": lead, "perPeriod": perPeriod]
+        var body: [String: Any] = ["own": ownBody, "conflicts": choices]
+        if let share, let code = share.auth.account, let shareScope = share.scheduleScope {
+            body["follow"] = ["share": code, "scope": shareScope]
+            settings["sharedLeadMinutes"] = sharedLead
+        }
+        body["settings"] = settings
+        return body
+    }
+
 
     /// Lays `candidates` over `from..<until`: at every instant the first one
     /// covering it wins. Neighbours left with the same state are joined so a
@@ -362,23 +353,8 @@ struct LiveActivityTimeline {
         return courses.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
     }
 
-    /// The reader's courses as companion rows. With `lead`, each also shows up
-    /// that many minutes early, counting down to its start.
-    static func companionSpans(of courses: [OwnCourse], lead: Int? = nil, now: Date? = nil) -> [CompanionSpan] {
-        var spans: [CompanionSpan] = []
-        for course in courses {
-            for piece in (lead.flatMap { course.lead(minutes: $0) }.map { [$0] } ?? []) + course.spans
-            where piece.end > (now?.timeIntervalSince1970 ?? -.infinity) && !spans.contains(piece) { spans.append(piece) }
-        }
-        return spans.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
-    }
-
-    static func companionSpans(_ own: NativeScheduleSnapshot, perPeriod: Bool = false, now: Date, limit: Double) -> [CompanionSpan] {
-        companionSpans(of: ownCourses(own, perPeriod: perPeriod, now: now, limit: limit), now: now)
-    }
-
-    /// Splits `frames` wherever one of the reader's own courses starts or
-    /// ends, so each resulting frame either has one concurrent course of theirs
+    /// Splits `frames` wherever one of the other table's courses starts or
+    /// ends, so each resulting frame either has one concurrent course of it
     /// for its whole duration or none at all.
     static func attach(_ spans: [CompanionSpan], to frames: [LiveActivityOccurrence.Frame]) -> [LiveActivityOccurrence.Frame] {
         frames.flatMap { frame -> [LiveActivityOccurrence.Frame] in

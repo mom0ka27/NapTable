@@ -1,6 +1,6 @@
 # 服务端排程的实时活动提醒
 
-状态：第 1 步（服务端）已实现；第 3 步的服务端部分也已完成（旧接口删除，排程移到内存）；第 2 步未开始，现有客户端在它完成前无法使用提醒。分支 `server-scheduled-reminders`。基线为 `live-activity-v2.md` 与 `live-activity-token-mode.md`；本文未写到的行为沿用现状。实现完成后，现状以 `live-activity-v2.md` 为准，本文只保留设计理由。
+状态：三步都已实现（分支 `server-scheduled-reminders`），真机验收未做（见 §7）。现状以 `live-activity-v2.md` 为准；本文保留设计理由与取舍。
 
 ## 1. 目标
 
@@ -37,14 +37,14 @@
     "adjustments": [{"date": "2026-10-01", "kind": "off"}, {"date": "2026-10-11", "kind": "swap", "source": "2026-10-08"}],
     "courses": [{"id": "<liveActivitySourceID>", "day": 1, "first": 1, "last": 2, "weeks": [1, 2, 3]}]
   },
-  "follow": {"share": "<分享码>"},
+  "follow": {"share": "<分享码>", "scope": "<本机为这份分享用的 scheduleScope>"},
   "conflicts": {"2026-09-22:3": "<选中的课程 ID>"},
   "settings": {"leadMinutes": 60, "sharedLeadMinutes": 15, "perPeriod": true}
 }
 ```
 
 - `own`：只含时间结构。收起的课（`hidden`）不上传。没有星期或节次的自由课程不上传。手动创建的课表同样上传自己的节次和学期。
-- `follow`：可选，关心共享课表时才有，只带分享码（知道分享码才能关注）。服务端用分享码找到 `shares` 行，登记它的 `schedule_scope`；之后按 scope 读取最新的有效分享，所以分享码轮换不影响关注。课程、节次、学期、调休都来自分享快照；分享里没有唯一行 ID 的课、收起的课不排提醒，与客户端一致。
+- `follow`：可选，关心共享课表时才有，只带分享码（知道分享码才能关注）。服务端用分享码找到 `shares` 行，登记它的 `schedule_scope`；之后按 scope 读取最新的有效分享，所以分享码轮换不影响关注。课程、节次、学期、调休都来自分享快照；分享里没有唯一行 ID 的课、收起的课不排提醒，与客户端一致。 `scope` 是手机为这份分享起的本地名字，服务端原样写进这类活动的 `scheduleScope`，手机据此判断活动属于哪张课表；缺省时用分享在服务端的 scope。
 - `conflicts`：两张课表各自的节次冲突选择，键为 `日期:节次`，含义与现有 `naptable.liveActivity.conflicts.<scope>` 相同。
 - `settings.leadMinutes` 用于自己的课，`sharedLeadMinutes` 用于对方的课，取值都是 15 / 30 / 60；缺少 `sharedLeadMinutes` 时两边都用 `leadMinutes`。不关心共享课表时忽略 `sharedLeadMinutes`。「课间也保留」只影响手机上的显示，不上传。
 - 所有日期和时刻一律按 UTC+8 解释，上传内容不带时区。
@@ -117,8 +117,8 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 
 ## 5. 客户端
 
-- 渲染：小组件每次重画时，用活动的起止时刻，从本地课表找出这段时间里自己的课，对方的课取 attributes 里的 `shared`（本地分享快照可以补充，但以 `shared` 为准），再按当前时刻和 §4.1 的规则决定主位、并排、倒计时还是上课中、分节计时的课间。本地规则只影响「这一刻显示什么」，与服务端的规则稍有出入时只会让重画早晚一点，不会影响提醒和启动。认领结果同样只带起止时刻和 `shared`。
-- 本地预约（iOS 26）：打开 App 时调用 `POST /devices/{id}/claims`，请求体为 `{"slots": n}`（n 为本地可用的预约名额）。服务端在一个事务里，从内存的「今天 + 明天」中挑出最近的 n 节还没有账本行的课，在账本写入 `local`，并返回它们的 occurrence ID、提醒时刻、起止时刻、`shared` 和频道；之前认领过、仍未开始的课一并返回，已经发出或结果不明的课不会被选中。App 照着返回的内容预约；预约失败的课用 `DELETE /devices/{id}/claims/{occurrenceId}` 交还，服务端删掉账本行，这节课重新入堆。周末等没课的时候返回为空，全部交给服务端。关心共享课表时同样可以本地预约：模拟器上活动开始时 App 会在后台被拉起并拿到令牌（真机待验证，见 §7）。
+- 渲染：App 用本机课表（关注时加上本机的分享快照）按 §4.1 的规则算出今天、明天的画面帧，存进 App Group。小组件重画时按活动的 `scheduleScope`、`dateKey` 和时间段（`reminderDate` ～ `reservationEnd`）找覆盖当前时刻的帧，不看服务端的编号；服务端的提醒比本地早时先显示下一帧的倒计时；这段时间本地没有课（本机的分享快照比服务端旧）时，才用 attributes 里的 `shared` 画对方的课。小组件扩展里没有排程代码，只能读 App 预先算好的帧，所以 `shared` 是兜底而不是主要来源。本地规则只影响「这一刻显示什么」，与服务端稍有出入时只会让重画早晚一点，不会影响提醒和启动。
+- 本地预约（iOS 26）：打开 App 时调用 `POST /devices/{id}/claims`，请求体为 `{"slots": n}`（n = 4 减去本机仍在等待的预约数；系统一般只留约 5 个名额，留 1 个给预览）。服务端在一个事务里，从内存的「今天 + 明天」中挑出最近的 n 节还没有账本行的课，在账本写入 `local`，并返回它们的 occurrence ID、提醒时刻、起止时刻、`shared` 和频道；之前认领过、仍未开始的课一并返回，已经发出或结果不明的课不会被选中。App 照着返回的内容预约；预约失败的课用 `DELETE /devices/{id}/claims/{occurrenceId}` 交还，服务端删掉账本行，这节课重新入堆。周末等没课的时候返回为空，全部交给服务端。关心共享课表时同样可以本地预约：模拟器上活动开始时 App 会在后台被拉起并拿到令牌（真机待验证，见 §7）。
 - 设置页：关心共享课表时显示第二个提前量选项「对方课程提前显示」。
 - 删除：`LiveActivityTimeline.build` 的排程部分、计划上传、`local-handoff`、`remote-resume`、`foreground-recovery`、`broadcast-config` 凭证与 7 天租约、iOS 17 的前台提醒。保留前台和后台的 `reconcile`，用于在推送没到时纠正画面。
 
@@ -144,7 +144,7 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 ## 7. 分步实施与验收
 
 1. 服务端：引擎、存储、上传、下载、认领、发送改造、分享触发的重排，以及 Python 测试。引擎测试直接复用 `tests/NativeLiveActivityChecks.swift` 中合并、拆分、截断和分节的用例数据，对照期望结果。
-2. 客户端：上传与下载、按 frames 渲染、认领与本地预约、两个提前量的设置、iOS 17 降级为预览，以及 Swift 检查。
-3. 清理：删除旧接口和旧表，排程移到内存（服务端部分已完成，`server/README.md` 已更新）；剩下客户端旧路径的删除，以及更新 `live-activity-v2.md`、`FEATURES.md` 和 App 内隐私说明。
+2. 客户端：上传、按时间段渲染、认领与本地预约、两个提前量的设置、iOS 17 降级为预览，以及 Swift 检查（已完成）。
+3. 清理：删除旧接口、旧表和客户端旧路径，排程移到内存，更新 `live-activity-v2.md`、`FEATURES.md`、`server/README.md` 和 App 内隐私说明（已完成）。
 
 真机验收（需要维护者完成）：用户手动划掉 App 后，本地预约开始时 App 是否还会被拉起；低电量模式下是否一样；远程启动后拿到令牌需要多久；共享课表更新后，关注者不打开 App 也能按新课表提醒。
