@@ -23,17 +23,13 @@ struct SchoolConfigView: View {
                     Text("选择学校导入课表后，自动读取对应学校的学期和节次配置。")
                 }
             }
-            if let table = store.selectedTable, let list = table.calendarAdjustments, !list.isEmpty {
+            if let table = store.selectedTable, case let list = store.calendarAdjustments(of: table), !list.isEmpty {
+                let index = CalendarAdjustmentResolver.index(list, semesterStartMonday: store.effectiveSemesterStartMonday)
                 Section("调休安排") {
                     ForEach(list) { item in
-                        LabeledContent(
-                            item.date,
-                            value: table
-                                .calendarAdjustmentIndex(anchor: store.effectiveSemesterStartMonday)[item.date]?
-                                .detail ?? item.note
-                        )
+                        LabeledContent(item.date, value: index[item.date]?.detail ?? item.note)
                     }
-                    Text("由学校配置下发，课表、月历、小组件和灵动岛都会按这些日期覆盖课程。")
+                    Text("由服务端统一下发，课表、月历、小组件和灵动岛都会按这些日期覆盖课程。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -47,8 +43,8 @@ struct SchoolConfigView: View {
     }
 
     private func adjustmentSummary(_ table: CourseTable) -> String {
-        let list = table.calendarAdjustments ?? []
-        guard !list.isEmpty else { return "无" }
+        let list = store.calendarAdjustments(of: table)
+        guard !list.isEmpty else { return table.unifiedHolidaysEnabled == false ? "已关闭" : "无" }
         let off = list.filter { $0.kind == .off }.count
         let swap = list.count - off
         return [off > 0 ? "放假 \(off) 天" : nil, swap > 0 ? "补课 \(swap) 天" : nil]

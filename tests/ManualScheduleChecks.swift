@@ -105,6 +105,31 @@ struct ManualScheduleChecks {
         precondition(app.weekCount(of: app.tables.first { $0.id == table.id }!) == 20)
         precondition(app.weekCount(of: other) == max(1, app.settings.weekCount))
 
+        // 统一假期安排：手动建的课表没绑学期，也按服务端下发的统一安排调课。
+        let unified = [
+            CalendarAdjustment(date: "2026-09-25", kind: .off, note: "中秋节"),
+            CalendarAdjustment(date: "2026-09-26", kind: .off, note: "中秋节"),
+        ]
+        app.updateUnifiedCalendar(unified)
+        let manual = app.tables.first { $0.id == table.id }!
+        precondition(app.calendarAdjustments(of: manual) == unified)
+        // 课表自带的只补统一安排没写到的日期，同一天以统一安排为准。
+        var imported = manual
+        imported.calendarAdjustments = [
+            CalendarAdjustment(date: "2026-09-26", kind: .swap, source: "2026-09-24"),
+            CalendarAdjustment(date: "2026-11-06", kind: .off, note: "校运会"),
+        ]
+        let merged = app.calendarAdjustments(of: imported)
+        precondition(merged.map(\.date) == ["2026-09-25", "2026-09-26", "2026-11-06"])
+        precondition(merged.first { $0.date == "2026-09-26" }?.kind == .off)
+        // 关掉以后一条都不用，但节假日提示照旧知道中秋放到哪天。
+        app.setUnifiedHolidaysEnabled(false, tableId: table.id)
+        precondition(app.calendarAdjustments(of: app.tables.first { $0.id == table.id }!).isEmpty)
+        app.selectTable(table.id)
+        precondition(app.holidayCalendarAdjustments.map(\.date) == ["2026-09-25", "2026-09-26"])
+        app.setUnifiedHolidaysEnabled(true, tableId: table.id)
+        precondition(app.calendarAdjustments(of: app.tables.first { $0.id == table.id }!) == unified)
+
         print("ManualScheduleChecks passed")
     }
 }

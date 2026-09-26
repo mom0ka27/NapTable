@@ -186,6 +186,9 @@ struct WidgetSchedulePayload: Codable, Equatable {
     /// 「最近有课的一天」（最多往后三周）都在这里找。名字沿用最早只带下一周时的叫法。
     /// 旧版本写的 payload 没有这个字段，解码成 `nil` 即可。
     let nextWeekDays: [WidgetDay]?
+    /// 服务端下发的法定放假日（国务院放假安排，含连休里的周末），节假日提示按它算。
+    /// 没同步到或旧版本 payload 时为 `nil`，退回离线推算的法定假日。
+    var holidays: [PublishedHoliday]? = nil
 
     func fullDay(for date: String, fallbackOffset: Int) -> WidgetDay {
         if let exact = knownDay(for: date) { return exact }

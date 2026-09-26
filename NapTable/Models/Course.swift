@@ -186,6 +186,9 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     /// 这个学期的调休安排（补班改上哪天的课、哪天放假）。服务端按学期下发，
     /// 旧的存档里没有这个键，所以用可选类型解码。
     var calendarAdjustments: [CalendarAdjustment]?
+    /// 是否按服务端的统一假期安排（国务院放假调休）调整课程。`false` 时这张课表
+    /// 无视所有放假、补班，照常按星期几显示；`nil`（旧存档）当作开启。
+    var unifiedHolidaysEnabled: Bool?
 
     init(
         id: Int = 0,
@@ -198,7 +201,8 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         termWeekCount: Int? = nil,
         termTimezone: String? = nil,
         serviceConfigurationUpdatesEnabled: Bool? = nil,
-        calendarAdjustments: [CalendarAdjustment]? = nil
+        calendarAdjustments: [CalendarAdjustment]? = nil,
+        unifiedHolidaysEnabled: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -211,6 +215,7 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         self.termTimezone = termTimezone
         self.serviceConfigurationUpdatesEnabled = serviceConfigurationUpdatesEnabled
         self.calendarAdjustments = calendarAdjustments
+        self.unifiedHolidaysEnabled = unifiedHolidaysEnabled
     }
 
     /// 日期 -> 调休，换算到 `anchor`（第一周周一）对应的教学周上。锚点由调用方

@@ -773,6 +773,10 @@ class Handler(BaseHTTPRequestHandler):
             value = self.store.global_calendar() if path.endswith("/calendar") else self.store.usage_stats()
             return self.send_json(200, value)
         if path == "/v1/schools": return self.send_json(200,{"schools":self.store.schools()})
+        # The unified holiday arrangement on its own, for tables not bound to a
+        # school term. Kept out of /v1/schools: released clients decode that
+        # body as a plain {"schools": [...]} map and would reject a new key.
+        if path == "/v1/calendar": return self.send_json(200, self.store.global_calendar())
         if path.startswith("/v1/shares/"):
             parts=[p for p in path[len("/v1/shares/"):].split("/") if p]
             if len(parts)==1: value=self.store.get(parts[0])

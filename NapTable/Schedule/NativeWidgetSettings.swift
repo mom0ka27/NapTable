@@ -201,7 +201,8 @@ final class NativeWidgetSettings: ObservableObject {
             today: today,
             days: weekDays,
             weekDays: weekDays,
-            nextWeekDays: nextWeekDays
+            nextWeekDays: nextWeekDays,
+            holidays: ChineseCalendarInfo.publishedHolidays
         )
     }
 

@@ -166,10 +166,18 @@ struct CourseTableSettingsView: View {
                 ClassTimesEditor(tableId: tableId)
             }
 
-            if let adjustments = table.calendarAdjustments, !adjustments.isEmpty {
+            Toggle(isOn: Binding(
+                get: { table.unifiedHolidaysEnabled != false },
+                set: { store.setUnifiedHolidaysEnabled($0, tableId: tableId) }
+            )) {
+                Label("统一假期安排", systemImage: "calendar.badge.clock")
+            }
+
+            let adjustments = store.calendarAdjustments(of: table)
+            if !adjustments.isEmpty {
                 SettingsDestinationRow(
                     title: "调休安排",
-                    detail: "\(adjustments.count) 天 · 学校下发",
+                    detail: "\(adjustments.count) 天 · 服务端下发",
                     systemImage: "arrow.triangle.swap"
                 ) {
                     CalendarAdjustmentsList(tableId: tableId)
@@ -188,6 +196,10 @@ struct CourseTableSettingsView: View {
             }
         } header: {
             Text("作息")
+        } footer: {
+            Text(table.unifiedHolidaysEnabled == false
+                 ? "已关闭：法定假日、调休补班都不影响这张课表，每天照常显示课程。"
+                 : "按国务院放假安排调整课程：放假那天不显示课，补班那天上调过来的课。")
         }
     }
 
@@ -333,13 +345,14 @@ private struct CalendarAdjustmentsList: View {
     var body: some View {
         Form {
             if let table = store.tables.first(where: { $0.id == tableId }) {
-                let index = table.calendarAdjustmentIndex(anchor: store.effectiveSemesterStartMonday(of: table))
+                let list = store.calendarAdjustments(of: table)
+                let index = CalendarAdjustmentResolver.index(list, semesterStartMonday: store.effectiveSemesterStartMonday(of: table))
                 Section {
-                    ForEach(table.calendarAdjustments ?? []) { item in
+                    ForEach(list) { item in
                         LabeledContent(item.date, value: index[item.date]?.detail ?? item.note)
                     }
                 } footer: {
-                    Text("由学校配置提供。课表、月历、小组件与灵动岛将按这些日期调整课程。")
+                    Text("由服务端统一下发。课表、月历、小组件与灵动岛将按这些日期调整课程。")
                 }
             }
         }
