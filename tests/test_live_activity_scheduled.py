@@ -9,7 +9,7 @@ from server.live_activity import LiveActivityService
 from server.live_activity_schedule import instant
 from server.live_activity_timeline import ProtocolError
 from server.live_activity_v2 import Service
-from test_live_activity_v2 import APNs, TestVault
+from tests.test_live_activity_v2 import APNs, TestVault
 
 from datetime import date
 

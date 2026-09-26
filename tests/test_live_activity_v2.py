@@ -215,7 +215,7 @@ class HTTPV2Tests(unittest.TestCase):
     def test_http_contract(self):
         from http.client import HTTPConnection
         from server.naptable_server import Handler
-        from server_support import FastServer
+        from tests.server_support import FastServer
         self.legacy.v2 = self.service
         handler = type('V2Handler', (Handler,), {'live_activity': self.legacy})
         http = FastServer(('127.0.0.1', 0), handler)
