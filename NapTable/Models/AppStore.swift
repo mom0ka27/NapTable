@@ -32,6 +32,8 @@ final class AppStore: ObservableObject {
     @Published var displayWeek: Int
     /// Populated when loading the state file failed; surfaced in settings.
     @Published private(set) var loadErrorMessage: String?
+    /// 服务端下发的统一假期安排，不分学校、不管课表有没有绑定学期都用它。
+    @Published private(set) var unifiedCalendarAdjustments: [CalendarAdjustment]
 
     private var nextCourseId: Int
     private var nextTableId: Int
@@ -54,6 +56,7 @@ final class AppStore: ObservableObject {
         self.nextTableId = state.state.nextTableId
         self.nextCourseKey = state.state.nextCourseKey
         self.didSeedSample = state.state.didSeedSample
+        self.unifiedCalendarAdjustments = state.state.unifiedCalendarAdjustments ?? []
         self.loadErrorMessage = state.error
         self.displayWeek = 1
         didLoad = true
@@ -339,6 +342,39 @@ final class AppStore: ObservableObject {
         tables[index].termWeekCount = min(max(value, 1), 40)
         scheduleSave()
         if target == selectedTableId { displayWeek = min(max(displayWeek, 1), maxWeeks) }
+    }
+
+    // MARK: 统一假期安排
+
+    /// 这张课表实际生效的调休：关掉统一假期安排就一条都不要；否则以服务端的统一
+    /// 安排为准，课表自己带的（导入文件、分享快照里的）只补统一安排没写到的日期。
+    func calendarAdjustments(of table: CourseTable) -> [CalendarAdjustment] {
+        guard table.unifiedHolidaysEnabled != false else { return [] }
+        return Self.merge(unified: unifiedCalendarAdjustments, own: table.calendarAdjustments ?? [])
+    }
+
+    /// 节假日提示（「中秋快乐」「距国庆节还有 3 天」）用的放假安排。它只是报日子，
+    /// 不管课表的开关：关掉统一假期安排只是照常排课，国庆还是国庆。
+    var holidayCalendarAdjustments: [CalendarAdjustment] {
+        Self.merge(unified: unifiedCalendarAdjustments, own: selectedTable?.calendarAdjustments ?? [])
+    }
+
+    private static func merge(unified: [CalendarAdjustment], own: [CalendarAdjustment]) -> [CalendarAdjustment] {
+        guard !unified.isEmpty else { return own }
+        let covered = Set(unified.map(\.date))
+        return (own.filter { !covered.contains($0.date) } + unified).sorted { $0.date < $1.date }
+    }
+
+    func updateUnifiedCalendar(_ adjustments: [CalendarAdjustment]) {
+        guard adjustments != unifiedCalendarAdjustments else { return }
+        unifiedCalendarAdjustments = adjustments
+        scheduleSave()
+    }
+
+    func setUnifiedHolidaysEnabled(_ enabled: Bool, tableId: Int) {
+        guard let index = tables.firstIndex(where: { $0.id == tableId }) else { return }
+        tables[index].unifiedHolidaysEnabled = enabled
+        scheduleSave()
     }
 
     func updateClassTimeList(_ list: [ClassTime], tableId: Int? = nil) {
@@ -719,6 +755,7 @@ final class AppStore: ObservableObject {
         state.nextTableId = nextTableId
         state.nextCourseKey = nextCourseKey
         state.didSeedSample = didSeedSample
+        state.unifiedCalendarAdjustments = unifiedCalendarAdjustments
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

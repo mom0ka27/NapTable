@@ -65,8 +65,16 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         return schools
     }
     func refreshCurrentTerms(in store: AppStore) async {
+        // 统一假期安排不挂在学校上，手动建的课表也要用，所以单独拉、不受学校列表成败影响。
+        if let adjustments = try? await loadUnifiedCalendar() { store.updateUnifiedCalendar(adjustments) }
         guard let schools = try? await loadSchools() else { return }
         store.refreshServiceConfiguration(schools)
+    }
+    private struct UnifiedCalendarResponse: Decodable { var adjustments: [CalendarAdjustment] }
+    /// 服务端的统一假期安排（国务院放假调休），所有课表共用。
+    func loadUnifiedCalendar() async throws -> [CalendarAdjustment] {
+        let data = try await request(path: "/v1/calendar", method: "GET")
+        return try JSONDecoder().decode(UnifiedCalendarResponse.self, from: data).adjustments
     }
     func shareFingerprint(courses: [Course], table: CourseTable) throws -> String {
         let encoder = JSONEncoder()

@@ -191,6 +191,14 @@ class ImportEndpointTests(JSONClientMixin, unittest.TestCase):
                 self.assertEqual(term["adjustments"], saved)
                 self.assertGreater(term["version"], old_term["version"])
 
+    def test_public_calendar_needs_no_admin(self):
+        saved = [{"date": "2026-09-26", "kind": "off", "note": "中秋节"}]
+        self.req("POST", "/v1/admin/calendar", {"adjustments": saved}, self.head())
+        calendar = self.req("GET", "/v1/calendar")
+        self.assertEqual(calendar["adjustments"], saved)
+        self.assertIn("version", calendar)
+        self.assertEqual(set(self.req("GET", "/v1/schools")), {"schools"})
+
     def test_invalid_academic_year_rejected(self):
         for value in [True, "2026", 1999, 2026.5]:
             self.req("POST", "/v1/admin/calendar/import", {"academicYear": value}, self.head(), expect=400)

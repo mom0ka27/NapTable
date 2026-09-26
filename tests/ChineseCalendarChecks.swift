@@ -97,6 +97,51 @@ struct ChineseCalendarChecks {
         let springFestivalWindow = ChineseCalendarInfo.holidays(inYear: 2026).first { $0.name == "春节" }!
         expect(springFestivalWindow.dayCount == 4, "春节放四天")
 
+        // 服务端下发的放假安排：调休表放假行的说明就是节日名，连休里的周末也在内
+        func offDays(_ note: String, _ from: String, _ to: String) -> [(date: String, note: String)] {
+            var rows: [(date: String, note: String)] = []
+            var cursor = ChineseCalendarInfo.date(fromDate: from)!
+            while ChineseCalendarInfo.dateString(cursor) <= to {
+                rows.append((ChineseCalendarInfo.dateString(cursor), note))
+                cursor = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: 1, to: cursor)!
+            }
+            return rows
+        }
+        let published = PublishedHoliday.fromOffDays(
+            offDays("国庆节、中秋节", "2025-10-01", "2025-10-08")
+                + offDays("元旦", "2025-12-31", "2026-01-02")
+                + offDays("春节", "2026-02-15", "2026-02-23")
+                + offDays("中秋节", "2026-09-25", "2026-09-27")
+                + offDays("国庆节", "2026-10-01", "2026-10-07")
+                + [("2026-11-06", "校运会停课"), ("2026-10-10", "")]
+        )
+        expect(published.first?.name == "国庆节", "合并的说明取先出现的节日")
+        expect(!published.contains { $0.date == "2026-11-06" || $0.date == "2026-10-10" }, "学校自己的停课不算法定假日")
+        ChineseCalendarInfo.usePublishedHolidays(published)
+
+        expect(day("2026-09-26").holiday == "中秋节", "中秋连休的周六")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-26") == "中秋快乐～", "连休里的周末道节日的贺")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-10-04") == "国庆快乐～", "国庆连休的周日")
+        expect(day("2026-10-07").holiday == "国庆节" && day("2026-10-08").holiday == nil, "国庆放到 10.7")
+        expect(day("2026-02-23").holiday == "春节" && day("2026-02-24").holiday == nil, "春节按安排放九天")
+        expect(countdown("2026-09-17").dateLabel == "9.25 - 9.27 · 休 3 天", "中秋连休三天")
+        let publishedNational = countdown("2026-09-28")
+        expect(publishedNational.phrase == "距国庆节还有 3 天", "中秋过后接国庆：\(publishedNational.phrase)")
+        expect(publishedNational.dateLabel == "10.1 - 10.7 · 休 7 天", "国庆连休七天：\(publishedNational.dateLabel)")
+        // 2025 年中秋（10.6）并进国庆，不再单列一段
+        expect(day("2025-10-06").holiday == "国庆节", "2025 中秋并进国庆")
+        expect(!ChineseCalendarInfo.holidays(inYear: 2025).contains { $0.name == "中秋节" }, "被连休盖住的法定中秋让位")
+        // 跨年的元旦两边年份都认，倒计时不重复
+        expect(day("2025-12-31").holiday == "元旦" && day("2026-01-02").holiday == "元旦", "跨年元旦")
+        let newYear = countdown("2025-12-20")
+        expect(newYear.dateLabel == "12.31 - 1.2 · 休 3 天", "跨年元旦报整段：\(newYear.dateLabel)")
+        // 服务端没给的节日照旧按法定算
+        expect(day("2026-05-02").holiday == "劳动节" && day("2026-05-03").holiday == nil, "没下发的劳动节按法定")
+        // 清空后退回法定假日
+        ChineseCalendarInfo.usePublishedHolidays([])
+        expect(day("2026-09-26").holiday == nil, "清空后 9.26 不再是假期")
+        expect(countdown("2026-09-28").dateLabel == "10.1 - 10.3 · 休 3 天", "清空后国庆按法定三天")
+
         // 小组件显示设置：旧版本存的 JSON 缺字段时要按默认值补齐，而不是整份作废
         let legacy = Data("""
         {"showCourseName":true,"showRoom":false,"showTeacher":false,"showTime":true}

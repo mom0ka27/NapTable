@@ -61,8 +61,32 @@ nonisolated struct LunarDate: Equatable, Sendable {
     var yearLabel: String { ganZhi + zodiac + "年" }
 }
 
-/// 一段法定假期（只含《全国年节及纪念日放假办法》规定的法定假日，不含各年度国务院
-/// 通知里的调休连休安排）。
+/// 服务端下发的一天法定放假（来自国务院放假安排，含连休里的周末）。App 从学期
+/// 配置的调休表里挑出来，随小组件数据写进 App Group，两边都交给
+/// `ChineseCalendarInfo.usePublishedHolidays` 覆盖离线推算的法定假日。
+nonisolated struct PublishedHoliday: Codable, Equatable, Hashable, Sendable {
+    /// `yyyy-MM-dd`
+    let date: String
+    /// 「中秋节」「国庆节」，已经从服务端说明里规整成法定节日名。
+    let name: String
+
+    /// 从调休表的放假行里挑出法定假日：说明里提到哪个法定节日就算哪个，
+    /// 「国庆节、中秋节」取先出现的「国庆节」。学校自己的停课（校运会之类）不算。
+    static func fromOffDays(_ days: [(date: String, note: String)]) -> [PublishedHoliday] {
+        days.compactMap { day in
+            let names = ChineseCalendarInfo.statutoryHolidayNames.compactMap { name in
+                day.note.range(of: name).map { (name, $0.lowerBound) }
+            }
+            guard let name = names.min(by: { $0.1 < $1.1 })?.0 else { return nil }
+            return PublishedHoliday(date: day.date, name: name)
+        }
+        .sorted { $0.date < $1.date }
+    }
+}
+
+/// 一段放假区间。App 从服务端拿到了当年放假安排（国务院通知里的调休连休，见
+/// `PublishedHoliday`）就按它算，比如中秋 9.25 - 9.27、国庆 10.1 - 10.7；没有的
+/// 节日退回《全国年节及纪念日放假办法》规定的法定假日。
 nonisolated struct ChineseHolidayWindow: Equatable, Sendable {
     let name: String
     /// `yyyy-MM-dd`
@@ -104,7 +128,7 @@ nonisolated struct ChineseHolidayCountdown: Equatable, Sendable {
         return "\(leading) \(amount) \(trailing)"
     }
 
-    /// 「9.25 周五」，连休则是「10.1 - 10.3 · 休 3 天」。
+    /// 「9.25 周五」，连休则是「10.1 - 10.7 · 休 7 天」。
     var dateLabel: String {
         let start = ChineseCalendarInfo.monthDayLabel(window.start)
         guard window.end != window.start else {
@@ -148,6 +172,30 @@ nonisolated enum ChineseCalendarInfo {
     static func info(forDate date: String) -> ChineseCalendarDay? {
         guard let year = gregorianYear(of: date) else { return nil }
         return cache.year(year).days[date]
+    }
+
+    /// 换上服务端下发的放假安排。和上次一样时什么都不做，不一样就丢掉缓存重算。
+    static func usePublishedHolidays(_ days: [PublishedHoliday]) {
+        cache.usePublished(days)
+    }
+
+    /// 当前用着的服务端放假安排，App 写小组件数据时原样带过去。
+    static var publishedHolidays: [PublishedHoliday] { cache.published }
+
+    /// 七个法定节日的名字，服务端说明里认的就是这几个。
+    static let statutoryHolidayNames = ["元旦", "春节", "清明节", "劳动节", "端午节", "中秋节", "国庆节"]
+
+    /// 服务端放假日按「同名且日期相连」并成一段段假期，挑出和这一年沾边的。
+    fileprivate static func publishedWindows(touching year: Int) -> [ChineseHolidayWindow] {
+        var windows: [ChineseHolidayWindow] = []
+        for day in cache.published {
+            if let last = windows.last, last.name == day.name, dayGap(from: last.end, to: day.date) == 1 {
+                windows[windows.count - 1] = ChineseHolidayWindow(name: last.name, start: last.start, end: day.date)
+            } else {
+                windows.append(ChineseHolidayWindow(name: day.name, start: day.date, end: day.date))
+            }
+        }
+        return windows.filter { $0.start.hasPrefix("\(year)-") || $0.end.hasPrefix("\(year)-") }
     }
 
     static func holidays(inYear year: Int) -> [ChineseHolidayWindow] {
@@ -209,7 +257,10 @@ nonisolated enum ChineseCalendarInfo {
     static func nextHoliday(from date: Date, withinDays limit: Int = 60) -> (window: ChineseHolidayWindow, daysAway: Int)? {
         let today = dateString(date)
         guard let year = gregorianYear(of: today) else { return nil }
-        let windows = cache.year(year).holidays + cache.year(year + 1).holidays
+        // 跨年的连休（元旦从 12.30 放起）两年里各有一份，去掉重复的。
+        var seen = Set<String>()
+        let windows = (cache.year(year).holidays + cache.year(year + 1).holidays)
+            .filter { seen.insert($0.start).inserted }
         guard let next = windows.first(where: { $0.end >= today }) else { return nil }
         let start = max(next.start, today)
         guard let days = dayGap(from: today, to: start), days <= limit else { return nil }
@@ -308,7 +359,7 @@ nonisolated enum ChineseCalendarInfo {
 
 /// 一年的农历/节日/假期数据。按公历年整体算一次再缓存：一次扫描 365 天，之后每个
 /// 日期都是字典查询，小组件时间线也不会重复计算。
-private final class YearCache: @unchecked Sendable {
+private nonisolated final class YearCache: @unchecked Sendable {
     struct YearData {
         var days: [String: ChineseCalendarDay] = [:]
         var holidays: [ChineseHolidayWindow] = []
@@ -316,6 +367,22 @@ private final class YearCache: @unchecked Sendable {
 
     private let lock = NSLock()
     private var storage: [Int: YearData] = [:]
+    private var publishedDays: [PublishedHoliday] = []
+
+    var published: [PublishedHoliday] {
+        lock.lock()
+        defer { lock.unlock() }
+        return publishedDays
+    }
+
+    func usePublished(_ days: [PublishedHoliday]) {
+        let sorted = days.sorted { $0.date < $1.date }
+        lock.lock()
+        defer { lock.unlock() }
+        guard sorted != publishedDays else { return }
+        publishedDays = sorted
+        storage.removeAll()
+    }
 
     func year(_ year: Int) -> YearData {
         lock.lock()
@@ -410,6 +477,16 @@ private final class YearCache: @unchecked Sendable {
             holidays.append(ChineseHolidayWindow(name: "中秋节", start: midAutumn, end: midAutumn))
         }
         holidays.append(ChineseHolidayWindow(name: "国庆节", start: "\(year)-10-01", end: "\(year)-10-03"))
+        let published = ChineseCalendarInfo.publishedWindows(touching: year)
+        if !published.isEmpty {
+            // 服务端给了哪个节日就用哪个：同名的、以及被连休盖住的法定假日都让位
+            // （2025 年中秋落在国庆连休里，服务端只写一段「国庆节、中秋节」）。
+            holidays.removeAll { window in
+                published.contains { $0.name == window.name && $0.start.hasPrefix("\(year)-") }
+                    || published.contains { $0.start <= window.end && window.start <= $0.end }
+            }
+            holidays += published
+        }
         holidays.sort { $0.start < $1.start }
 
         var holidayByDate: [String: String] = [:]

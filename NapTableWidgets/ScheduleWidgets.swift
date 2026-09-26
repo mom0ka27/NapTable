@@ -2488,6 +2488,7 @@ enum ScheduleTimeline {
     static func make(now: Date) -> Timeline<ScheduleEntry> {
         let entry: ScheduleEntry
         let payload = ScheduleWidgetStore.load()
+        ChineseCalendarInfo.usePublishedHolidays(payload?.holidays ?? [])
         if let payload {
             entry = ScheduleEntry(date: now, state: .loaded(payload))
         } else {

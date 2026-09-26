@@ -313,6 +313,10 @@ final class NativeScheduleStore: ObservableObject {
         )
         result = makeResult(visible)
         calendar = makeCalendar(visible)
+        // 月历和日期栏的节假日按服务端的统一假期安排算，小组件那边随 payload 同步。
+        ChineseCalendarInfo.usePublishedHolidays(PublishedHoliday.fromOffDays(
+            app.holidayCalendarAdjustments.filter { $0.kind == .off }.map { (date: $0.date, note: $0.note) }
+        ))
         freeCourses = display.courses.filter(\.isFreeTime).map(Self.makeNativeCourse)
         if app.tables.isEmpty && viewed == nil {
             // `.idle` would fall through to the loading card and spin forever;
@@ -358,7 +362,7 @@ final class NativeScheduleStore: ObservableObject {
             semesterStartMonday: app.effectiveSemesterStartMonday,
             weekCount: max(1, app.maxWeeks),
             currentWeek: max(1, app.liveWeek),
-            adjustments: app.selectedTable?.calendarAdjustments ?? []
+            adjustments: app.selectedTable.map(app.calendarAdjustments(of:)) ?? []
         )
     }
 

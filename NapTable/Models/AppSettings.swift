@@ -63,4 +63,6 @@ struct AppStateFile: Codable {
     var nextCourseKey = 1
     /// Whether the bundled sample table has already been offered.
     var didSeedSample = false
+    /// 服务端的统一假期安排（`GET /v1/calendar`），所有课表共用，离线时用上次拉到的。
+    var unifiedCalendarAdjustments: [CalendarAdjustment]? = nil
 }
