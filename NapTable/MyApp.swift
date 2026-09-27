@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import ActivityKit
+#endif
 
 @main
 struct MyApp: App {
@@ -22,8 +25,32 @@ struct MyApp: App {
                 NativeLiveActivityController.shared.setEnabled(false)
             }
         }
+        #if DEBUG
+        Self.startDebugLiveActivity()
+        #endif
         #endif
     }
+
+    #if DEBUG && os(iOS)
+    /// 预览画廊拿系统真实渲染当参照：`SIMCTL_CHILD_NAPTABLE_DEBUG_LIVE_ACTIVITY=<ContentState JSON>`
+    /// 启动时直接开一个这样的实时活动（见 `scripts/widget-gallery.sh --reference`）。
+    private static func startDebugLiveActivity() {
+        guard let raw = ProcessInfo.processInfo.environment["NAPTABLE_DEBUG_LIVE_ACTIVITY"],
+              let state = try? JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.self, from: Data(raw.utf8)) else { return }
+        Task {
+            for activity in Activity<ScheduleLiveActivityAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            let attributes = ScheduleLiveActivityAttributes(semester: "__preview__", dateKey: "preview")
+            do {
+                _ = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: nil), pushType: nil)
+                print("[debug] live activity started: \(state.courseName)")
+            } catch {
+                print("[debug] live activity failed: \(error)")
+            }
+        }
+    }
+    #endif
 
     var body: some Scene {
         WindowGroup {

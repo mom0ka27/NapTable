@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NapTable 小组件画廊</title>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --line: #e3e5e9; --text: #1d1f24; --muted: #6b7079;
+  --accent: #e26f63; --chip: #f0f1f4; --chip-on: #1d1f24; --chip-on-text: #fff;
+  --home-light: linear-gradient(160deg, #cfe3f5 0%, #f3d9e4 55%, #f7ecd6 100%);
+  --home-dark: linear-gradient(160deg, #1b2440 0%, #3a2446 55%, #1d2b36 100%);
+  --lock: linear-gradient(170deg, #3b4d74 0%, #6b4f7a 60%, #2c3550 100%);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111317; --panel: #1a1d22; --line: #2a2e35; --text: #e8eaee; --muted: #9096a0;
+    --chip: #262a31; --chip-on: #e8eaee; --chip-on-text: #111317; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; background: var(--bg); color: var(--text); }
+.app { display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+aside { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 14px 16px 40px; }
+main { overflow-y: auto; padding: 0 20px 40px; }
+h1 { font-size: 15px; margin: 0 0 2px; }
+.sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+details { border-top: 1px solid var(--line); padding: 10px 0; }
+summary { font-weight: 600; cursor: pointer; list-style: none; display: flex; justify-content: space-between; }
+summary::after { content: "▾"; color: var(--muted); }
+details:not([open]) summary::after { content: "▸"; }
+.row { margin-top: 10px; }
+.label { color: var(--muted); font-size: 12px; margin-bottom: 5px; display: flex; justify-content: space-between; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { border: 0; background: var(--chip); color: var(--text); padding: 4px 9px; border-radius: 999px; font: inherit; cursor: pointer; }
+.chip.on { background: var(--chip-on); color: var(--chip-on-text); }
+.chip:disabled { opacity: .35; cursor: default; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.swatch.on { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--panel); }
+.toggle { display: flex; align-items: center; gap: 7px; margin: 4px 0; cursor: pointer; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+input[type=text], input[type=date], input[type=time], select, textarea {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; width: 100%; }
+input[type=color] { width: 40px; height: 26px; border: 0; background: none; padding: 0; }
+textarea { font-family: ui-monospace, Menlo, monospace; font-size: 11px; height: 260px; }
+.wtitle { font-weight: 600; margin: 8px 0 4px; }
+.bar { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 14px 0 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.bar .spacer { flex: 1; }
+button.primary { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer; }
+button.ghost { background: var(--chip); color: var(--text); border: 0; border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+.status { color: var(--muted); font-size: 12px; }
+.group { margin-bottom: 26px; }
+#board.flow { display: flex; flex-wrap: wrap; gap: 0 24px; align-items: flex-start; }
+.group h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+.cards { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.stage { padding: 18px; display: flex; align-items: center; justify-content: center; min-width: 120px; min-height: 80px; }
+.stage.home-light { background: var(--home-light); }
+.stage.home-dark { background: var(--home-dark); }
+.stage.lock { background: var(--lock); }
+.stage img { display: block; filter: drop-shadow(0 2px 8px rgba(0,0,0,.12)); }
+.stage .err { color: #c0392b; font-size: 12px; max-width: 220px; }
+.meta { padding: 7px 10px; font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+.meta a { color: var(--muted); }
+.note { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.warn { color: #b9770e; }
+.offline-banner { background: var(--chip); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+body.offline [data-live-only] { opacity: .38; pointer-events: none; }
+.missing { color: var(--muted); font-size: 12px; max-width: 200px; text-align: center; }
+@media (max-width: 800px) { .app { grid-template-columns: 1fr; height: auto; } aside { border-right: 0; } }
+</style>
+</head>
+<body>
+<div class="app">
+<aside id="panel">
+  <h1>NapTable 小组件画廊</h1>
+  <div class="sub">改设置，右边实时出图。渲染走的是正式小组件代码。</div>
+  <div class="offline-banner" id="offlineBanner" hidden></div>
+
+  <details open>
+    <summary>画面</summary>
+    <div class="row chips" id="surfaceChips"></div>
+    <div id="widgetPick"></div>
+    <div id="activityPick"></div>
+  </details>
+
+  <details open id="intentBox">
+    <summary>编辑小组件</summary>
+    <div class="row"><div class="label">今日课程结束后 <span>临近课程 · 今日课表</span></div><div class="chips" data-key="afterClass"></div></div>
+    <div class="row"><div class="label">显示课程数 <span>仅临近课程 · 小</span></div><div class="chips" data-key="courseCount"></div></div>
+    <div class="row"><div class="label">显示方式 <span>今日课表 · 大、两日课表；默认各自原样</span></div><div class="chips" data-key="layout"></div></div>
+  </details>
+
+  <details open>
+    <summary>全局设置</summary>
+    <div class="row" data-live-only><div class="label">主题色</div><div class="swatches" id="themes"></div>
+      <div class="row" id="customRow" hidden><div class="label">自定义颜色</div><input type="color" id="customColor"></div></div>
+    <div class="row" data-live-only><label class="toggle"><input type="checkbox" data-bool="solid">纯色模式（课程不按课名分色）</label></div>
+    <div class="row" data-live-only><div class="label">显示内容</div><div class="grid2" id="displayFlags"></div></div>
+  </details>
+
+  <details open>
+    <summary>系统外观</summary>
+    <div class="row"><div class="label">深浅色</div><div class="chips" data-key="schemes"></div></div>
+    <div class="row" data-live-only><div class="label">渲染模式 <span>自动：桌面全彩、锁屏半透明</span></div><div class="chips" data-key="renderingMode"></div>
+      <div class="row" id="tintRow"><div class="label">染色桌面的色调</div><input type="color" id="tint"></div></div>
+    <div class="row"><div class="label">设备 <span>可多选对比</span></div><div class="chips" data-key="devices"></div><div class="note" id="deviceNote"></div></div>
+  </details>
+
+  <details open>
+    <summary>场景</summary>
+    <div class="row"><div class="label">课表</div><select id="scenario"></select><div class="note" id="scenarioNote"></div></div>
+    <div class="row grid2" data-live-only>
+      <div><div class="label">日期</div><input type="date" id="date"></div>
+      <div><div class="label">时间</div><input type="time" id="time"></div>
+    </div>
+    <div class="row chips" id="timePresets"></div>
+    <div class="row chips" id="datePresets" data-live-only></div>
+    <div class="row" data-live-only><div class="label">状态</div><div class="chips" data-key="state"></div></div>
+    <div class="row grid2" data-live-only>
+      <div><div class="label">课表名</div><input type="text" id="tableName" placeholder="留空不显示"></div>
+      <div><div class="label">关注的人</div><input type="text" id="sourceLabel" placeholder="留空是自己的课表"></div>
+    </div>
+    <div class="row" data-live-only><div class="label">实时活动</div>
+      <label class="toggle"><input type="checkbox" data-bool="persistent">常驻（下课后接着显示下一节）</label>
+      <label class="toggle"><input type="checkbox" data-bool="companion">合并卡片（关注的人和自己同时在上课）</label>
+    </div>
+  </details>
+
+  <details data-live-only>
+    <summary>自定义 payload</summary>
+    <div class="note">先按上面的设置生成一份，改完点「使用」。使用中时预置课表、课表名、关注的人都以这份为准。</div>
+    <div class="row chips">
+      <button class="chip" id="loadPayload">按当前设置生成</button>
+      <button class="chip" id="usePayload">使用</button>
+      <button class="chip" id="clearPayload">不用了</button>
+    </div>
+    <div class="row"><textarea id="payload" spellcheck="false"></textarea></div>
+    <div class="note" id="payloadNote"></div>
+  </details>
+
+  <details>
+    <summary>全部模式</summary>
+    <div class="note">按左边已选的画面，把勾选的维度全部展开（其余维度用当前值）。</div>
+    <div class="row grid2" id="matrixDims"></div>
+    <div class="row"><button class="primary" id="runMatrix">生成全部模式</button></div>
+    <div class="note" id="matrixNote"></div>
+  </details>
+</aside>
+
+<main>
+  <div class="bar">
+    <button class="ghost" id="backToLive" hidden>← 回到实时预览</button>
+    <span class="status" id="status"></span>
+    <span class="spacer"></span>
+    <label class="status">缩放 <input type="range" id="zoom" min="50" max="200" value="100" step="10"></label>
+    <button class="ghost" id="copyLink">复制当前设置链接</button>
+  </div>
+  <div id="board"></div>
+</main>
+</div>
+
+<script>
+const FAMILY_TITLES = {};
+const OPTIONS = {
+  afterClass: [["nextCourseDay", "接着显示下一次课"], ["todayOnly", "只看今天"]],
+  courseCount: [[1, "仅当前一节"], [2, "当前与下一节"]],
+  layout: [["auto", "默认"], ["timeline", "时间线"], ["list", "列表"]],
+  schemes: [["light", "浅色"], ["dark", "深色"]],
+  renderingMode: [["auto", "自动"], ["fullColor", "全彩"], ["accented", "染色"], ["vibrant", "半透明"]],
+  state: [["loaded", "正常"], ["unconfigured", "等待同步"], ["failed", "读取失败"]],
+};
+const MULTI = new Set(["schemes", "devices"]);
+const DISPLAY_FLAGS = [["showCourseName", "课程名"], ["showRoom", "教室"], ["showTeacher", "老师"], ["showTime", "时间"], ["showLunarDate", "农历"], ["showHoliday", "节假日"]];
+const DATE_PRESETS = [["今天", null], ["周一", "monday"], ["周六", "saturday"], ["国庆 10/1", "2026-10-01"], ["中秋前 9/24", "2026-09-24"], ["元旦前 12/30", "2026-12-30"]];
+
+/// 导出的离线版（scripts/widget-gallery.sh --zip）：batch.py 在这个脚本前面塞进
+/// window.GALLERY_OFFLINE = { meta, dims, scale, date, index: {组合: 图片编号}, images: [base64] }。
+/// 有它就不连画廊服务，只在导出过的组合之间切换。
+const OFFLINE = window.GALLERY_OFFLINE || null;
+const OFFLINE_DIMS = ["schemes", "intent", "times", "devices", "scenarios"];
+
+let meta = null;
+let state = {
+  surface: "widget",
+  widgets: ["upcoming:systemSmall", "upcoming:systemMedium", "today:systemMedium", "today:systemLarge", "twoday:systemLarge"],
+  activities: ["lockScreen", "islandExpanded", "islandCompact"],
+  afterClass: "nextCourseDay", courseCount: 1, layout: "auto",
+  theme: "bunny", customColor: "#e26f63", solid: false,
+  display: Object.fromEntries(DISPLAY_FLAGS.map(([k]) => [k, true])),
+  schemes: ["light"], renderingMode: "auto", tint: "#4f8cff", devices: ["pro"],
+  scenario: "normal", date: "", time: "08:20", state: "loaded", tableName: "", sourceLabel: "",
+  persistent: false, companion: false, payload: null,
+  matrixDims: ["schemes", "intent", "times"],
+};
+let mode = "live";
+let zoom = 1;
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of [].concat(children)) node.append(child);
+  return node;
+};
+
+function b64url(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromB64url(text) {
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+}
+
+function saveHash() {
+  try { history.replaceState(null, "", "#" + b64url(JSON.stringify({ ...state, payload: null }))); } catch {}
+}
+function loadHash() {
+  if (location.hash.length < 2) return;
+  try { Object.assign(state, JSON.parse(fromB64url(location.hash.slice(1)))); } catch {}
+}
+
+// ---------- 面板 ----------
+
+function chipGroup(container, key, options) {
+  container.innerHTML = "";
+  for (const [value, title] of options) {
+    const chip = el("button", { className: "chip", textContent: title });
+    const isOn = () => MULTI.has(key) ? state[key].includes(value) : state[key] === value;
+    chip.classList.toggle("on", isOn());
+    chip.onclick = () => {
+      if (MULTI.has(key)) {
+        const set = new Set(state[key]);
+        set.has(value) ? set.size > 1 && set.delete(value) : set.add(value);
+        state[key] = [...set];
+      } else {
+        state[key] = value;
+      }
+      buildPanel(); refresh();
+    };
+    container.append(chip);
+  }
+}
+
+function buildPanel() {
+  chipGroup($("surfaceChips"), "surface", [["widget", "小组件"], ["activity", "实时活动"]]);
+  $("widgetPick").hidden = state.surface !== "widget";
+  $("activityPick").hidden = state.surface !== "activity";
+
+  const wp = $("widgetPick"); wp.innerHTML = "";
+  for (const w of meta.widgets) {
+    wp.append(el("div", { className: "wtitle", textContent: w.title }));
+    const chips = el("div", { className: "chips" });
+    for (const f of w.families) {
+      const id = `${w.kind}:${f}`;
+      const chip = el("button", { className: "chip" + (state.widgets.includes(id) ? " on" : ""), textContent: FAMILY_TITLES[f] });
+      chip.onclick = () => {
+        const set = new Set(state.widgets);
+        set.has(id) ? set.delete(id) : set.add(id);
+        state.widgets = [...set]; buildPanel(); refresh();
+      };
+      chips.append(chip);
+    }
+    wp.append(chips);
+  }
+  const all = el("div", { className: "row chips" }, [
+    el("button", { className: "chip", textContent: "全选", onclick: () => { state.widgets = meta.widgets.flatMap((w) => w.families.map((f) => `${w.kind}:${f}`)); buildPanel(); refresh(); } }),
+    el("button", { className: "chip", textContent: "只看桌面", onclick: () => { state.widgets = meta.widgets.flatMap((w) => w.families.filter((f) => f.startsWith("system")).map((f) => `${w.kind}:${f}`)); buildPanel(); refresh(); } }),
+    el("button", { className: "chip", textContent: "只看锁屏", onclick: () => { state.widgets = meta.widgets.flatMap((w) => w.families.filter((f) => f.startsWith("accessory")).map((f) => `${w.kind}:${f}`)); buildPanel(); refresh(); } }),
+  ]);
+  wp.append(all);
+
+  const ap = $("activityPick"); ap.innerHTML = "";
+  const achips = el("div", { className: "row chips" });
+  for (const part of meta.activityParts) {
+    const chip = el("button", { className: "chip" + (state.activities.includes(part.id) ? " on" : ""), textContent: part.title });
+    chip.onclick = () => {
+      const set = new Set(state.activities);
+      set.has(part.id) ? set.delete(part.id) : set.add(part.id);
+      state.activities = [...set]; buildPanel(); refresh();
+    };
+    achips.append(chip);
+  }
+  ap.append(achips);
+
+  $("intentBox").hidden = state.surface !== "widget";
+  for (const node of document.querySelectorAll("[data-key]")) {
+    const key = node.dataset.key;
+    if (key === "devices") chipGroup(node, key, meta.devices.filter((d) => !OFFLINE || OFFLINE.dims.devices.includes(d.id)).map((d) => [d.id, d.title.replace(/（.*）/, "") + (d.estimated ? "*" : "")]));
+    else chipGroup(node, key, OPTIONS[key]);
+  }
+  $("deviceNote").textContent = "* 18 系列的尺寸不在 Apple 公布的表里，按屏宽推算。";
+  $("tintRow").hidden = state.renderingMode !== "accented";
+
+  const themes = $("themes"); themes.innerHTML = "";
+  for (const t of meta.themes) {
+    const color = t.id === "custom" ? state.customColor : t.color;
+    const sw = el("button", { className: "swatch" + (state.theme === t.id ? " on" : ""), title: t.title });
+    sw.style.background = t.id === "custom" ? `conic-gradient(red, yellow, lime, cyan, blue, magenta, red)` : color;
+    sw.onclick = () => { state.theme = t.id; buildPanel(); refresh(); };
+    themes.append(sw);
+  }
+  $("customRow").hidden = state.theme !== "custom";
+  $("customColor").value = state.customColor;
+  $("tint").value = state.tint;
+
+  const flags = $("displayFlags"); flags.innerHTML = "";
+  for (const [key, title] of DISPLAY_FLAGS) {
+    const box = el("input", { type: "checkbox", checked: state.display[key] });
+    box.onchange = () => { state.display[key] = box.checked; refresh(); };
+    flags.append(el("label", { className: "toggle" }, [box, title]));
+  }
+  for (const box of document.querySelectorAll("[data-bool]")) box.checked = !!state[box.dataset.bool];
+
+  const sel = $("scenario");
+  if (!sel.options.length) for (const s of meta.scenarios) if (!OFFLINE || OFFLINE.dims.scenarios.includes(s.id)) sel.append(el("option", { value: s.id, textContent: s.title }));
+  sel.value = state.scenario;
+  $("scenarioNote").textContent = meta.scenarios.find((s) => s.id === state.scenario)?.detail ?? "";
+  $("date").value = state.date || meta.defaultDate;
+  $("time").value = state.time;
+  $("tableName").value = state.tableName;
+  $("sourceLabel").value = state.sourceLabel;
+
+  const tp = $("timePresets"); tp.innerHTML = "";
+  for (const p of meta.timePresets) {
+    if (OFFLINE && !OFFLINE.dims.times.includes(p.detail)) continue;
+    tp.append(el("button", { className: "chip" + (state.time === p.detail ? " on" : ""), textContent: `${p.title} ${p.detail}`, onclick: () => { state.time = p.detail; buildPanel(); refresh(); } }));
+  }
+  const dp = $("datePresets"); dp.innerHTML = "";
+  for (const [title, value] of DATE_PRESETS) {
+    dp.append(el("button", { className: "chip", textContent: title, onclick: () => { state.date = resolveDate(value); buildPanel(); refresh(); } }));
+  }
+
+  const dims = $("matrixDims"); dims.innerHTML = "";
+  for (const [key, title] of [["schemes", "深浅色"], ["intent", "编辑小组件选项"], ["times", "快捷时刻"], ["devices", "全部设备"], ["scenarios", "全部课表"], ["themes", "全部主题色"], ["modes", "渲染模式"]]) {
+    if (OFFLINE && !OFFLINE_DIMS.includes(key)) continue;
+    const box = el("input", { type: "checkbox", checked: state.matrixDims.includes(key) });
+    box.onchange = () => { const set = new Set(state.matrixDims); box.checked ? set.add(key) : set.delete(key); state.matrixDims = [...set]; updateMatrixCount(); saveHash(); };
+    dims.append(el("label", { className: "toggle" }, [box, title]));
+  }
+  updateMatrixCount();
+  $("payloadNote").textContent = state.payload ? "正在使用自定义 payload。" : "";
+}
+
+function resolveDate(value) {
+  const base = new Date((state.date || meta.defaultDate) + "T12:00:00+08:00");
+  const fmt = (d) => new Date(d.getTime() + 8 * 3600e3).toISOString().slice(0, 10);
+  if (value === null) return meta.today;
+  if (value === "monday" || value === "saturday") {
+    const day = (base.getUTCDay() + 6) % 7; // 0 = 周一
+    const target = value === "monday" ? 0 : 5;
+    return fmt(new Date(base.getTime() + (target - day) * 86400e3));
+  }
+  return value;
+}
+
+function bindInputs() {
+  $("scenario").onchange = (e) => { state.scenario = e.target.value; buildPanel(); refresh(); };
+  $("date").onchange = (e) => { state.date = e.target.value; refresh(); };
+  $("time").onchange = (e) => { state.time = e.target.value; buildPanel(); refresh(); };
+  for (const id of ["tableName", "sourceLabel"]) {
+    let timer; $(id).oninput = (e) => { state[id] = e.target.value; clearTimeout(timer); timer = setTimeout(refresh, 300); };
+  }
+  $("customColor").oninput = (e) => { state.customColor = e.target.value; debounceRefresh(); };
+  $("tint").oninput = (e) => { state.tint = e.target.value; debounceRefresh(); };
+  for (const box of document.querySelectorAll("[data-bool]")) box.onchange = () => { state[box.dataset.bool] = box.checked; refresh(); };
+  $("zoom").oninput = (e) => { zoom = e.target.value / 100; document.querySelectorAll(".stage img").forEach(sizeImage); };
+  $("copyLink").onclick = async () => { saveHash(); try { await navigator.clipboard.writeText(location.href); status("已复制链接"); } catch { status(location.href); } };
+  $("loadPayload").onclick = async () => {
+    const res = await fetch("/api/payload?j=" + b64url(JSON.stringify(baseJob())));
+    $("payload").value = await res.text();
+  };
+  $("usePayload").onclick = () => {
+    try { state.payload = JSON.parse($("payload").value); $("payloadNote").textContent = "正在使用自定义 payload。"; refresh(); }
+    catch (e) { $("payloadNote").textContent = "JSON 有误：" + e.message; }
+  };
+  $("clearPayload").onclick = () => { state.payload = null; $("payloadNote").textContent = ""; refresh(); };
+  $("runMatrix").onclick = () => { mode = "matrix"; refresh(); };
+  $("backToLive").onclick = () => { mode = "live"; refresh(); };
+}
+
+let debounceTimer;
+function debounceRefresh() { clearTimeout(debounceTimer); debounceTimer = setTimeout(refresh, 250); }
+
+// ---------- 任务 ----------
+
+function baseJob() {
+  const job = {
+    afterClass: state.afterClass, courseCount: state.courseCount,
+    theme: state.theme, customColor: state.theme === "custom" ? state.customColor : null, solid: state.solid,
+    display: state.display, scheme: state.schemes[0], tint: state.tint, device: state.devices[0],
+    scenario: state.scenario, date: state.date || meta.defaultDate, time: state.time, state: state.state,
+    tableName: state.tableName, sourceLabel: state.sourceLabel, persistent: state.persistent, companion: state.companion,
+  };
+  if (state.renderingMode !== "auto") job.renderingMode = state.renderingMode;
+  if (state.layout !== "auto") job.layout = state.layout;
+  if (state.payload) job.payload = state.payload;
+  return job;
+}
+
+function surfaceJobs() {
+  if (state.surface === "activity") return state.activities.map((a) => ({ surface: "activity", activity: a }));
+  return state.widgets.map((id) => { const [kind, family] = id.split(":"); return { surface: "widget", kind, family }; });
+}
+
+function surfaceTitle(job) {
+  if (job.surface === "activity") return meta.activityParts.find((p) => p.id === job.activity)?.title ?? job.activity;
+  return `${meta.widgets.find((w) => w.kind === job.kind)?.title} · ${FAMILY_TITLES[job.family]}`;
+}
+
+/// 这个画面「编辑小组件」里真有的选项组合；没有的维度不展开，免得出一堆一样的图。
+function intentVariants(job) {
+  if (job.surface !== "widget") return [{}];
+  const layouts = [{ layout: "timeline" }, { layout: "list" }];
+  if (job.kind === "twoday") return layouts;
+  const after = OPTIONS.afterClass.map(([v]) => ({ afterClass: v }));
+  if (job.kind === "upcoming" && job.family === "systemSmall") return after.flatMap((a) => OPTIONS.courseCount.map(([c]) => ({ ...a, courseCount: c })));
+  if (job.kind === "today" && job.family === "systemLarge") return after.flatMap((a) => layouts.map((l) => ({ ...a, ...l })));
+  return after;
+}
+
+/// 有「显示方式」的画面才有值；没选就是这个小组件的默认。和 batch.py 的 layout_of 一致。
+function layoutOf(job) {
+  if (job.kind === "twoday") return job.layout || "list";
+  if (job.kind === "today" && job.family === "systemLarge") return job.layout || "timeline";
+  return null;
+}
+
+function describe(job) {
+  const parts = [];
+  if (state.schemes.length > 1 || mode === "matrix") parts.push(job.scheme === "dark" ? "深色" : "浅色");
+  if (state.devices.length > 1 || mode === "matrix") parts.push(meta.devices.find((d) => d.id === job.device)?.title.replace(/（.*）/, ""));
+  if (mode === "matrix") {
+    if (job.surface === "widget") {
+      if (job.kind !== "twoday") parts.push(OPTIONS.afterClass.find(([v]) => v === job.afterClass)[1]);
+      if (job.kind === "upcoming" && job.family === "systemSmall") parts.push(job.courseCount === 2 ? "两节" : "一节");
+      const layout = layoutOf(job);
+      if (layout) parts.push(layout === "list" ? "列表" : "时间线");
+    }
+    parts.push(job.time);
+  }
+  return parts.filter(Boolean).join(" · ");
+}
+
+function liveGroups() {
+  const groups = [];
+  for (const surface of surfaceJobs()) {
+    const jobs = [];
+    for (const device of state.devices) for (const scheme of state.schemes) jobs.push({ ...baseJob(), ...surface, device, scheme });
+    groups.push({ title: surfaceTitle(surface), jobs });
+  }
+  return groups;
+}
+
+function matrixGroups() {
+  const dims = new Set(state.matrixDims);
+  const schemes = dims.has("schemes") ? ["light", "dark"] : state.schemes;
+  const devices = dims.has("devices") ? (OFFLINE ? OFFLINE.dims.devices : meta.devices.map((d) => d.id)) : state.devices;
+  const times = dims.has("times") ? (OFFLINE ? OFFLINE.dims.times : meta.timePresets.map((p) => p.detail)) : [state.time];
+  const scenarios = dims.has("scenarios") ? (OFFLINE ? OFFLINE.dims.scenarios : meta.scenarios.map((s) => s.id)) : [state.scenario];
+  const themes = dims.has("themes") ? meta.themes.filter((t) => t.id !== "custom").map((t) => t.id) : [state.theme];
+  const groups = [];
+  for (const surface of surfaceJobs()) {
+    const modes = dims.has("modes")
+      ? (surface.surface === "activity" ? [null] : surface.family.startsWith("accessory") ? ["vibrant", "fullColor"] : ["fullColor", "accented"])
+      : [state.renderingMode === "auto" ? null : state.renderingMode];
+    const intents = dims.has("intent") ? intentVariants(surface) : [{}];
+    for (const scenario of scenarios) for (const theme of themes) {
+      const jobs = [];
+      for (const intent of intents) for (const time of times) for (const device of devices) for (const scheme of schemes) for (const m of modes) {
+        const job = { ...baseJob(), ...surface, ...intent, scenario, theme, time, device, scheme };
+        if (m) job.renderingMode = m; else delete job.renderingMode;
+        jobs.push(job);
+      }
+      const extra = [scenarios.length > 1 && meta.scenarios.find((s) => s.id === scenario).title, themes.length > 1 && meta.themes.find((t) => t.id === theme).title].filter(Boolean);
+      groups.push({ title: [surfaceTitle(surface), ...extra].join(" · "), jobs });
+    }
+  }
+  return groups;
+}
+
+function updateMatrixCount() {
+  if (!meta) return;
+  const saved = mode; mode = "matrix";
+  const count = matrixGroups().reduce((n, g) => n + g.jobs.length, 0);
+  mode = saved;
+  $("matrixNote").innerHTML = `共 ${count} 张` + (count > 400 ? ` <span class="warn">（比较多，渲染要一会儿）</span>` : "");
+}
+
+// ---------- 出图 ----------
+
+function stageClass(job) {
+  if (job.surface === "activity") return job.activity === "lockScreen" ? (job.scheme === "dark" ? "home-dark" : "home-light") : "lock";
+  if (job.family.startsWith("accessory")) return "lock";
+  return job.scheme === "dark" ? "home-dark" : "home-light";
+}
+
+/// 和 batch.py 的 offline_key 一一对应：只取离线版会变的维度，编辑小组件选项只取这个画面真有的。
+function offlineKey(job) {
+  let intent = "";
+  if (job.surface === "widget") {
+    if (job.kind === "twoday") intent = layoutOf(job);
+    else if (job.kind === "upcoming" && job.family === "systemSmall") intent = `${job.afterClass}/${job.courseCount}`;
+    else if (layoutOf(job)) intent = `${job.afterClass}/${layoutOf(job)}`;
+    else intent = job.afterClass;
+  }
+  return [job.surface, job.kind ?? job.activity, job.family ?? "", intent, job.scheme, job.time, job.device, job.scenario].join("|");
+}
+
+function imageURL(job) {
+  if (!OFFLINE) return "/api/render?j=" + b64url(JSON.stringify(job));
+  const index = OFFLINE.index[offlineKey(job)];
+  return index === undefined ? null : "data:image/png;base64," + OFFLINE.images[index];
+}
+
+function sizeImage(img) {
+  if (!img.naturalWidth) return;
+  const scale = Number(img.dataset.scale);
+  img.style.width = (img.naturalWidth / scale) * zoom + "px";
+}
+
+let generation = 0;
+function refresh() {
+  saveHash();
+  const gen = ++generation;
+  const groups = mode === "matrix" ? matrixGroups() : liveGroups();
+  $("backToLive").hidden = mode !== "matrix";
+  const board = $("board"); board.innerHTML = "";
+  board.classList.toggle("flow", mode === "live");
+  let total = 0, done = 0;
+  for (const group of groups) {
+    const cards = el("div", { className: "cards" });
+    board.append(el("div", { className: "group" }, [el("h2", { textContent: group.title }), cards]));
+    for (const job of group.jobs) {
+      total++;
+      const device = meta.devices.find((d) => d.id === job.device);
+      const url = imageURL(job);
+      if (!url) {
+        const stage = el("div", { className: "stage " + stageClass(job) }, [el("div", { className: "missing", textContent: "这个组合没有导出" })]);
+        cards.append(el("div", { className: "card" }, [stage, el("div", { className: "meta" }, [el("span", { textContent: describe(job) || " " })])]));
+        continue;
+      }
+      const img = el("img", { loading: "lazy", alt: surfaceTitle(job) });
+      img.dataset.scale = OFFLINE ? OFFLINE.scale : device.scale;
+      img.onload = () => { sizeImage(img); if (gen === generation) status(`${++done}/${total}`); };
+      img.onerror = async () => {
+        const text = await fetch(url).then((r) => r.text()).catch(() => "画廊服务没响应");
+        img.replaceWith(el("div", { className: "err", textContent: text }));
+      };
+      img.src = url;
+      const stage = el("div", { className: "stage " + stageClass(job) }, [img]);
+      const name = `${job.kind ?? job.activity}-${job.family ?? ""}-${job.scheme}-${job.device}-${job.time}`.replace(/[:]/g, "") + ".png";
+      const metaRow = el("div", { className: "meta" }, [
+        el("span", { textContent: describe(job) || " " }),
+        el("a", { href: url, download: name, textContent: "PNG" }),
+      ]);
+      cards.append(el("div", { className: "card" }, [stage, metaRow]));
+    }
+  }
+  status(total ? `0/${total}` : groups.length ? "这些组合都没有导出" : "左边还没选画面");
+  updateMatrixCount();
+}
+
+function status(text) { $("status").textContent = text; }
+
+/// 离线版：灰掉导出时固定住的设置，已选的值收到导出过的范围里。
+function applyOffline() {
+  document.body.classList.add("offline");
+  document.title += "（离线版）";
+  const banner = $("offlineBanner");
+  banner.hidden = false;
+  banner.textContent = `离线版 · 日期 ${OFFLINE.date} · 共 ${Object.keys(OFFLINE.index).length} 种组合。` +
+    "灰掉的设置在导出时已固定为默认值，要改请在本机运行 scripts/widget-gallery.sh。";
+  Object.assign(state, OFFLINE.fixed);
+  const keep = (values, allowed) => { const kept = values.filter((v) => allowed.includes(v)); return kept.length ? kept : [allowed[0]]; };
+  state.devices = keep(state.devices, OFFLINE.dims.devices);
+  state.schemes = keep(state.schemes, OFFLINE.dims.schemes);
+  if (!OFFLINE.dims.times.includes(state.time)) state.time = OFFLINE.dims.times[0];
+  if (!OFFLINE.dims.scenarios.includes(state.scenario)) state.scenario = OFFLINE.dims.scenarios[0];
+  state.date = OFFLINE.date;
+  state.matrixDims = state.matrixDims.filter((d) => OFFLINE_DIMS.includes(d));
+}
+
+async function start() {
+  loadHash();
+  if (OFFLINE) {
+    meta = OFFLINE.meta;
+    applyOffline();
+  } else {
+    try {
+      meta = await fetch("/api/meta").then((r) => r.json());
+    } catch {
+      status("连不上画廊服务。先运行 scripts/widget-gallery.sh"); return;
+    }
+  }
+  for (const f of meta.families) FAMILY_TITLES[f.id] = f.title;
+  buildPanel(); bindInputs(); refresh();
+}
+start();
+</script>
+</body>
+</html>
