@@ -112,12 +112,8 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
     var showTime: Bool
     /// 日期栏里的农历日期。
     var showLunarDate: Bool
-    /// 节日与法定假期提示。
+    /// 节日徽标与休息时的假期倒计时。
     var showHoliday: Bool
-    /// 最近的节假日常驻在日期栏右侧，而不是只在今天课上完之后才出现。
-    var holidayAlwaysVisible: Bool
-    /// 今天的课上完之后，小组件拿空出来的位置显示什么。
-    var afterClass: ScheduleWidgetAfterClassStyle
 
     static let `default` = ScheduleWidgetDisplayOptions(
         showCourseName: true,
@@ -125,9 +121,7 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
         showTeacher: true,
         showTime: true,
         showLunarDate: true,
-        showHoliday: true,
-        holidayAlwaysVisible: true,
-        afterClass: .tomorrow
+        showHoliday: true
     )
 
     init(
@@ -136,9 +130,7 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
         showTeacher: Bool,
         showTime: Bool,
         showLunarDate: Bool = true,
-        showHoliday: Bool = true,
-        holidayAlwaysVisible: Bool = true,
-        afterClass: ScheduleWidgetAfterClassStyle = .tomorrow
+        showHoliday: Bool = true
     ) {
         self.showCourseName = showCourseName
         self.showRoom = showRoom
@@ -146,11 +138,9 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
         self.showTime = showTime
         self.showLunarDate = showLunarDate
         self.showHoliday = showHoliday
-        self.holidayAlwaysVisible = holidayAlwaysVisible
-        self.afterClass = afterClass
     }
 
-    /// 旧版本写进 App Group 的 JSON 没有农历、节假日和课后显示字段。缺字段时按默认值补齐，
+    /// 旧版本写进 App Group 的 JSON 没有农历和节假日字段。缺字段时按默认值补齐，
     /// 否则整份显示设置会解码失败、把用户已经关掉的开关又打开。
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -160,9 +150,7 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
             showTeacher: try values.decodeIfPresent(Bool.self, forKey: .showTeacher) ?? true,
             showTime: try values.decodeIfPresent(Bool.self, forKey: .showTime) ?? true,
             showLunarDate: try values.decodeIfPresent(Bool.self, forKey: .showLunarDate) ?? true,
-            showHoliday: try values.decodeIfPresent(Bool.self, forKey: .showHoliday) ?? true,
-            holidayAlwaysVisible: try values.decodeIfPresent(Bool.self, forKey: .holidayAlwaysVisible) ?? true,
-            afterClass: try values.decodeIfPresent(ScheduleWidgetAfterClassStyle.self, forKey: .afterClass) ?? .tomorrow
+            showHoliday: try values.decodeIfPresent(Bool.self, forKey: .showHoliday) ?? true
         )
     }
 
@@ -181,12 +169,6 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
         return values.isEmpty ? nil : values.joined(separator: " · ")
     }
 
-    /// 今天没有未结束的课程时，`.none` 之外的两种模式会接管那块空间。
-    var showsAfterClassPreview: Bool { afterClass != .none }
-
-    /// 日期栏右侧是否常驻显示最近的节假日。关掉节假日提示时一并关掉。
-    var showsResidentHoliday: Bool { showHoliday && holidayAlwaysVisible }
-
     func primaryValue(for course: WidgetCourse) -> String? {
         if showCourseName { return course.displayName }
         if showRoom { return course.normalizedLocation }
@@ -197,25 +179,20 @@ struct ScheduleWidgetDisplayOptions: Codable, Equatable {
 }
 
 /// 今天的课上完之后小组件显示什么。在每个小组件的「编辑小组件」里单独选；
-/// 两日课表本来就带明天，不受这个设置影响。
+/// 两日课表本来就带明天，不受这个设置影响。规则同 CpuTime 的 docs/schedule-widget-rules.md。
 enum ScheduleWidgetAfterClassStyle: String, Codable, CaseIterable, Identifiable, Sendable {
-    /// 保持原来的「今天没有课程」。
-    case none
-    /// 明天的课程，灰色显示；明天也没课时退回最近的节假日。
-    case tomorrow
-    /// 最近的一段法定假期。
-    case holiday
-    /// 换成最近一个有课的日期（三周之内）的课：日期栏照旧是今天，标上「明天的课」「10/2 的课」，课程压暗；三周内都没课时退回最近的节假日。
+    /// 换成最近一个有课的日期（三周之内）的课：日期栏照旧是今天，标上「明天的课」「10/2 的课」，
+    /// 课程照常上色；三周内都没课时显示休息状态。
     case nextCourseDay
+    /// 停在今天：今日课表把上完的课灰着留在原处，其余显示休息状态。
+    case todayOnly
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .none: return "不显示其他内容"
-        case .tomorrow: return "显示明日课程"
-        case .holiday: return "显示最近的节假日"
-        case .nextCourseDay: return "显示下一个有课日"
+        case .nextCourseDay: return "接着显示下一次课"
+        case .todayOnly: return "只看今天"
         }
     }
 }

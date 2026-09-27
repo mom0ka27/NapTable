@@ -60,7 +60,13 @@ struct WidgetCourse: Codable, Identifiable, Equatable {
         return 0
     }
 
-    var hasUsableStartTime: Bool { Self.minutes(startTime) != nil }
+    var startMinutes: Int? { Self.minutes(startTime) }
+    var hasUsableStartTime: Bool { startMinutes != nil }
+
+    func isInProgress(at minutes: Int) -> Bool {
+        guard let start = startMinutes else { return false }
+        return start <= minutes && !hasEnded(at: minutes)
+    }
 
     func hasEnded(at minutes: Int) -> Bool {
         endMinutes > 0 && endMinutes < minutes
@@ -147,7 +153,7 @@ struct WidgetDay: Codable, Identifiable, Equatable {
     }
 
     static func empty(date: String, offset: Int) -> WidgetDay {
-        let target = Calendar.current.date(byAdding: .day, value: offset, to: .now) ?? .now
+        let target = Calendar.current.date(byAdding: .day, value: offset, to: WidgetClock.now) ?? WidgetClock.now
         let weekday = Calendar.current.component(.weekday, from: target)
         let day = weekday == 1 ? 7 : weekday - 1
         let labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -204,16 +210,10 @@ struct WidgetSchedulePayload: Codable, Equatable {
         return nil
     }
 
-    /// 明天那一天；不在已同步的周次里就返回 `nil`。
-    func tomorrow(now: Date = .now) -> WidgetDay? {
-        guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: 1, to: now) else { return nil }
-        return knownDay(for: Self.dateString(date))
-    }
-
     func day(for date: String, fallbackOffset: Int) -> WidgetDay {
         if fallbackOffset == 0, today?.date == date, let today { return today }
         if let exact = (days ?? []).first(where: { $0.date == date }) { return exact }
-        let targetDay = Calendar.current.component(.weekday, from: Calendar.current.date(byAdding: .day, value: fallbackOffset, to: .now) ?? .now)
+        let targetDay = Calendar.current.component(.weekday, from: Calendar.current.date(byAdding: .day, value: fallbackOffset, to: WidgetClock.now) ?? WidgetClock.now)
         let mondayBasedDay = targetDay == 1 ? 7 : targetDay - 1
         return (days ?? []).first(where: { $0.day == mondayBasedDay })
             ?? (fallbackOffset == 0 ? today : nil)
@@ -222,16 +222,17 @@ struct WidgetSchedulePayload: Codable, Equatable {
 
     /// Widgets stay on the current date. A finished school day shows an empty
     /// state rather than rolling forward to a later day's classes.
-    func currentDay(now: Date = .now) -> WidgetDay {
+    func currentDay(now: Date = WidgetClock.now) -> WidgetDay {
         fullDay(for: Self.dateString(now), fallbackOffset: 0)
     }
 
     /// Today's classes that have not finished yet, at most two. With
     /// `.nextCourseDay` a finished day rolls forward to the nearest day that
-    /// has classes, and shows that day's first two.
+    /// has classes, and shows that day's first two. Nothing left is today
+    /// with an empty list, which the widget shows as the rest state.
     func upcoming(
-        now: Date = .now,
-        afterClass: ScheduleWidgetAfterClassStyle = .tomorrow
+        now: Date = WidgetClock.now,
+        afterClass: ScheduleWidgetAfterClassStyle = .nextCourseDay
     ) -> (WidgetDay, [WidgetCourse]) {
         let day = currentDay(now: now)
         let courses = remainingCourses(in: day, now: now)
@@ -242,7 +243,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
     }
 
     /// 今天还没上完的课（包括没有具体时间、没法判断的）。
-    func remainingCourses(in day: WidgetDay, now: Date = .now) -> [WidgetCourse] {
+    func remainingCourses(in day: WidgetDay, now: Date = WidgetClock.now) -> [WidgetCourse] {
         let minutes = Self.minutesSinceMidnight(now)
         return day.courseList.filter {
             $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
@@ -250,7 +251,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
     }
 
     /// 今天之后三周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
-    func nextCourseDay(after now: Date = .now) -> (day: WidgetDay, offset: Int)? {
+    func nextCourseDay(after now: Date = WidgetClock.now) -> (day: WidgetDay, offset: Int)? {
         for offset in 1...Self.lookaheadDays {
             guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: offset, to: now),
                   let day = knownDay(for: Self.dateString(date)),

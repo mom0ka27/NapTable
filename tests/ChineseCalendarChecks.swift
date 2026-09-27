@@ -36,22 +36,15 @@ struct ChineseCalendarChecks {
         expect(eve.festivals.first == "除夕", "除夕节日")
         expect(eve.holiday == "春节", "除夕放假")
 
-        // 今天没课时那句问候：法定假日 > 周末 > 工作日（无问候）
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-25") == "中秋快乐～", "中秋当天的问候")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-10-01") == "国庆快乐～", "国庆当天的问候")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-19") == "周末快乐～", "周六的问候")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-20") == "周末快乐～", "周日的问候")
+        // 今天没课时那句问候：只有法定假日道贺，周末和工作日都交给调用方说「今日无课」
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-25") == "中秋快乐", "中秋当天的问候")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-10-01") == "国庆快乐", "国庆当天的问候")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-19") == nil, "周六不道「周末快乐」")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-20") == nil, "周日不道「周末快乐」")
         expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-18") == nil, "普通工作日不道喜")
-        // 调休：周末排了课就不道「周末快乐」
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-19", hasCourses: true) == nil, "周六调休上课不道喜")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-20", hasCourses: true) == nil, "周日调休上课不道喜")
-        expect(
-            ChineseCalendarInfo.restGreeting(forDate: "2026-09-25", hasCourses: true) == "中秋快乐～",
-            "法定假日照旧道贺"
-        )
         // 清明也是周日，假期优先，且不说「快乐」
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-04-05") == "清明安康～", "清明的问候")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-06-19") == "端午安康～", "端午说安康")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-04-05") == "清明安康", "清明的问候")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-06-19") == "端午安康", "端午说安康")
 
         // 法定假期区间：春节自除夕起 4 天
         expect(day("2026-02-19").holiday == "春节", "正月初三放假")
@@ -120,8 +113,8 @@ struct ChineseCalendarChecks {
         ChineseCalendarInfo.usePublishedHolidays(published)
 
         expect(day("2026-09-26").holiday == "中秋节", "中秋连休的周六")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-26") == "中秋快乐～", "连休里的周末道节日的贺")
-        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-10-04") == "国庆快乐～", "国庆连休的周日")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-09-26") == "中秋快乐", "连休里的周末道节日的贺")
+        expect(ChineseCalendarInfo.restGreeting(forDate: "2026-10-04") == "国庆快乐", "国庆连休的周日")
         expect(day("2026-10-07").holiday == "国庆节" && day("2026-10-08").holiday == nil, "国庆放到 10.7")
         expect(day("2026-02-23").holiday == "春节" && day("2026-02-24").holiday == nil, "春节按安排放九天")
         expect(countdown("2026-09-17").dateLabel == "9.25 - 9.27 · 休 3 天", "中秋连休三天")
@@ -149,11 +142,12 @@ struct ChineseCalendarChecks {
         let decoded = try! JSONDecoder().decode(ScheduleWidgetDisplayOptions.self, from: legacy)
         expect(!decoded.showRoom && !decoded.showTeacher, "旧设置里的开关要保留")
         expect(decoded.showLunarDate && decoded.showHoliday, "新开关缺字段时用默认值")
-        expect(decoded.afterClass == .tomorrow && decoded.showsAfterClassPreview, "课后显示默认是明天的课程")
-        expect(decoded.holidayAlwaysVisible && decoded.showsResidentHoliday, "节假日常驻默认开启")
-        var holidayOff = decoded
-        holidayOff.showHoliday = false
-        expect(!holidayOff.showsResidentHoliday, "关掉节假日提示后常驻也不生效")
+        // 旧版本还存着已经去掉的「课后显示」「节假日常驻」，解码时忽略
+        let removedFields = Data("""
+        {"showCourseName":true,"showRoom":true,"showTeacher":true,"showTime":true,"showHoliday":false,"holidayAlwaysVisible":true,"afterClass":"tomorrow"}
+        """.utf8)
+        let withRemoved = try! JSONDecoder().decode(ScheduleWidgetDisplayOptions.self, from: removedFields)
+        expect(!withRemoved.showHoliday, "带着旧字段的设置照样解得出来")
 
         // 「明天」跨周：周日晚上的明天在下一周里
         func course(_ name: String) -> WidgetCourse {
@@ -175,8 +169,7 @@ struct ChineseCalendarChecks {
             nextWeekDays: [widgetDay(monday, day: 1, week: 5, courses: [course("有机化学")])]
         )
         let sundayDate = ChineseCalendarInfo.date(fromDate: sunday)!
-        let tomorrow = payload.tomorrow(now: sundayDate)
-        expect(tomorrow?.date == monday, "周日的明天要落到下一周的周一")
+        let tomorrow = payload.knownDay(for: monday)
         expect(tomorrow?.courseList.first?.displayName == "有机化学", "跨周取到的是下一周的课")
         expect(payload.knownDay(for: "2026-09-28") == nil, "没同步到的日期返回 nil")
 
@@ -203,14 +196,19 @@ struct ChineseCalendarChecks {
             nextWeekDays: nil
         )
         expect(!schoolDay.upcoming(now: moment(thursday, hour: 8)).1.isEmpty, "上课时间还有课")
-        expect(schoolDay.upcoming(now: moment(thursday, hour: 18)).1.isEmpty, "放学后今天没有剩余课程")
-        expect(schoolDay.tomorrow(now: moment(thursday, hour: 18))?.date == friday, "放学后能取到明天")
+        expect(schoolDay.remainingCourses(in: schoolDay.currentDay(now: moment(thursday, hour: 18)), now: moment(thursday, hour: 18)).isEmpty, "放学后今天没有剩余课程")
+        expect(schoolDay.knownDay(for: friday) != nil, "放学后能取到明天")
 
-        // 「最近有课的一天」：放学后换到下一个有课的日期，中间空着的日子跳过
+        // 「接着显示下一次课」：放学后换到下一个有课的日期，中间空着的日子跳过
         let afterSchool = moment(thursday, hour: 18)
-        let rolled = schoolDay.upcoming(now: afterSchool, afterClass: .nextCourseDay)
-        expect(rolled.0.date == friday && rolled.1.first?.displayName == "有机化学", "放学后临近课程换到明天的课")
-        expect(schoolDay.upcoming(now: afterSchool, afterClass: .tomorrow).1.isEmpty, "其他选项放学后不换日子")
+        let rolled = schoolDay.upcoming(now: afterSchool)
+        expect(rolled.0.date == friday && rolled.1.first?.displayName == "有机化学", "放学后临近课程默认换到明天的课")
+        let stayed = schoolDay.upcoming(now: afterSchool, afterClass: .todayOnly)
+        expect(stayed.0.date == thursday && stayed.1.isEmpty, "「只看今天」放学后不换日子")
+        // 中号两栏的标题靠它区分「当前」和「下一节」
+        let first = course("药剂学")
+        expect(first.isInProgress(at: 8 * 60 + 30), "上课中")
+        expect(!first.isInProgress(at: 7 * 60 + 50) && !first.isInProgress(at: 10 * 60), "课前、课后都不算上课中")
         expect(schoolDay.nextCourseDay(after: moment(thursday, hour: 8))?.day.date == friday, "两日课表右边是今天之后最近有课的一天")
         expect(payload.nextCourseDay(after: sundayDate)?.day.date == monday, "最近有课的一天可以跨到下一周")
         let quietWeek = WidgetSchedulePayload(
@@ -236,7 +234,8 @@ struct ChineseCalendarChecks {
         expect(rolledAfterBreak?.day.date == "2026-09-30" && rolledAfterBreak?.offset == 13, "十三天后的课要找得到")
         expect(longBreak.nextCourseDay(after: moment("2026-09-09", hour: 18))?.offset == 21, "隔了二十一天也要找得到")
         expect(longBreak.nextCourseDay(after: moment("2026-09-08", hour: 18)) == nil, "隔了二十二天就不找了")
-        expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "显示下一个有课日", "新选项的名字")
+        expect(ScheduleWidgetAfterClassStyle(rawValue: "nextCourseDay")?.title == "接着显示下一次课", "默认选项的名字")
+        expect(ScheduleWidgetAfterClassStyle.allCases == [.nextCourseDay, .todayOnly], "课后只剩两个选项")
 
         // 旧 payload 没有 nextWeekDays，解码后应为 nil 而不是失败
         let legacyPayload = Data("""
@@ -244,7 +243,7 @@ struct ChineseCalendarChecks {
         """.utf8)
         let restored = try! JSONDecoder().decode(WidgetSchedulePayload.self, from: legacyPayload)
         expect(restored.nextWeekDays == nil && restored.currentWeek == 4, "旧 payload 仍可解码")
-        expect(restored.tomorrow(now: sundayDate) == nil, "旧 payload 查不到明天")
+        expect(restored.knownDay(for: monday) == nil, "旧 payload 查不到明天")
 
         print("ok")
     }

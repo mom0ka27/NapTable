@@ -38,8 +38,6 @@ final class NativeWidgetSettings: ObservableObject {
         var showTime: Bool
         var showLunarDate: Bool
         var showHoliday: Bool
-        var holidayAlwaysVisible: Bool
-        var afterClass: ScheduleWidgetAfterClassStyle
 
         static let `default` = WidgetDisplayOptions(
             showCourseName: true,
@@ -47,9 +45,7 @@ final class NativeWidgetSettings: ObservableObject {
             showTeacher: true,
             showTime: true,
             showLunarDate: true,
-            showHoliday: true,
-            holidayAlwaysVisible: true,
-            afterClass: .tomorrow
+            showHoliday: true
         )
 
         init(
@@ -58,9 +54,7 @@ final class NativeWidgetSettings: ObservableObject {
             showTeacher: Bool,
             showTime: Bool,
             showLunarDate: Bool = true,
-            showHoliday: Bool = true,
-            holidayAlwaysVisible: Bool = true,
-            afterClass: ScheduleWidgetAfterClassStyle = .tomorrow
+            showHoliday: Bool = true
         ) {
             self.showCourseName = showCourseName
             self.showRoom = showRoom
@@ -68,8 +62,6 @@ final class NativeWidgetSettings: ObservableObject {
             self.showTime = showTime
             self.showLunarDate = showLunarDate
             self.showHoliday = showHoliday
-            self.holidayAlwaysVisible = holidayAlwaysVisible
-            self.afterClass = afterClass
         }
 
         init(_ value: ScheduleWidgetDisplayOptions) {
@@ -79,9 +71,7 @@ final class NativeWidgetSettings: ObservableObject {
                 showTeacher: value.showTeacher,
                 showTime: value.showTime,
                 showLunarDate: value.showLunarDate,
-                showHoliday: value.showHoliday,
-                holidayAlwaysVisible: value.holidayAlwaysVisible,
-                afterClass: value.afterClass
+                showHoliday: value.showHoliday
             )
         }
 
@@ -92,9 +82,7 @@ final class NativeWidgetSettings: ObservableObject {
                 showTeacher: showTeacher,
                 showTime: showTime,
                 showLunarDate: showLunarDate,
-                showHoliday: showHoliday,
-                holidayAlwaysVisible: holidayAlwaysVisible,
-                afterClass: afterClass
+                showHoliday: showHoliday
             )
         }
     }

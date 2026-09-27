@@ -343,12 +343,10 @@ struct WidgetSettingsScreen: View {
             Section {
                 Toggle("农历日期", isOn: optionBinding(\.showLunarDate))
                 Toggle("节假日提示", isOn: optionBinding(\.showHoliday))
-            Toggle("始终显示最近节假日", isOn: optionBinding(\.holidayAlwaysVisible))
-                .disabled(!settings.options.showHoliday)
             } header: {
                 Text("日期信息")
             } footer: {
-                Text("仅标注法定节假日与传统节日。调休安排由学校配置提供，并直接体现在课表与小组件中。")
+                Text("仅标注法定节假日与传统节日，没课时显示最近假期的倒计时。调休安排由学校配置提供，并直接体现在课表与小组件中。")
             }
         }
         .navigationTitle("桌面小组件")

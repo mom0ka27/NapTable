@@ -7,6 +7,7 @@ swiftc -swift-version 5 \
     "$repo_dir/WidgetCore/ChineseCalendar.swift" \
     "$repo_dir/WidgetCore/WidgetConfiguration.swift" \
     "$repo_dir/WidgetCore/WidgetScheduleModels.swift" \
+    "$repo_dir/WidgetCore/WidgetClock.swift" \
     "$repo_dir/tests/ChineseCalendarChecks.swift" \
     -o "$check_dir/checks"
 "$check_dir/checks"
