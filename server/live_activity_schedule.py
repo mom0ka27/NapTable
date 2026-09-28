@@ -67,6 +67,15 @@ def _periods(value):
     return result
 
 
+def merge_adjustments(unified, own):
+    """`AppStore.merge`: the server's 统一安排 wins where it has an entry, and
+    the table's own (imported or frozen with a share) fills the rest."""
+    if not unified:
+        return list(own)
+    covered = {item.get("date") for item in unified}
+    return [item for item in own if item.get("date") not in covered] + list(unified)
+
+
 def _adjustments(value):
     """`date -> (sourceDay, sourceWeek date)` like `CalendarAdjustmentResolver`:
     `off` and a swap's consumed source day map to None (no classes)."""
@@ -209,11 +218,17 @@ def share_table(row):
         monday = date.fromisoformat(row["semester_start_monday"])
     except (TypeError, ValueError):
         return None, {}
-    adjustments = {}
+    # The frozen snapshot fills what the server's 统一安排 does not cover, the
+    # same merge the reader's own table does (`AppStore.calendarAdjustments`).
+    # A share carries no unified-holiday switch, so it follows the server.
+    unified = row["unified_adjustments_json"] if "unified_adjustments_json" in row.keys() else "[]"
     try:
-        adjustments = _adjustments([{key: item[key] for key in ("date", "kind", "source") if key in item}
-                                    for item in json.loads(row["adjustments_json"] or "[]")])
-    except (ProtocolError, TypeError, KeyError):
+        own_adjustments = [{key: item[key] for key in ("date", "kind", "source") if key in item}
+                           for item in json.loads(row["adjustments_json"] or "[]")]
+        try: own_adjustments = merge_adjustments(json.loads(unified or "[]"), own_adjustments)
+        except (TypeError, ValueError): pass
+        adjustments = _adjustments(own_adjustments)
+    except (ProtocolError, TypeError, KeyError, ValueError):
         adjustments = {}
     rows = json.loads(row["payload_json"] or "[]")
     ids = [_integer(course, "id") or 0 for course in rows]
