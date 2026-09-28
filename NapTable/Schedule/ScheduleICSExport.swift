@@ -8,8 +8,11 @@ enum NativeScheduleICSExporter {
         result: NativeScheduleResult,
         week: NativeCalendarWeek,
         periods: [NativeSchedulePeriod],
-        adjustments: [String: ResolvedCalendarAdjustment] = [:]
+        adjustments: [String: ResolvedCalendarAdjustment] = [:],
+        timeZone: TimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
     ) -> String {
+        // Bell times are the timetable's local clock: written in its own zone.
+        let zone = timeZone
         var lines = [
             "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//NapTable//Schedule//CN",
             "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
@@ -19,7 +22,7 @@ enum NativeScheduleICSExporter {
         for column in 1...7 {
             guard week.days.indices.contains(column - 1) else { continue }
             let dateText = week.days[column - 1]
-            guard let day = parseDate(dateText) else { continue }
+            guard let day = parseDate(dateText, zone: zone) else { continue }
             let adjustment = adjustments[dateText]
             if adjustment?.suppressesCourses == true { continue }
             let sourceDay = adjustment?.sourceDay ?? column
@@ -35,16 +38,16 @@ enum NativeScheduleICSExporter {
                     )
                     guard let startPeriod = periods.first(where: { $0.number == range.start }),
                           let endPeriod = periods.first(where: { $0.number == range.end }),
-                          let start = date(day: day, time: startPeriod.startTime),
-                          let end = date(day: day, time: endPeriod.endTime), end > start else { continue }
+                          let start = date(day: day, time: startPeriod.startTime, zone: zone),
+                          let end = date(day: day, time: endPeriod.endTime, zone: zone), end > start else { continue }
                     let identity = course.nativeId ?? course.sourceKey ?? course.name
                     let uid = "\(week.week)-\(column)-\(range.start)-\(range.end)-\(identity)"
                         .unicodeScalars.map { $0.value < 128 ? String($0) : String(format: "%02X", $0.value) }.joined()
                     lines.append("BEGIN:VEVENT")
                     lines.append("UID:\(escape(uid))@naptable")
-                    lines.append("DTSTAMP:\(format(Date.now))")
-                    lines.append("DTSTART;TZID=Asia/Shanghai:\(format(start))")
-                    lines.append("DTEND;TZID=Asia/Shanghai:\(format(end))")
+                    lines.append("DTSTAMP:\(format(Date.now, zone: TimeZone(identifier: "UTC")!))Z")
+                    lines.append("DTSTART;TZID=\(zone.identifier):\(format(start, zone: zone))")
+                    lines.append("DTEND;TZID=\(zone.identifier):\(format(end, zone: zone))")
                     lines.append("SUMMARY:\(escape(course.name.trimmedNonEmpty ?? "课程"))")
                     if let location = course.location?.trimmedNonEmpty { lines.append("LOCATION:\(escape(location))") }
                     let details = [course.teacher?.trimmedNonEmpty, course.slotNote?.trimmedNonEmpty]
@@ -58,19 +61,19 @@ enum NativeScheduleICSExporter {
         return lines.joined(separator: "\r\n") + "\r\n"
     }
 
-    private static func parseDate(_ value: String) -> Date? {
+    private static func parseDate(_ value: String, zone: TimeZone) -> Date? {
         let parts = value.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        calendar.timeZone = zone
         return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 
-    private static func date(day: Date, time: String) -> Date? {
+    private static func date(day: Date, time: String, zone: TimeZone) -> Date? {
         let parts = time.split(separator: ":").compactMap { Int($0) }
         guard parts.count >= 2 else { return nil }
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        calendar.timeZone = zone
         var components = calendar.dateComponents([.year, .month, .day], from: day)
         components.hour = parts[0]
         components.minute = parts[1]
@@ -78,11 +81,11 @@ enum NativeScheduleICSExporter {
         return calendar.date(from: components)
     }
 
-    private static func format(_ value: Date) -> String {
+    private static func format(_ value: Date, zone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.timeZone = zone
         formatter.dateFormat = "yyyyMMdd'T'HHmmss"
         return formatter.string(from: value)
     }
