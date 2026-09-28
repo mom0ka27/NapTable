@@ -1,5 +1,5 @@
 #!/bin/bash
-# 小组件数据模型：寒暑假、课表过期、刷新边界。只编译 WidgetCore，不需要模拟器。
+# 小组件数据模型：寒暑假、课表过期、时间线条目。只编译 WidgetCore，不需要模拟器。
 set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 check_dir="$(mktemp -d /tmp/naptable-widget-schedule-checks.XXXXXX)"

@@ -101,7 +101,7 @@ scripts/widget-gallery.sh --stop       # 关掉画廊用的模拟器
 ```
 
 - 改了 `scripts/widget-gallery/web/index.html` 后运行 `scripts/widget-gallery.sh --web` 同步进模拟器，刷新浏览器即可，不用重新编译；改 Swift 要重跑脚本。（仓库在「文稿」里时模拟器进程读不到源文件，网页取的是装进 App 的那份。）
-- 视图里的「现在」从 `WidgetClock.now` 读，尺寸从 `\.scheduleWidgetFamily` 读，画廊才能把时刻和尺寸钉住；`tests/check-widget-clock.sh` 会拦住直接用 `Date()` / `\.widgetFamily` 的写法。
+- 小组件视图里的「现在」从 `\.scheduleWidgetNow`（`ScheduleWidgetRoot` 放进环境的 `entry.date`）读，尺寸从 `\.scheduleWidgetFamily` 读：时间线一次排好一整天的条目，每条要按自己的日期画，画廊也是靠条目的日期钉住时刻。实时活动的视图照旧读 `WidgetClock.now`（画廊用 `override` 钉住）。`tests/check-widget-clock.sh` 会拦住直接用 `Date()` / `WidgetClock.now` / `\.widgetFamily` 的写法。
 - 离线版默认只带「普通一周」课表和 iPhone 18 Pro，约 3 MB；加 `--scenarios all` 约 12 MB，再加 `--devices all` 约 47 MB。主题色、显示开关等在离线版里固定为默认值。
 - 系统外观是画廊补画的：小组件背景和圆角、16pt 内边距、锁屏圆形底、染色桌面与锁屏半透明效果、灵动岛外形都是近似值，灵动岛的边距尤其只是经验值。iPhone 18 系列的小组件尺寸不在 Apple 公布的表里，按屏宽推算。
 

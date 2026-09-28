@@ -152,11 +152,12 @@ struct WidgetDay: Codable, Identifiable, Equatable {
         )
     }
 
+    /// 日期写坏了、认不出是星期几时的退路：真实的今天往后数几天。数据正常时用不到。
+    static func brokenDateFallback(offset: Int) -> Date { Calendar.current.date(byAdding: .day, value: offset, to: WidgetClock.now) ?? WidgetClock.now }
+
     static func empty(date: String, offset: Int) -> WidgetDay {
         // 星期几按日期本身算；日期写坏了才退回「现在往后数几天」。
-        let target = ChineseCalendarInfo.date(fromDate: date)
-            ?? Calendar.current.date(byAdding: .day, value: offset, to: WidgetClock.now)
-            ?? WidgetClock.now
+        let target = ChineseCalendarInfo.date(fromDate: date) ?? brokenDateFallback(offset: offset)
         let weekday = ChineseCalendarInfo.gregorian.component(.weekday, from: target)
         let day = weekday == 1 ? 7 : weekday - 1
         let labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -224,6 +225,14 @@ struct WidgetVacation: Equatable {
         default: return .other
         }
     }
+}
+
+/// 见 `WidgetSchedulePayload.timelinePlan(from:)`。
+struct WidgetTimelinePlan: Equatable {
+    /// 每条时间线条目的时刻，从小到大，第一条是现在。
+    let dates: [Date]
+    /// 什么时候再来要一条新的时间线：次日零点。
+    let reload: Date
 }
 
 struct WidgetCourseWindow {
@@ -305,7 +314,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
 
     /// 今天不能照常列课的原因：放假了，或者课表过期（学期内、带日期的数据里却没有今天，
     /// 一般是四周多没打开 App）。两种情况都不显示任何一天的课。
-    func notice(now: Date = WidgetClock.now) -> WidgetScheduleNotice? {
+    func notice(now: Date) -> WidgetScheduleNotice? {
         let date = Self.dateString(now)
         if let vacation = vacation(on: date) { return .vacation(vacation) }
         if hasDatedDays, knownDay(for: date) == nil { return .stale }
@@ -324,7 +333,9 @@ struct WidgetSchedulePayload: Codable, Equatable {
     func day(for date: String, fallbackOffset: Int) -> WidgetDay {
         if fallbackOffset == 0, today?.date == date, let today { return today }
         if let exact = (days ?? []).first(where: { $0.date == date }) { return exact }
-        let targetDay = Calendar.current.component(.weekday, from: Calendar.current.date(byAdding: .day, value: fallbackOffset, to: WidgetClock.now) ?? WidgetClock.now)
+        // 星期几按要找的日期本身算：时间线里零点那一条画的是明天，不能拿真实的「现在」推。
+        let target = ChineseCalendarInfo.date(fromDate: date) ?? WidgetDay.brokenDateFallback(offset: fallbackOffset)
+        let targetDay = ChineseCalendarInfo.gregorian.component(.weekday, from: target)
         let mondayBasedDay = targetDay == 1 ? 7 : targetDay - 1
         return (days ?? []).first(where: { $0.day == mondayBasedDay })
             ?? (fallbackOffset == 0 ? today : nil)
@@ -333,7 +344,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
 
     /// Widgets stay on the current date. A finished school day shows an empty
     /// state rather than rolling forward to a later day's classes.
-    func currentDay(now: Date = WidgetClock.now) -> WidgetDay {
+    func currentDay(now: Date) -> WidgetDay {
         let date = Self.dateString(now)
         // 放假、过期时今天是空的：哪怕数据里恰好有这一天（放假前写的最后一周），也不再列课。
         if notice(now: now) != nil { return .empty(date: date, offset: 0) }
@@ -345,7 +356,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
     /// has classes, and shows that day's first two. Nothing left is today
     /// with an empty list, which the widget shows as the rest state.
     func upcoming(
-        now: Date = WidgetClock.now,
+        now: Date,
         afterClass: ScheduleWidgetAfterClassStyle = .nextCourseDay
     ) -> (WidgetDay, [WidgetCourse]) {
         let day = currentDay(now: now)
@@ -357,7 +368,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
     }
 
     /// 今天还没上完的课（包括没有具体时间、没法判断的）。
-    func remainingCourses(in day: WidgetDay, now: Date = WidgetClock.now) -> [WidgetCourse] {
+    func remainingCourses(in day: WidgetDay, now: Date) -> [WidgetCourse] {
         let minutes = Self.minutesSinceMidnight(now)
         return day.courseList.filter {
             $0.endMinutes >= minutes || (!$0.hasUsableStartTime && $0.endMinutes <= 0)
@@ -365,7 +376,7 @@ struct WidgetSchedulePayload: Codable, Equatable {
     }
 
     /// 今天之后三周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
-    func nextCourseDay(after now: Date = WidgetClock.now) -> (day: WidgetDay, offset: Int)? {
+    func nextCourseDay(after now: Date) -> (day: WidgetDay, offset: Int)? {
         // 放假、过期时显示假期或「打开 App 更新课表」，不往后找课。
         guard notice(now: now) == nil else { return nil }
         for offset in 1...Self.lookaheadDays {
@@ -377,22 +388,45 @@ struct WidgetSchedulePayload: Codable, Equatable {
         return nil
     }
 
-    /// 小组件下一次该刷新的时刻：今天剩下的课程边界里最近的一个（开始或下课）再往后一分钟；
-    /// 都过了（包括放假、课表过期时今天是空的）就是次日零点过一分钟。
-    func nextRefreshBoundary(now: Date) -> Date {
-        let today = currentDay(now: now)
-        let nowMinutes = Self.minutesSinceMidnight(now)
-        let startOfDay = ChineseCalendarInfo.gregorian.startOfDay(for: now)
-        // 开始边界要在现在之后（开始那一分钟已经算上课中）。下课那一分钟里课还算没结束
-        //（`remainingCourses` 用的是 `>=`），所以正在下课的这一分钟也要算，否则会漏掉这次刷新。
-        // 刷新排在边界后一分钟，边界不早于现在这一分钟，刷新时间就一定在将来，不会原地打转。
-        let starts = today.courseList.compactMap(\.startMinutes).filter { $0 > nowMinutes }
-        let ends = today.courseList.map(\.endMinutes).filter { $0 > 0 && $0 >= nowMinutes }
-        // 过了零点日期栏和课都要换成新的一天，不能等兜底的半小时。
-        guard let minutes = (starts + ends).min() else {
-            return startOfDay.addingTimeInterval(TimeInterval((24 * 60 + 1) * 60))
+    /// 小组件的一整条时间线：从 `now` 起画面会变的每个时刻各一条，`reload` 是次日零点。
+    ///
+    /// 画面只在这几种时刻变：一节课开始（那一分钟起算上课中）、一节课下课后一分钟
+    ///（下课那一分钟里课还算没结束，见 `remainingCourses` 的 `>=`）、零点换日（日期栏、假期、
+    /// 过期提示、节日祝福都跟着日期走）。所以一次把今天剩下的边界和零点都排好，
+    /// 系统按条目自己换，不用每个边界回来要一次，一天只花一次刷新预算。
+    ///
+    /// 明天的课程边界也带上：零点那次刷新被系统推迟时，明早上下课照样换得过来。
+    /// 放假、课表过期时这一天是空的，只有现在和零点两条。
+    func timelinePlan(from now: Date) -> WidgetTimelinePlan {
+        let calendar = ChineseCalendarInfo.gregorian
+        let startOfToday = calendar.startOfDay(for: now)
+        let midnight = Self.startOfNextDay(after: now)
+        let startOfDayAfter = Self.startOfNextDay(after: midnight)
+        let today = displayChanges(on: startOfToday, until: midnight, after: now)
+        let tomorrow = displayChanges(on: midnight, until: startOfDayAfter, after: midnight)
+        let dates = Set([now, midnight] + today + tomorrow).sorted()
+        return WidgetTimelinePlan(dates: dates, reload: midnight)
+    }
+
+    /// 某一天里课程开始、下课后一分钟这些时刻，只留 `after` 之后、这一天之内的
+    ///（23:59 下课的那一下就是零点，交给零点那一条）。
+    private func displayChanges(on startOfDay: Date, until endOfDay: Date, after moment: Date) -> [Date] {
+        let day = currentDay(now: startOfDay)
+        let minutes = day.courseList.flatMap { course -> [Int] in
+            let start = course.startMinutes.map { [$0] } ?? []
+            let end = course.endMinutes > 0 ? [course.endMinutes + 1] : []
+            return start + end
         }
-        return startOfDay.addingTimeInterval(TimeInterval((minutes + 1) * 60))
+        return minutes
+            .map { startOfDay.addingTimeInterval(TimeInterval($0 * 60)) }
+            .filter { $0 > moment && $0 < endOfDay }
+    }
+
+    /// `date` 之后的那个零点（按课表的时区）。
+    static func startOfNextDay(after date: Date) -> Date {
+        let calendar = ChineseCalendarInfo.gregorian
+        let start = calendar.startOfDay(for: date)
+        return calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(24 * 60 * 60)
     }
 
     static func dateString(_ date: Date) -> String {

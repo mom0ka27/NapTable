@@ -209,7 +209,7 @@ nonisolated enum ChineseCalendarInfo {
     }
 
     /// 今天不上课时那句问候：法定假日说「中秋快乐」，其余返回 `nil`，调用方改说「今日无课」。
-    static func restGreeting(for date: Date = .now) -> String? {
+    static func restGreeting(for date: Date) -> String? {
         restGreeting(forDate: dateString(date))
     }
 

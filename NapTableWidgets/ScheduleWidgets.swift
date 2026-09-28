@@ -1199,6 +1199,11 @@ private struct ScheduleWidgetNoticeEnvironmentKey: EnvironmentKey {
     static let defaultValue: WidgetScheduleNotice? = nil
 }
 
+private struct ScheduleWidgetNowEnvironmentKey: EnvironmentKey {
+    /// 只有没经过 `ScheduleWidgetRoot` 的视图才会读到这个。
+    static var defaultValue: Date { WidgetClock.now }
+}
+
 private extension EnvironmentValues {
     /// 关掉「纯色模式」时为 `true`：课程按课名分色，和 App 课表一致。
     var scheduleWidgetColorfulCourses: Bool {
@@ -1228,6 +1233,15 @@ private extension EnvironmentValues {
         get { self[ScheduleWidgetNoticeEnvironmentKey.self] }
         set { self[ScheduleWidgetNoticeEnvironmentKey.self] = newValue }
     }
+
+    /// 这一条时间线条目画的是哪一刻：`ScheduleWidgetRoot` 放进来的 `entry.date`。
+    /// 一条时间线里排着一整天的条目，系统提前把每一条都画好，所以小组件的视图只能从这里
+    /// 读「现在」，读真实时间（或全局变量）会让每一条都画成生成时间线的那一刻。
+    /// 预览画廊把要钉的时刻当作条目的日期传进来，照样钉得住。
+    var scheduleWidgetNow: Date {
+        get { self[ScheduleWidgetNowEnvironmentKey.self] }
+        set { self[ScheduleWidgetNowEnvironmentKey.self] = newValue }
+    }
 }
 
 private struct ScheduleWidgetRoot<Content: View>: View {
@@ -1247,7 +1261,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
             switch entry.state {
             case .loaded(let payload):
                 content(payload)
-                    .environment(\.scheduleWidgetNotice, payload.notice(now: WidgetClock.now))
+                    .environment(\.scheduleWidgetNotice, payload.notice(now: entry.date))
                     .overlayPreferenceValue(FireworksOriginKey.self) { anchor in
                         if let anchor {
                             GeometryReader { proxy in
@@ -1290,6 +1304,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
         .environment(\.scheduleWidgetConfiguration, entry.configuration)
         .environment(\.scheduleWidgetCelebrating, entry.celebrating)
         .environment(\.scheduleWidgetFamily, family)
+        .environment(\.scheduleWidgetNow, entry.date)
         .widgetURL(entry.appURL)
         .containerBackground(for: .widget) {
             if family.isAccessory {
@@ -1363,28 +1378,29 @@ private struct UpcomingScheduleView: View {
     let payload: WidgetSchedulePayload
     @Environment(\.scheduleWidgetFamily) private var family
     @Environment(\.scheduleWidgetConfiguration) private var configuration
+    @Environment(\.scheduleWidgetNow) private var now
 
     @ViewBuilder
     var body: some View {
-        let selection = payload.upcoming(afterClass: configuration.afterClass)
+        let selection = payload.upcoming(now: now, afterClass: configuration.afterClass)
         // 「接着显示下一次课」把今天换成了别的日子：课程正上方挂一条「明天 周二」。
         // 课程照常上色，压暗是「已经上完」的意思，拿来表示明天的课会被看成上过了。
-        let otherDay = OtherDay.offset(of: selection.0) == nil ? nil : selection.0
+        let otherDay = OtherDay.offset(of: selection.0, now: now) == nil ? nil : selection.0
         if family.isAccessory {
             LockScreenScheduleView(day: selection.0, courses: selection.1)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 // 换到别的日子时日期栏照旧是今天，靠课程上方的标注说明下面是哪天的课。
                 WidgetDateHeader(
-                    day: otherDay == nil ? selection.0 : payload.currentDay(),
+                    day: otherDay == nil ? selection.0 : payload.currentDay(now: now),
                     tableName: payload.title
                 )
                 Spacer(minLength: 8)
 
                 if selection.1.isEmpty {
-                    RestStateView(hadCourses: !payload.currentDay().courseList.isEmpty)
+                    RestStateView(hadCourses: !payload.currentDay(now: now).courseList.isEmpty)
                 } else if family == .systemMedium {
-                    let labels = Self.columnLabels(first: selection.1[0], otherDay: otherDay != nil)
+                    let labels = Self.columnLabels(first: selection.1[0], otherDay: otherDay != nil, now: now)
                     // 两栏一起用大一号的字，课名折行、屏幕又小时一起退回原来的字号，两边不会一大一小。
                     // 两节都是别的日子的：标注横跨两栏占一行，两栏不再各自写标题。只挂在左栏的话，
                     // 和右栏的「接下来」并排，像是左边明天、右边接下来。
@@ -1428,7 +1444,7 @@ private struct UpcomingScheduleView: View {
                         // 别的日子的标注不能去，只退字号。
                         // 大屏上多出来的高度全压在日期和课程之间会显得空：放得下时底下也垫一点，
                         // 空白分到上下两边；小屏照旧贴底。
-                        let label = Self.columnLabels(first: course, otherDay: otherDay != nil).first
+                        let label = Self.columnLabels(first: course, otherDay: otherDay != nil, now: now).first
                         ViewThatFits(in: .vertical) {
                             ForEach([14, 8, 0] as [CGFloat], id: \.self) { bottom in
                                 UpcomingColumn(label: label, course: course, size: .large, otherDay: otherDay)
@@ -1452,9 +1468,9 @@ private struct UpcomingScheduleView: View {
 
     /// 中号两栏（小号一节）的标题。第一节还没开始时叫「当前」就错了：那是下一节。
     /// 别的日子的课换成「明天 周二」标注，用不到这里的字。
-    private static func columnLabels(first: WidgetCourse, otherDay: Bool) -> (first: String, second: String) {
+    private static func columnLabels(first: WidgetCourse, otherDay: Bool, now: Date) -> (first: String, second: String) {
         if otherDay { return ("第一节", "接下来") }
-        if first.isInProgress(at: WidgetSchedulePayload.minutesSinceMidnight(WidgetClock.now)) { return ("当前", "接下来") }
+        if first.isInProgress(at: WidgetSchedulePayload.minutesSinceMidnight(now)) { return ("当前", "接下来") }
         return ("下一节", "之后")
     }
 }
@@ -1465,6 +1481,7 @@ private struct LockScreenScheduleView: View {
     @Environment(\.scheduleWidgetFamily) private var family
     @Environment(\.scheduleWidgetDisplayOptions) private var options
     @Environment(\.scheduleWidgetNotice) private var notice
+    @Environment(\.scheduleWidgetNow) private var now
 
     /// 没课时的图标：放假、过期各有各的。
     private var emptySymbol: String { notice?.symbol ?? "calendar.badge.checkmark" }
@@ -1496,7 +1513,7 @@ private struct LockScreenScheduleView: View {
 
     /// 单行锁屏只有一句话的位置：祝福 → 假期倒计时 → 「今日无课」。
     private var inlineEmptyText: String {
-        notice?.inlineText ?? RestState.inlineText(options: options)
+        notice?.inlineText ?? RestState.inlineText(options: options, now: now)
     }
 
     private var circularView: some View {
@@ -1541,7 +1558,7 @@ private struct LockScreenScheduleView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .widgetAccentable()
                 // 换到了别的日子时带上「明天」，锁屏上只有这一行说明是哪天。
-                Text([OtherDay.label(for: day) ?? "", day.compactDate, day.displayLabel].filter { !$0.isEmpty }.joined(separator: " "))
+                Text([OtherDay.label(for: day, now: now) ?? "", day.compactDate, day.displayLabel].filter { !$0.isEmpty }.joined(separator: " "))
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -1590,8 +1607,8 @@ private struct LockScreenScheduleView: View {
 
     /// 休息状态：有假期就大字写假期、小字写「4 天后 · 10.1 - 10.7 · 休 7 天」，没有才说「今日无课」。
     private var emptyLines: (primary: String, secondary: String?) {
-        if let notice { return (notice.title, notice.detail()) }
-        guard let holiday = RestState.holiday(options: options) else {
+        if let notice { return (notice.title, notice.detail(now: now)) }
+        guard let holiday = RestState.holiday(options: options, now: now) else {
             return ("今日无课", "打开课表查看本周安排")
         }
         return (holiday.title, "\(holiday.caption) · \(holiday.detail)")
@@ -1599,7 +1616,7 @@ private struct LockScreenScheduleView: View {
 
     private func inlineText(_ course: WidgetCourse) -> String {
         [
-            OtherDay.label(for: day) ?? day.shortLabel,
+            OtherDay.label(for: day, now: now) ?? day.shortLabel,
             options.showTime ? course.startLabel : nil,
             options.primaryValue(for: course),
             options.metadata(for: course)
@@ -1729,9 +1746,9 @@ private struct TodayScheduleView: View {
     @Environment(\.scheduleWidgetFamily) private var family
     @Environment(\.scheduleWidgetConfiguration) private var configuration
     @Environment(\.scheduleWidgetNotice) private var notice
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
-        let now = WidgetClock.now
         let today = payload.currentDay(now: now)
         let nowMinutes = today.date == WidgetSchedulePayload.dateString(now)
             ? WidgetSchedulePayload.minutesSinceMidnight(now)
@@ -2283,12 +2300,13 @@ private struct TwoDayScheduleView: View {
     let payload: WidgetSchedulePayload
     @Environment(\.scheduleWidgetConfiguration) private var configuration
     @Environment(\.scheduleWidgetNotice) private var notice
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
         if let notice {
             // 寒暑假、课表过期：两列都没有课可列，整块只放今天的日期和中间的「寒假ing」。
             VStack(alignment: .leading, spacing: 0) {
-                WidgetDateHeader(day: payload.currentDay(), tableName: payload.title)
+                WidgetDateHeader(day: payload.currentDay(now: now), tableName: payload.title)
                 ScheduleNoticeGreetingView(notice: notice)
             }
             .frame(maxHeight: .infinity, alignment: .top)
@@ -2298,7 +2316,6 @@ private struct TwoDayScheduleView: View {
     }
 
     private var columns: some View {
-        let now = WidgetClock.now
         let today = payload.currentDay(now: now)
         let tomorrowDate = WidgetSchedulePayload.dateString(
             Calendar.current.date(byAdding: .day, value: 1, to: now) ?? now
@@ -2309,7 +2326,7 @@ private struct TwoDayScheduleView: View {
         let right = next?.day ?? payload.fullDay(for: tomorrowDate, fallbackOffset: 1)
 
         // 右边不是明天时标上「后天的课」「10/2 的课」。左边占着同样一行但不显示，两列的课才对得齐。
-        let rightHint = (next?.offset ?? 1) > 1 ? OtherDay.hint(for: right) : nil
+        let rightHint = (next?.offset ?? 1) > 1 ? OtherDay.hint(for: right, now: now) : nil
         // 两天同一周，「第 N 周」只在右边写一次：靠着组件右上角，读起来是整块的标题。
         let sameWeek = today.week != nil && today.week == right.week
         let leftHeader = WidgetDateHeader(
@@ -2351,6 +2368,7 @@ private struct DayColumn: View {
     /// 旁边那一列的日期栏，藏在自己的下面占位：只有一边有调休、节日时两边一样高，
     /// 两列的第一节课才对得齐。
     let companionHeader: WidgetDateHeader
+    @Environment(\.scheduleWidgetNow) private var now
 
     /// 一列最多试着放几门。再多半宽的列也放不下，剩下的写进「后面还有 N 门课」。
     private static let maxLimit = 8
@@ -2381,11 +2399,11 @@ private struct DayColumn: View {
             if day.courseList.isEmpty {
                 // 这一支本来就是「这天没有课」，所以今天那列固定说「今日无课」；
                 // 今天是法定假日就换成带图标和假期进度的祝福，整列不再只有一行灰字。
-                if isToday, let greeting = ChineseCalendarInfo.restGreeting(for: WidgetClock.now) {
+                if isToday, let greeting = ChineseCalendarInfo.restGreeting(for: now) {
                     HolidayGreetingView(greeting: greeting)
                 } else {
                     EmptyCoursesView(
-                        message: isToday ? RestState.message() : "没有课程"
+                        message: isToday ? RestState.message(now: now) : "没有课程"
                     )
                 }
             } else {
@@ -2660,7 +2678,7 @@ private struct OtherDayChip: View {
 
 /// 某一天离今天几天，用来说「明天」「后天」「3 天后」。今天及以前返回 `nil`。
 private enum OtherDay {
-    static func offset(of day: WidgetDay, now: Date = WidgetClock.now) -> Int? {
+    static func offset(of day: WidgetDay, now: Date) -> Int? {
         guard let date = day.date, let target = ChineseCalendarInfo.date(fromDate: date) else { return nil }
         let calendar = ChineseCalendarInfo.gregorian
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: target)).day ?? 0
@@ -2668,7 +2686,7 @@ private enum OtherDay {
     }
 
     /// 「明天」「后天」「3 天后」。
-    static func label(for day: WidgetDay, now: Date = WidgetClock.now) -> String? {
+    static func label(for day: WidgetDay, now: Date) -> String? {
         guard let days = offset(of: day, now: now) else { return nil }
         switch days {
         case 1: return "明天"
@@ -2678,7 +2696,7 @@ private enum OtherDay {
     }
 
     /// 日期栏上的「明天的课」「后天的课」；再往后直接写日期：「10/2 的课」。
-    static func hint(for day: WidgetDay, now: Date = WidgetClock.now) -> String? {
+    static func hint(for day: WidgetDay, now: Date) -> String? {
         guard let days = offset(of: day, now: now) else { return nil }
         switch days {
         case 1: return "明天的课"
@@ -2698,18 +2716,19 @@ private struct OtherDayBanner: View {
     let day: WidgetDay
     @Environment(\.scheduleWidgetTheme) private var theme
     @Environment(\.widgetRenderingMode) private var renderingMode
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
         let tint = WidgetPalette.accent(for: theme)
         let fullColor = renderingMode == .fullColor
         // 醒目只交给胶囊一处，后面的星期用灰字：再用强调色写一遍日期，就和上面日期栏的
         // 今天叠成两行日期，分不清哪个是课的日子。明天、后天不写日期，胶囊已经说了。
-        let near = (OtherDay.offset(of: day) ?? 1) <= 2
+        let near = (OtherDay.offset(of: day, now: now) ?? 1) <= 2
         let detail = (near ? [day.displayLabel] : [day.compactDate, day.displayLabel])
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         HStack(spacing: 5) {
-            Text(OtherDay.label(for: day) ?? "")
+            Text(OtherDay.label(for: day, now: now) ?? "")
                 .font(.system(size: 10, weight: .heavy))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
@@ -2771,11 +2790,11 @@ private struct HolidayBadge: View {
 /// 休息状态：今天是法定假日就道贺（「中秋快乐」），
 /// 其余一律「今日无课」；下面一行小字是最近的一段法定假期。
 private enum RestState {
-    static func message(now: Date = WidgetClock.now) -> String {
+    static func message(now: Date) -> String {
         ChineseCalendarInfo.restGreeting(for: now) ?? "今日无课"
     }
 
-    static func countdown(options: ScheduleWidgetDisplayOptions, now: Date = WidgetClock.now) -> ChineseHolidayCountdown? {
+    static func countdown(options: ScheduleWidgetDisplayOptions, now: Date) -> ChineseHolidayCountdown? {
         guard options.showHoliday else { return nil }
         return ChineseCalendarInfo.countdown(from: now, withinDays: 120)
     }
@@ -2785,7 +2804,7 @@ private enum RestState {
     /// 关掉节假日提示或 120 天内没有假期时为 `nil`。
     static func holiday(
         options: ScheduleWidgetDisplayOptions,
-        now: Date = WidgetClock.now
+        now: Date
     ) -> (caption: String, title: String, detail: String)? {
         guard let countdown = countdown(options: options, now: now) else { return nil }
         let name = countdown.window.name
@@ -2800,7 +2819,7 @@ private enum RestState {
     }
 
     /// 锁屏单行只放一句：祝福 → 「距国庆节还有 5 天」→「今日无课」。
-    static func inlineText(options: ScheduleWidgetDisplayOptions, now: Date = WidgetClock.now) -> String {
+    static func inlineText(options: ScheduleWidgetDisplayOptions, now: Date) -> String {
         if let greeting = ChineseCalendarInfo.restGreeting(for: now) { return greeting }
         if let countdown = countdown(options: options, now: now), countdown.daysAway > 0 {
             return countdown.phrase
@@ -2827,9 +2846,10 @@ private struct HolidayGreetingView: View {
     @Environment(\.scheduleWidgetDisplayOptions) private var options
     @Environment(\.scheduleWidgetCelebrating) private var celebrating
     @Environment(\.scheduleWidgetFireworksPreviewTime) private var previewTime
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
-        let countdown = RestState.countdown(options: options).flatMap { $0.daysAway == 0 ? $0 : nil }
+        let countdown = RestState.countdown(options: options, now: now).flatMap { $0.daysAway == 0 ? $0 : nil }
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 10) {
@@ -2839,14 +2859,14 @@ private struct HolidayGreetingView: View {
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(WidgetPalette.primary)
                     if let countdown {
-                        Text(Self.dateText(for: countdown))
+                        Text(Self.dateText(for: countdown, now: now))
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(WidgetPalette.secondary)
                     }
                 }
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-                if let countdown, let progress = Self.progress(of: countdown.window) {
+                if let countdown, let progress = Self.progress(of: countdown.window, now: now) {
                     VStack(spacing: 6) {
                         HStack(spacing: 4) {
                             ForEach(1...progress.total, id: \.self) { index in
@@ -2902,16 +2922,16 @@ private struct HolidayGreetingView: View {
     }
 
     /// 画了进度点就只写起止日期：「休 7 天」和下面的「还剩 5 天」重复。没画点时照旧用完整的说明。
-    private static func dateText(for countdown: ChineseHolidayCountdown) -> String {
+    private static func dateText(for countdown: ChineseHolidayCountdown, now: Date) -> String {
         let window = countdown.window
-        guard progress(of: window) != nil else { return countdown.dateLabel }
+        guard progress(of: window, now: now) != nil else { return countdown.dateLabel }
         return "\(ChineseCalendarInfo.monthDayLabel(window.start)) - \(ChineseCalendarInfo.monthDayLabel(window.end))"
     }
 
     /// 今天是这段假期的第几天、一共几天。只有一天的假期不画点。
-    private static func progress(of window: ChineseHolidayWindow) -> (day: Int, total: Int)? {
+    private static func progress(of window: ChineseHolidayWindow, now: Date) -> (day: Int, total: Int)? {
         let total = window.dayCount
-        let today = ChineseCalendarInfo.dateString(WidgetClock.now)
+        let today = ChineseCalendarInfo.dateString(now)
         guard total > 1, total <= 12, let gap = ChineseCalendarInfo.dayGap(from: window.start, to: today) else { return nil }
         return (min(max(gap + 1, 1), total), total)
     }
@@ -3198,15 +3218,16 @@ private struct RestStateView: View {
     let hadCourses: Bool
     @Environment(\.scheduleWidgetDisplayOptions) private var options
     @Environment(\.scheduleWidgetNotice) private var notice
+    @Environment(\.scheduleWidgetNow) private var now
 
     private var todayStatus: String { hadCourses ? "今日课程已结束" : "今日无课" }
 
     var body: some View {
         if let notice {
             ScheduleNoticeBlock(notice: notice)
-        } else if let holiday = RestState.holiday(options: options) {
+        } else if let holiday = RestState.holiday(options: options, now: now) {
             VStack(alignment: .leading, spacing: 0) {
-                if RestState.countdown(options: options)?.daysAway != 0 {
+                if RestState.countdown(options: options, now: now)?.daysAway != 0 {
                     statusLine
                 }
                 Spacer(minLength: 6)
@@ -3288,7 +3309,7 @@ private extension WidgetScheduleNotice {
     }
 
     /// 标题下面那行小字：放假写节日祝福和「距开学还有 N 天」，都没有就不写；过期提示打开 App。
-    func detail(now: Date = WidgetClock.now) -> String? {
+    func detail(now: Date) -> String? {
         switch self {
         case .vacation(let vacation):
             let parts = [ChineseCalendarInfo.restGreeting(for: now), vacation.countdown].compactMap { $0 }
@@ -3328,6 +3349,7 @@ private extension WidgetScheduleNotice {
 /// 小号、中号的放假 / 过期状态：和假期倒计时一样贴着底边，图标、大字标题、一行说明。
 private struct ScheduleNoticeBlock: View {
     let notice: WidgetScheduleNotice
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -3344,7 +3366,7 @@ private struct ScheduleNoticeBlock: View {
                         .foregroundStyle(WidgetPalette.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
-                    if let detail = notice.detail() {
+                    if let detail = notice.detail(now: now) {
                         Text(detail)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(WidgetPalette.secondary)
@@ -3361,6 +3383,7 @@ private struct ScheduleNoticeBlock: View {
 /// 大号（今日课表、两日课表）的放假 / 过期状态：和放假祝福一样把图标、标题摆在中间。
 private struct ScheduleNoticeGreetingView: View {
     let notice: WidgetScheduleNotice
+    @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3375,7 +3398,7 @@ private struct ScheduleNoticeGreetingView: View {
                     Text(notice.title)
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(WidgetPalette.primary)
-                    if let detail = notice.detail() {
+                    if let detail = notice.detail(now: now) {
                         Text(detail)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(WidgetPalette.secondary)
@@ -3517,10 +3540,12 @@ struct ScheduleEntry: TimelineEntry {
     }
 
     /// 示例课表的「今天」就是今天，不然会被当成过期的课表。
-    static var placeholder: ScheduleEntry {
-        let today = WidgetDay.empty(date: WidgetSchedulePayload.dateString(WidgetClock.now), offset: 0)
+    static var placeholder: ScheduleEntry { placeholder(at: WidgetClock.now) }
+
+    static func placeholder(at now: Date) -> ScheduleEntry {
+        let today = WidgetDay.empty(date: WidgetSchedulePayload.dateString(now), offset: 0)
         return ScheduleEntry(
-            date: .now,
+            date: now,
             state: .loaded(
                 WidgetSchedulePayload(
                     title: "我上早八",
@@ -3561,37 +3586,38 @@ enum ScheduleEntryState {
 }
 
 /// 从 App Group 里读课表生成时间线；各个小组件的配置由 `ScheduleIntentTimelineProvider` 再套上。
+///
+/// 一次交出从现在到明天的整条时间线（见 `WidgetSchedulePayload.timelinePlan(from:)`），
+/// 次日零点才回来要新的。以前一次只给一条、每个上下课边界（最迟半小时）回来刷一次，
+/// 一个小组件一天六十来次，把系统给的刷新预算用光，之后的刷新被推迟，下课了还显示「正在上」。
+/// 课表在 App 里改了由 App 调 `WidgetCenter` 立刻重刷，不靠这里的定时。
 enum ScheduleTimeline {
     static func make(now: Date) -> Timeline<ScheduleEntry> {
-        let entry: ScheduleEntry
         let payload = ScheduleWidgetStore.load()
         ChineseCalendarInfo.usePublishedHolidays(payload?.holidays ?? [])
-        if let payload {
-            entry = ScheduleEntry(date: now, state: .loaded(payload))
-        } else {
-            entry = ScheduleEntry(date: now, state: .unconfigured)
-        }
-        let periodic = Calendar.current.date(byAdding: .minute, value: 30, to: now) ?? now.addingTimeInterval(1800)
-        // 下课那一刻就该换内容（划掉已结束的课、放学后切到明天），别等下一个半小时。
-        let refresh = payload.flatMap { Self.nextBoundary(in: $0, now: now) }.map { min($0, periodic) } ?? periodic
-        // 刚按了彩炮：这一条放烟花，散完后再来一条把彩炮放回去。
+        // 课表只解码这一次，每条条目拿的是同一份（数组是写时复制，不会真的拷贝）。
+        let state: ScheduleEntryState = payload.map { .loaded($0) } ?? .unconfigured
+        let plan = payload?.timelinePlan(from: now)
+            ?? WidgetTimelinePlan(dates: [now], reload: WidgetSchedulePayload.startOfNextDay(after: now))
         let rounds = CelebrateHolidayIntent.rounds()
-        var calm = entry
-        calm.fireworksRound = rounds.latest
-        guard CelebrateHolidayIntent.justFired(now: now) else {
-            return Timeline(entries: [calm], policy: .after(refresh))
+        var dates = plan.dates
+        let fired = CelebrateHolidayIntent.justFired(now: now)
+        if fired {
+            // 刚按了彩炮：第一条放烟花，散完后再来一条把彩炮放回去、换掉看不见的碎片。
+            // 这一条按自己的日期画，碰巧跨过了上下课边界也画得对。
+            dates = Set(dates + [now.addingTimeInterval(FireworksTiming.total + 0.3)]).sorted()
         }
-        var celebrating = entry
-        celebrating.celebrating = true
-        celebrating.fireworksRound = rounds.previous
-        // 烟花在上面那一条里就放完、散没了；这一条只是把彩炮放回去、换掉看不见的碎片，来晚了也不碍事。
-        calm = ScheduleEntry(date: now.addingTimeInterval(FireworksTiming.total + 0.3), state: entry.state, fireworksRound: rounds.latest)
-        return Timeline(entries: [celebrating, calm], policy: .after(refresh))
-    }
-
-    /// 今天剩下的课程边界里最近的一个，见 `WidgetSchedulePayload.nextRefreshBoundary`。
-    private static func nextBoundary(in payload: WidgetSchedulePayload, now: Date) -> Date? {
-        payload.nextRefreshBoundary(now: now)
+        let entries = dates.map { date in
+            let celebrating = fired && date == now
+            return ScheduleEntry(
+                date: date,
+                state: state,
+                celebrating: celebrating,
+                // 放烟花那一条沿用按之前的身份，之后的都换成新的，见 `ScheduleEntry.fireworksRound`。
+                fireworksRound: celebrating ? rounds.previous : rounds.latest
+            )
+        }
+        return Timeline(entries: entries, policy: .after(plan.reload))
     }
 }
 
@@ -3664,7 +3690,8 @@ private enum FireworksPreview {
     ) -> ScheduleEntry {
         var components = DateComponents()
         (components.year, components.month, components.day, components.hour) = (2026, 10, 2, 10)
-        WidgetClock.override = ChineseCalendarInfo.gregorian.date(from: components)
+        let pinned = ChineseCalendarInfo.gregorian.date(from: components)!
+        WidgetClock.override = pinned
         // 示例课表的「今天」是开学那天、有课；这里换成国庆第二天没课，下一次课在假期后。
         guard case .loaded(let sample) = ScheduleEntry.placeholder.state else { return .placeholder }
         let payload = WidgetSchedulePayload(
@@ -3682,7 +3709,7 @@ private enum FireworksPreview {
             nextWeekDays: nil
         )
         return ScheduleEntry(
-            date: .now,
+            date: pinned,
             state: .loaded(payload),
             configuration: ScheduleWidgetConfiguration(afterClass: afterClass),
             celebrating: celebrating,
