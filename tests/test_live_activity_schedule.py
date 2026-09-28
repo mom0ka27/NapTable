@@ -195,6 +195,22 @@ class ShareRowTests(unittest.TestCase):
                          [("7", 1, 2, [1, 3]), ("8", 2, 2, [2, 3])])
         self.assertEqual(texts["7"], {"name": "高数", "teacher": "王", "location": "A101"})
 
+    def test_the_unified_calendar_wins_and_the_share_fills_the_rest(self):
+        from datetime import date
+        courses = [{"id": 7, "name": "高数", "week_time": 2, "start_time": 1, "weeks": [2, 4]}]
+        own = json.dumps([{"date": "2026-09-22", "kind": "off"}, {"date": "2026-09-29", "kind": "off"}])
+        unified = json.dumps([{"date": "2026-09-22", "kind": "swap", "source": "2026-09-15", "note": "补课"}])
+        alone, _ = share_table(self.row(courses, adjustments_json=own))
+        merged, _ = share_table(self.row(courses, adjustments_json=own, unified_adjustments_json=unified))
+        self.assertEqual(alone.on(date(2026, 9, 22)), [])
+        # 09-22 runs week 2's Tuesday as the server says; 09-29 stays off from the share's own.
+        self.assertEqual([c["id"] for c in merged.on(date(2026, 9, 22))], ["7"])
+        self.assertEqual(merged.on(date(2026, 9, 29)), [])
+        self.assertEqual(merged.on(date(2026, 9, 15)), [], "the swap's source day is consumed")
+        # A broken calendar row never drops the share's own arrangement.
+        broken, _ = share_table(self.row(courses, adjustments_json=own, unified_adjustments_json="{"))
+        self.assertEqual(broken.on(date(2026, 9, 29)), [])
+
     def test_rows_without_unique_ids_stay_unscheduled(self):
         share, _ = share_table(self.row([{"id": 1, "name": "a", "week_time": 2, "start_time": 1},
                                          {"id": 1, "name": "b", "week_time": 3, "start_time": 1}]))

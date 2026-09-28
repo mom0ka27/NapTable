@@ -73,6 +73,13 @@ CREATE INDEX IF NOT EXISTS la_timetable_follow ON la_timetables(follow_scope);
 CREATE TABLE IF NOT EXISTS la_v2_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
+# A device token APNs says is dead (uninstalled, or not for this topic) is
+# cleared so `status()` stops reporting a token that can never work.
+DEAD_TOKEN_REASONS = ('BadDeviceToken', 'Unregistered', 'ExpiredToken', 'DeviceTokenNotForTopic')
+# Refusals of the provider token, not of the notification: the client signs a
+# new token, and the push is worth trying again.
+PUSH_RETRY = frozenset((403, reason) for reason in ('ExpiredProviderToken', 'InvalidProviderToken'))
+
 # Ledger states: `local` is the phone's own reservation. Every other state is a
 # start this server submitted (`submitting`, `submitted`, `submissionUnknown`,
 # `terminal`, `cancelled`) or, carried over from the client-built plan, a
@@ -371,8 +378,23 @@ class Service:
         share = texts = None
         record = self._share(db, scope=row['follow_scope']) if row['follow_scope'] else None
         if record is not None:
-            share, texts = schedule_engine.share_table(record)
+            # A share's frozen 调休 is overlaid with the server's unified
+            # calendar, as the reader's own table does on the phone.
+            share, texts = schedule_engine.share_table({**dict(record), 'unified_adjustments_json': self._calendar(db)[0]})
         return body, own, share, texts or {}, record
+
+    @staticmethod
+    def _calendar(db):
+        """(adjustments JSON, version) of the server's unified 调休 calendar."""
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='global_calendar'").fetchone():
+            row = db.execute("SELECT adjustments_json,version FROM global_calendar WHERE id=1").fetchone()
+            if row: return row['adjustments_json'] or '[]', row['version']
+        return '[]', 0
+
+    def _seen(self, db, updated_at):
+        """What a follower was last built from: the share's revision and the
+        unified calendar's, so saving either one rebuilds it."""
+        return f"{updated_at}|calendar-{self._calendar(db)[1]}" if updated_at else ''
 
     def _channel_version(self, db, device, own_body):
         """The school's current version when the own timetable runs on its bells:
@@ -420,7 +442,7 @@ class Service:
                     share = self._share(db, code=follow['share'])
                     if share is None:
                         raise ProtocolError("followed share not found", 404)
-                    scope, seen = share['schedule_scope'], share['updated_at']
+                    scope, seen = share['schedule_scope'], self._seen(db, share['updated_at'])
                 channel = None if follow is not None else self._channel_version(db, row, body['own'])
                 db.execute("INSERT INTO la_timetables VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(device) DO UPDATE SET revision=excluded.revision,digest=excluded.digest,body=excluded.body,"
                            "push_mode=excluded.push_mode,school=excluded.school,version=excluded.version,follow_scope=excluded.follow_scope,follow_seen=excluded.follow_seen,updated_at=excluded.updated_at",
@@ -670,6 +692,8 @@ class Service:
                 self._rebuild(db, device)
         with self.transaction() as db:
             db.execute("DELETE FROM la_starts WHERE expires_at<?", (now - DAY,))
+            # Settled boundaries are only history once their day is well past.
+            db.execute("DELETE FROM la_v2_broadcasts WHERE state!='pending' AND fire_at<?", (now - 3 * DAY,))
             for row in db.execute("SELECT DISTINCT bundle, environment, school, version FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0 AND t.push_mode='channel'").fetchall():
                 db.execute("UPDATE la_schedule_versions SET broadcast_until=MAX(broadcast_until,?) WHERE bundle=? AND environment=? AND school=? AND schedule='default' AND version=?",
                            (now + 8 * DAY, *row))
@@ -678,15 +702,18 @@ class Service:
             self.retries = {key: value for key, value in self.retries.items() if self._find(*key)}
 
     def follow_shares(self):
-        """Rebuild followers whose share was replaced, resynced or revoked since
-        their last build, nearest reminder first."""
+        """Rebuild followers whose share was replaced, resynced or revoked, or
+        whose unified calendar was saved, since their last build, nearest
+        reminder first."""
         now = self.now()
         with self.lock:
             if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='shares'").fetchone():
                 return
-            stale = [row for row in self.db.execute(
-                "SELECT t.device, t.follow_seen, COALESCE((SELECT s.updated_at FROM shares s WHERE s.schedule_scope=t.follow_scope AND s.revoked=0 ORDER BY s.created_at DESC LIMIT 1), '') AS current "
-                "FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0 AND t.follow_scope!=''").fetchall() if row['current'] != row['follow_seen']]
+            rows = self.db.execute(
+                "SELECT t.device, t.follow_seen, COALESCE((SELECT s.updated_at FROM shares s WHERE s.schedule_scope=t.follow_scope AND s.revoked=0 ORDER BY s.created_at DESC LIMIT 1), '') AS updated "
+                "FROM la_timetables t JOIN la_v2_devices d ON d.id=t.device WHERE d.revoked=0 AND t.follow_scope!=''").fetchall()
+            stale = [dict(row, current=self._seen(self.db, row['updated'])) for row in rows]
+            stale = [row for row in stale if row['current'] != row['follow_seen']]
             nearest = {row['device']: min((item.fire_at for item in self._pending(row['device'], (), now) if item.fire_at > now), default=float('inf')) for row in stale}
         for row in sorted(stale, key=lambda row: nearest[row['device']]):
             with self.transaction() as db:
@@ -799,7 +826,7 @@ class Service:
                 _, device, occurrence = heapq.heappop(self.due)
                 if (device, occurrence) not in due:
                     due.append((device, occurrence))
-        claimed = []
+        claimed, sealed = [], {}
         for device, occurrence in due:
             with self.transaction() as db:
                 found = self._find(device, occurrence)
@@ -831,6 +858,7 @@ class Service:
                     self._after.append(lambda device=device, occurrence=occurrence: self._requeue(device, occurrence, now + 60))
                     continue
                 payload = self._payload(built, stored, texts, scope, channel)
+                sealed[(device, occurrence)] = owner['token']
                 db.execute("INSERT INTO la_starts(device,occurrence,day,state,fire_at,expires_at) VALUES(?,?,?,'submitting',?,?)",
                            (device, occurrence, day.isoformat(), built['reminder'], built['end']))
             payload['aps']['timestamp'] = int(now)
@@ -845,10 +873,13 @@ class Service:
                 state = 'submitted'
             elif result.get('certainty') == 'unknown' or (not status and result.get('certainty') != 'notSent'):
                 state = 'submissionUnknown'
-            elif result.get('certainty') == 'notSent' or status in (408, 429) or 500 <= status < 600:
+            elif result.get('certainty') == 'notSent' or (status, result.get('reason')) in PUSH_RETRY or status in (408, 429) or 500 <= status < 600:
                 state = 'pending'
             with self.transaction() as db:
                 current = db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (activity[0],)).fetchone()
+                if status == 410 or (status == 400 and result.get('reason') in DEAD_TOKEN_REASONS):
+                    # Compared sealed: a token the phone uploaded meanwhile stays.
+                    db.execute("UPDATE la_v2_devices SET token='' WHERE id=? AND token=?", (activity[0], sealed[activity]))
                 if state == 'pending' and current is not None and not current['revoked']:
                     # Not delivered: the intent goes, and the start is tried again later.
                     db.execute("DELETE FROM la_starts WHERE device=? AND occurrence=? AND state='submitting'", activity)
@@ -981,7 +1012,7 @@ class Service:
                     self.redraws.pop(activity, None)
                 elif current is None:
                     continue
-                elif not (result.get('ok') and status == 200) and (result.get('certainty') in ('notSent', 'unknown') or status in (408, 429) or 500 <= status < 600):
+                elif not (result.get('ok') and status == 200) and (result.get('certainty') in ('notSent', 'unknown') or (status, reason) in PUSH_RETRY or status in (408, 429) or 500 <= status < 600):
                     # An update is idempotent, so retrying is safe until the next refresh replaces it.
                     current.attempts += 1
                     current.retry_at = now + min(60, 5 * 2 ** current.attempts)

@@ -586,9 +586,10 @@ class HTTP2Connection:
                     packet += _frame(_DATA, _FLAG_END_STREAM, stream, body)
                     try:
                         self.sock.sendall(packet)
-                    except (OSError, ssl.SSLError) as error:
+                    except (OSError, ssl.SSLError, AttributeError) as error:
                         # END_STREAM is in the last bytes: an incomplete write
-                        # leaves a stream APNs never acts on.
+                        # leaves a stream APNs never acts on. AttributeError:
+                        # the connection was closed first, so nothing went out.
                         outcomes[index] = ("notSent", f"request not fully written: {error}")
                         raise
                     self._send_window -= len(body)
@@ -622,7 +623,8 @@ class HTTP2Connection:
                 if self._unacked >= 16384:
                     self.sock.sendall(_frame(_WINDOW_UPDATE, 0, 0, struct.pack(">I", self._unacked)))
                     self._unacked = 0
-        except (APNsError, OSError, ValueError, ssl.SSLError) as error:
+        except (APNsError, OSError, ValueError, ssl.SSLError, AttributeError) as error:
+            # AttributeError: the socket was closed under us (`sock` is None).
             self.close()
             abandon(f"{error}" or type(error).__name__)
         if self.sock is not None:
@@ -650,6 +652,8 @@ MAX_PAYLOAD = 4096
 # Apple rejects a provider token younger than 20 minutes on refresh and older
 # than 60 minutes on use.
 TOKEN_LIFETIME = 40 * 60
+# Refusals that are about the token itself, not the request it carried.
+STALE_TOKEN_REASONS = ("ExpiredProviderToken", "InvalidProviderToken")
 
 
 class APNsClient:
@@ -679,6 +683,7 @@ class APNsClient:
         self._channel_locks = {env: threading.RLock() for env in ("production", "sandbox")}
         self._token = None
         self._token_issued = 0.0
+        self._closed = False
 
     @classmethod
     def from_environment(cls, environ):
@@ -691,13 +696,23 @@ class APNsClient:
             return None
         return cls(ES256Key.from_file(path), key_id, team_id, bundle_id)
 
-    def authorization(self):
+    def authorization(self, renew=False):
+        """The provider JWT, kept for TOKEN_LIFETIME. `renew` signs a new one
+        when APNs says the cached one is bad (clock skew, or a key swapped out
+        from under a running server)."""
         with self._lock:
             now = self.now()
+            if renew: self._token = None
             if self._token is None or now - self._token_issued >= TOKEN_LIFETIME:
                 self._token = provider_token(self.key, self.key_id, self.team_id, now)
                 self._token_issued = now
             return self._token
+
+    @staticmethod
+    def _stale_token(result):
+        """APNs refusing the provider token itself: the request carrying it is
+        safe to send again with a freshly signed one."""
+        return int(result.get("status") or 0) == 403 and result.get("reason") in STALE_TOKEN_REASONS
 
     def push(self, device_token, payload, environment="production", push_type="liveactivity",
              priority=10, expiration=0, collapse_id=None, topic=None):
@@ -707,7 +722,7 @@ class APNsClient:
                                 "priority": priority, "expiration": expiration, "collapse_id": collapse_id,
                                 "topic": topic}], environment=environment)[0]
 
-    def push_many(self, notifications, environment="production"):
+    def push_many(self, notifications, environment="production", _retried=False):
         """Deliver several pushes as concurrent streams on one connection.
 
         Each notification is a dict with `device_token` and `payload`, plus the
@@ -744,6 +759,15 @@ class APNsClient:
                     outcomes[k] = outcome
         for position, outcome in zip(positions, outcomes):
             results[position] = self._result(outcome)
+        # A refused provider token is about the connection, not the requests:
+        # sign a new one and send everything that failed for that reason again.
+        if not _retried and any(self._stale_token(result) for result in results if result):
+            self.authorization(renew=True)
+            again = [item for item, result in zip(notifications, results) if result is None or self._stale_token(result)]
+            if again:
+                refreshed = self.push_many(again, environment=environment, _retried=True)
+                stream = iter(refreshed)
+                results = [result if result is not None and not self._stale_token(result) else next(stream) for result in results]
         return results
 
     def _send_many(self, environment, requests, reset=False, purpose="device"):
@@ -783,7 +807,7 @@ class APNsClient:
                                      "expiration": expiration, "collapse_id": collapse_id, "topic": topic}],
                                    environment=environment)[0]
 
-    def broadcast_many(self, broadcasts, environment="production"):
+    def broadcast_many(self, broadcasts, environment="production", _retried=False):
         """Send several channel broadcasts as concurrent streams on the
         broadcast connection. A boundary update or end is safe to repeat, so a
         lost answer is retried once as well as a request never sent."""
@@ -820,6 +844,13 @@ class APNsClient:
                     outcomes[k] = outcome
         for position, outcome in zip(positions, outcomes):
             results[position] = self._result(outcome)
+        if not _retried and any(self._stale_token(result) for result in results if result):
+            self.authorization(renew=True)
+            again = [item for item, result in zip(broadcasts, results) if result is None or self._stale_token(result)]
+            if again:
+                refreshed = self.broadcast_many(again, environment=environment, _retried=True)
+                stream = iter(refreshed)
+                results = [result if result is not None and not self._stale_token(result) else next(stream) for result in results]
         return results
 
     def _channel_call(self, method, suffix, environment="production", body=None, channel_id=None):
@@ -837,9 +868,25 @@ class APNsClient:
                 try:
                     status, response = connection.request(method, path, headers, payload)
                     break
-                except (APNsError, OSError, ssl.SSLError) as error:
+                except (APNsError, OSError, ssl.SSLError, AttributeError) as error:
                     connection.close()
                     if attempt or method != "GET": raise APNsError(f"channel transport error: {error}") from error
+            if status == 403:
+                # The channel API speaks the same provider token as the device
+                # API: a refused one is signed again and the call repeated once.
+                reason = ""
+                try: reason = json.loads(response.decode()).get("reason", "")
+                except (ValueError, UnicodeDecodeError, AttributeError): pass
+                if reason in STALE_TOKEN_REASONS:
+                    self.authorization(renew=True)
+                    headers = [(name, "bearer " + self.authorization()) if name == "authorization" else (name, value)
+                               for name, value in headers]
+                    connection = self._channel_connection(environment, reset=True)
+                    try:
+                        status, response = connection.request(method, path, headers, payload)
+                    except (APNsError, OSError, ssl.SSLError, AttributeError) as error:
+                        connection.close()
+                        raise APNsError(f"channel transport error: {error}") from error
             if method == "DELETE" and status in (404, 410):
                 return None
             if status not in (200, 201, 204):
@@ -878,7 +925,13 @@ class APNsClient:
                 failure = error
             after = set(self.list_channels(environment))
             created = sorted(after - before)
-            if len(created) != 1: raise APNsError("APNs did not return one new channel") from failure
+            if len(created) != 1:
+                # Another creator raced this one, or the POST never landed.
+                # Which ID is ours cannot be told, so none is taken; the IDs are
+                # logged so an operator can reconcile or delete the extras.
+                print(f"APNs create_channel({environment}): expected 1 new channel, found {len(created)}: {created}"
+                      + (f" (create failed: {failure})" if failure else ""))
+                raise APNsError(f"APNs channel list changed by {len(created)} instead of 1: {', '.join(created) or 'none'}") from failure
             return created[0]
 
     def delete_channel(self, channel_id, environment="production"):
@@ -890,6 +943,7 @@ class APNsClient:
         host = self.hosts.get(environment) or self.hosts["production"]
         key = (purpose, host)
         with self._lock:
+            if getattr(self, "_closed", False): raise APNsError("APNs client closed")
             connection = self._connections.get(key)
             if reset and connection is not None:
                 connection.close()
@@ -904,6 +958,7 @@ class APNsClient:
         port = int(self.channel_ports.get(environment) or self.channel_ports["production"])
         key = ("channel", host, port)
         with self._lock:
+            if getattr(self, "_closed", False): raise APNsError("APNs client closed")
             connection = self._connections.get(key)
             if reset and connection is not None:
                 connection.close()
@@ -914,7 +969,20 @@ class APNsClient:
             return connection
 
     def close(self):
-        with self._lock:
-            for connection in self._connections.values():
-                connection.close()
-            self._connections.clear()
+        """Close every connection once the requests in flight have their
+        answers; a request made afterwards reports `notSent` instead of opening
+        a connection nobody would close."""
+        # The per-purpose locks before `_lock`, the order requests take them in.
+        locks = [group[env] for group in (self._request_locks, self._broadcast_locks, self._channel_locks)
+                 for env in ("production", "sandbox")]
+        for lock in locks:
+            lock.acquire()
+        try:
+            with self._lock:
+                self._closed = True
+                for connection in self._connections.values():
+                    connection.close()
+                self._connections.clear()
+        finally:
+            for lock in reversed(locks):
+                lock.release()

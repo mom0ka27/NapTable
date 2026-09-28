@@ -244,6 +244,8 @@ class LiveActivityService:
                                 (channel_id, int(bool(channel_id)), row["device_id"]))
             self.db.commit()
         if old is not None and old is not client:
+            # `APNsClient.close` waits for the requests already in flight on
+            # the old client, so none of them is cut off and reported as lost.
             close = getattr(old, "close", None)
             if close:
                 close()
@@ -932,14 +934,16 @@ def build_service(db, lock, environ=None, config=None):
     return service
 
 
-def apply_config(service, config):
-    """Build and apply a persisted APNs configuration to a running service."""
-    client = _client_from_config(config)
+def apply_config(service, config, client=None):
+    """Apply a persisted APNs configuration to a running service. `client` is
+    the one already built and validated from it; without it one is built."""
     try:
         tick = float(config.get("tickSeconds", config.get("tick_seconds", 5)) or 5)
     except (TypeError, ValueError):
         tick = 5.0
-    if hasattr(service, "v2"):
-        service.v2.validate_client(client)
+    if client is None:
+        client = _client_from_config(config)
+        if hasattr(service, "v2"):
+            service.v2.validate_client(client)
     service.reconfigure(client=client, tick=tick,
                         channels=_channels_from_value(config.get("channels", {})))

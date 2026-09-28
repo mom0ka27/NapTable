@@ -1,3 +1,5 @@
+import http.client
+import json
 import os
 import tempfile
 import threading
@@ -113,3 +115,101 @@ class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
             self.store.rename_school('nju', 'new-nju')
         self.assertEqual([school['id'] for school in self.store.schools()], ['nju'])
         self.assertIsNotNone(self.store.find_term('nju', '2026-fall-template'))
+
+
+class AdminWriteTests(JSONClientMixin, unittest.TestCase):
+    """Term and school writes: validation, one transaction each, and the
+    `create` contract of admin.js; request bodies and HEAD."""
+    setUp, tearDown = SchoolManagementTests.setUp, SchoolManagementTests.tearDown
+    term = {'id': '2027-spring', 'semesterStartMonday': '2027-02-22', 'weekCount': 17, 'timezone': 'Asia/Shanghai', 'note': ''}
+
+    def raw(self, method, path, body=b'', headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=5)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def current(self):
+        return self.req('GET', '/v1/schools')['schools'][0]['currentTermID']
+
+    def test_terms_keep_one_current_and_count_versions(self):
+        endpoint = '/v1/admin/schools/nju/terms'
+        added = self.req('POST', endpoint, self.term, self.headers)
+        self.assertEqual((added['version'], added['current'], self.current()), (1, False, '2026-fall-template'))
+        again = self.req('POST', endpoint, dict(self.term, current=True), self.headers)
+        self.assertEqual((again['version'], again['current'], self.current()), (2, True, '2027-spring'))
+        # Clearing the only current term keeps it current.
+        self.assertTrue(self.req('POST', endpoint, dict(self.term, current=False), self.headers)['current'])
+        for broken in (dict(self.term, note=3), dict(self.term, note=['x']), dict(self.term, current='yes'),
+                       dict(self.term, id=7), dict(self.term, semesterStartMonday=20270222), dict(self.term, weekCount=41)):
+            with self.subTest(broken=broken):
+                self.req('POST', endpoint, broken, self.headers, expect=400)
+        self.req('POST', '/v1/admin/schools/nope/terms', self.term, self.headers, expect=400)
+        self.assertFalse(self.store.db.in_transaction)
+
+    def test_a_failed_term_write_rolls_back_and_leaves_no_transaction_open(self):
+        self.store.db.execute("CREATE TRIGGER fail_term BEFORE INSERT ON school_terms BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        self.store.db.commit()
+        failed = self.req('POST', '/v1/admin/schools/nju/terms', dict(self.term, current=True), self.headers, expect=500)
+        self.assertEqual(failed, {'error': 'internal error'})
+        self.assertFalse(self.store.db.in_transaction)
+        # `is_current=0` ran before the insert failed: it was undone too.
+        self.assertEqual(self.current(), '2026-fall-template')
+        with self.assertRaises(Exception):
+            self.store.save_term('nju', dict(self.term, current=True))
+        self.assertFalse(self.store.db.in_transaction)
+        self.assertEqual(self.current(), '2026-fall-template')
+
+    def test_school_fields_must_be_strings(self):
+        periods = [{'start': '08:00', 'end': '08:50'}]
+        for broken in ({'name': 3}, {'name': '学校', 'note': {'a': 1}}, {'name': '学校', 'semesterStart': 20260901}, {'name': ['学校']}):
+            with self.subTest(broken=broken):
+                self.req('POST', '/v1/schools/test', dict(broken, periods=periods), self.headers, expect=400)
+        self.assertEqual([s['id'] for s in self.store.schools()], ['nju'])
+        self.assertFalse(self.store.db.in_transaction)
+
+    def test_create_never_overwrites_a_school(self):
+        periods = [{'start': '07:00', 'end': '07:50'}]
+        conflict = self.req('POST', '/v1/schools/nju', {'name': '覆盖', 'periods': periods, 'create': True}, self.headers, expect=409)
+        self.assertEqual(conflict, {'error': 'school exists'})
+        self.assertEqual(self.store.schools()[0]['name'], '南京大学')
+        created = self.req('POST', '/v1/schools/test', {'name': '测试大学', 'periods': periods, 'create': True}, self.headers)
+        self.assertEqual((created['id'], created['name']), ('test', '测试大学'))
+        # Without `create` (or with anything but true) a save updates, as before.
+        self.assertEqual(self.req('POST', '/v1/schools/nju', {'name': '新名字', 'periods': periods}, self.headers)['name'], '新名字')
+        self.assertEqual(self.req('POST', '/v1/schools/nju', {'name': '再改', 'periods': periods, 'create': 'true'}, self.headers)['name'], '再改')
+
+    def test_a_body_must_be_a_json_object(self):
+        for body in (b'[1,2]', b'"text"', b'3', b'null', b'{bad', b'\xff\xfe'):
+            with self.subTest(body=body):
+                status, _, raw = self.raw('POST', '/v1/admin/calendar', body, {**self.headers, 'Content-Length': str(len(body))})
+                self.assertEqual(status, 400)
+                self.assertIn('error', json.loads(raw))
+        status, _, raw = self.raw('POST', '/v1/shares', b'[]', {'Content-Length': '2'})
+        self.assertEqual((status, json.loads(raw)['error']), (400, 'request body must be a JSON object'))
+        status, _, _ = self.raw('POST', '/v1/admin/calendar', b'{}', {**self.headers, 'Content-Length': 'many'})
+        self.assertEqual(status, 400)
+
+    def test_a_non_ascii_credential_is_refused_not_crashed(self):
+        for token in ('clé', '管理员'):
+            status, _, raw = self.raw('GET', '/v1/admin/session', headers={'X-Admin-Token': token.encode().decode('latin-1')})
+            self.assertEqual((status, json.loads(raw)), (403, {'error': 'admin token required'}))
+            body = json.dumps({'token': token}).encode()
+            status, _, raw = self.raw('POST', '/v1/admin/session', body, {'Content-Length': str(len(body))})
+            self.assertEqual(status, 403)
+
+    def test_head_answers_like_get_without_a_body(self):
+        for path, cache in (('/', 'no-store'), ('/privacy', 'no-store'), ('/admin', 'no-store'),
+                            ('/site/site.css', 'public, max-age=86400'), ('/health', None), ('/v1/schools', None)):
+            with self.subTest(path=path):
+                got, got_headers, body = self.raw('GET', path)
+                status, headers, empty = self.raw('HEAD', path)
+                self.assertEqual((status, empty), (got, b''))
+                self.assertEqual(headers['Content-Length'], str(len(body)))
+                self.assertEqual(headers['Content-Type'], got_headers['Content-Type'])
+                if cache: self.assertEqual((headers['Cache-Control'], got_headers['Cache-Control']), (cache, cache))
+        status, _, empty = self.raw('HEAD', '/nope')
+        self.assertEqual((status, empty), (404, b''))

@@ -207,16 +207,17 @@ class ScheduledTests(unittest.TestCase):
         self.upload(follow={"share": "SHARE1"}, settings={"leadMinutes": 30, "sharedLeadMinutes": 30})
         self.service.follow_shares()
         before = {row['occurrence'] for row in self.jobs()}
-        # The publisher moves the class to the afternoon and rotates the code.
-        self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
+        # The publisher moves the class to the afternoon and rotates the code:
+        # `Store.create(previous_code=...)` deletes the old row.
+        self.db.execute("DELETE FROM shares WHERE code='SHARE1'"); self.db.commit()
         self.share(code='SHARE2', updated='2026-09-22T06:00:00', courses=[
             {"id": 7, "name": "高数", "week_time": 2, "start_time": 2, "time_count": 0, "weeks": []}])
         self.service.follow_shares()
         today = [row for row in self.jobs() if row['day'] == '2026-09-22']
         self.assertEqual([(row['fire_at'], row['expires_at']) for row in today], [(at("07:30"), at("09:50")), (at("13:30"), at("15:00"))])
         self.assertNotEqual({row['occurrence'] for row in self.jobs()}, before)
-        # Revoked for good: only my own courses remain.
-        self.db.execute("UPDATE shares SET revoked=1"); self.db.commit()
+        # Revoked for good (`Store.revoke` deletes it): only my own courses remain.
+        self.db.execute("DELETE FROM shares WHERE code='SHARE2'"); self.db.commit()
         self.service.follow_shares()
         self.assertEqual(['shared' in self.payload(row)['aps']['attributes'] for row in self.jobs()], [False, False])
         self.service.follow_shares()
@@ -302,6 +303,78 @@ class ScheduledTests(unittest.TestCase):
         self.clock = at("10:10", date(2026, 9, 23))
         self.restart().dispatch_starts()
         self.assertEqual(len(self.client.starts), 2)
+
+    def test_a_dead_start_token_is_cleared_unless_a_new_one_arrived(self):
+        def refused(status, reason, on_push=None):
+            self.setUp()
+            self.upload()
+            self.service.maintain_channels()
+            self.clock = at("07:31")
+            self.client.result = {'ok': False, 'status': status, 'reason': reason, 'certainty': 'rejected'}
+            self.client.on_push = on_push
+            self.service.dispatch_starts()
+            self.assertEqual(len(self.client.starts), 1)
+            self.assertEqual(list(self.ledger().values()), ['terminal'])
+        for status, reason in ((410, 'Unregistered'), (410, 'ExpiredToken'), (400, 'BadDeviceToken'), (400, 'DeviceTokenNotForTopic')):
+            with self.subTest(reason=reason):
+                refused(status, reason)
+                self.assertFalse(self.service.status(self.id)['hasStartToken'])
+        # Any other refusal leaves the token alone.
+        refused(400, 'BadPayload')
+        self.assertTrue(self.service.status(self.id)['hasStartToken'])
+        # The phone uploads a fresh token while the start is on its way: that one stays.
+        refused(410, 'Unregistered', on_push=lambda: self.service.register({'installationId': 'installation-1', 'bundleID': self.client.bundle_id,
+                                                                            'environment': 'sandbox', 'startToken': 'ef56ef56'}, 'persisted-secret'))
+        self.assertTrue(self.service.status(self.id)['hasStartToken'])
+        self.assertEqual(self.service.vault.open(self.db.execute("SELECT token FROM la_v2_devices").fetchone()[0]), 'ef56ef56')
+
+    def test_a_refused_provider_token_is_tried_again(self):
+        self.upload()
+        self.service.maintain_channels()
+        self.clock = at("07:31")
+        for reason in ('ExpiredProviderToken', 'InvalidProviderToken'):
+            self.client.result = {'ok': False, 'status': 403, 'reason': reason, 'certainty': 'rejected'}
+            self.service.dispatch_starts()
+            self.assertEqual(self.ledger(), {}, 'not terminal: the intent goes and the start waits')
+            self.clock += 60
+        self.client.result = {'ok': True, 'status': 200}
+        self.service.dispatch_starts()
+        self.assertEqual((len(self.client.starts), list(self.ledger().values())), (3, ['submitted']))
+        # Any other 403 is final.
+        self.db.execute("DELETE FROM la_starts"); self.db.commit()
+        self.service.retries.clear(); self.service._requeue(self.id, self.jobs()[0]['occurrence'], self.clock)
+        self.client.result = {'ok': False, 'status': 403, 'reason': 'BadCertificate', 'certainty': 'rejected'}
+        self.service.dispatch_starts()
+        self.assertEqual(list(self.ledger().values()), ['terminal'])
+
+    def test_a_follower_takes_the_unified_calendar_over_the_shares_own(self):
+        self.db.executescript("CREATE TABLE global_calendar(id INTEGER PRIMARY KEY, version INTEGER, adjustments_json TEXT);"
+                              "INSERT INTO global_calendar VALUES(1, 1, '[]');")
+        self.share()
+        # The share froze a swap for today: Monday's classes (none) instead of Tuesday's.
+        self.db.execute("UPDATE shares SET adjustments_json=?", (json.dumps([{"date": "2026-09-22", "kind": "swap", "source": "2026-09-21"}]),))
+        self.db.commit()
+        self.upload(follow={"share": "SHARE1"}, settings={"leadMinutes": 30, "sharedLeadMinutes": 30})
+        shared = lambda: ['shared' in self.payload(row)['aps']['attributes'] for row in self.jobs() if row['day'] == '2026-09-22']
+        self.assertEqual(shared(), [False])
+        # The server's arrangement covers today as a normal Tuesday (swap to last Tuesday): it wins.
+        self.db.execute("UPDATE global_calendar SET version=2, adjustments_json=?", (json.dumps([{"date": "2026-09-22", "kind": "swap", "source": "2026-09-15", "note": ""}]),))
+        self.db.commit()
+        self.service.follow_shares()
+        self.assertEqual(shared(), [True])
+        # Saving the calendar again rebuilds the follower once more.
+        self.db.execute("UPDATE global_calendar SET version=3, adjustments_json=?", (json.dumps([{"date": "2026-09-22", "kind": "off", "note": ""}]),))
+        self.db.commit()
+        self.service.follow_shares()
+        self.assertEqual(shared(), [False])
+
+    def test_nightly_drops_settled_broadcasts_after_three_days(self):
+        old, recent = self.clock - 4 * 86400, self.clock - 86400
+        self.db.executemany("INSERT INTO la_v2_broadcasts(channel_key,day,fire_at,payload,state) VALUES(?,?,?,?,?)", [
+            ('a', 'd', old, '{}', 'sent'), ('b', 'd', old, '{}', 'expired'), ('c', 'd', old, '{}', 'pending'), ('d', 'd', recent, '{}', 'sent')])
+        self.db.commit()
+        self.service.nightly()
+        self.assertEqual(sorted(row[0] for row in self.db.execute("SELECT channel_key FROM la_v2_broadcasts")), ['c', 'd'])
 
     def test_a_crash_after_the_intent_leaves_the_start_unknown(self):
         self.upload()
@@ -483,7 +556,8 @@ class RedrawTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             self.clock = at("08:00"); self.service.dispatch_token_updates()
         health = self.service.health()
-        self.assertEqual(health['tokenUpdates'], {'activities': 1, 'pending': 4})
+        # A refused provider token is retried, so the 08:00 refresh is still pending.
+        self.assertEqual(health['tokenUpdates'], {'activities': 1, 'pending': 5})
         self.assertNotIn(self.token, json.dumps(health) + output.getvalue())
 
 

@@ -542,3 +542,95 @@ class SubmissionCertaintyTests(unittest.TestCase):
         self.assertEqual(connection.batches, [['/3/device/a1', '/3/device/b2', '/3/device/c3', '/3/device/d4'], ['/3/device/b2']])
         self.assertEqual([r.get('certainty') for r in results], ['accepted', 'accepted', 'unknown', 'rejected', None])
         self.assertEqual((results[3]['reason'], results[4]['reason']), ('BadDeviceToken', 'PayloadTooLarge'))
+
+
+class ProviderTokenTests(unittest.TestCase):
+    """403 Expired/InvalidProviderToken: sign a new JWT and send once more."""
+
+    def client(self, answers):
+        clock = [1_700_000_000.0]
+        client = apns.APNsClient(apns.ES256Key(VECTOR_KEY), 'key', 'team', 'bundle', now=lambda: clock[0])
+        seen = []
+
+        class Connection:
+            closed = False
+            def request_many(self, requests):
+                clock[0] += 1  # a renewed token carries a new `iat`
+                seen.append([dict(headers)['authorization'] for _, _, headers, _ in requests])
+                return [answers.pop(0) if answers else ('response', 200, b'') for _ in requests]
+            def request(self, method, path, headers, body=b''):
+                outcome = self.request_many([(method, path, headers, body)])[0]
+                return outcome[1], outcome[2]
+            def close(self): pass
+        connection = Connection()
+        client._connection = lambda *args, **kwargs: connection
+        client._channel_connection = lambda *args, **kwargs: connection
+        return client, seen
+
+    def test_a_stale_token_is_renewed_and_only_its_pushes_resent(self):
+        for reason in ('ExpiredProviderToken', 'InvalidProviderToken'):
+            with self.subTest(reason=reason):
+                stale = ('response', 403, json.dumps({'reason': reason}).encode())
+                client, seen = self.client([stale, ('response', 200, b''), ('response', 400, b'{"reason":"BadDeviceToken"}')])
+                results = client.push_many([{'device_token': t, 'payload': {'aps': {}}} for t in ('a1', 'b2', 'c3')])
+                self.assertEqual([r['status'] for r in results], [200, 200, 400])
+                self.assertEqual([len(batch) for batch in seen], [3, 1], 'only the refused push goes again')
+                self.assertNotEqual(seen[0][0], seen[1][0], 'with a freshly signed token')
+
+    def test_a_token_refused_twice_is_reported_not_looped(self):
+        stale = ('response', 403, b'{"reason":"ExpiredProviderToken"}')
+        client, seen = self.client([stale, stale])
+        result = client.push('a1', {'aps': {}})
+        self.assertEqual((result['status'], result['reason'], len(seen)), (403, 'ExpiredProviderToken', 2))
+        client, seen = self.client([('response', 403, b'{"reason":"BadCertificate"}')])
+        self.assertEqual(client.push('a1', {'aps': {}})['reason'], 'BadCertificate')
+        self.assertEqual(len(seen), 1, 'any other 403 is final')
+
+    def test_broadcasts_and_channel_calls_renew_too(self):
+        stale = ('response', 403, b'{"reason":"InvalidProviderToken"}')
+        client, seen = self.client([stale])
+        self.assertTrue(client.broadcast('channel', {'aps': {}})['ok'])
+        self.assertEqual(len(seen), 2)
+        client, seen = self.client([stale, ('response', 200, b'{"channels":["c"]}')])
+        self.assertEqual(client.list_channels(), ['c'])
+        self.assertNotEqual(seen[0], seen[1])
+
+
+class ClosedClientTests(unittest.TestCase):
+    def test_a_closed_client_reports_not_sent(self):
+        client = apns.APNsClient(apns.ES256Key(VECTOR_KEY), 'key', 'team', 'bundle')
+        client.close()
+        self.assertEqual(client.push('a1', {'aps': {}})['certainty'], 'notSent')
+        with self.assertRaises(apns.APNsError):
+            client.list_channels()
+
+    def test_a_socket_closed_under_a_request_is_not_sent(self):
+        connection = apns.HTTP2Connection('127.0.0.1')
+
+        class Gone:
+            def sendall(self, data): raise AttributeError("'NoneType' object has no attribute 'sendall'")
+            def close(self): pass
+        connection.sock = Gone()
+        connection._stale = lambda: False
+        connection._last_used = time.monotonic()
+        self.assertEqual([outcome[0] for outcome in connection.request_many([('POST', '/3/device/a', [], b'{}')] * 2)],
+                         ['notSent', 'notSent'])
+
+    def test_close_waits_for_a_request_in_flight(self):
+        client = apns.APNsClient(apns.ES256Key(VECTOR_KEY), 'key', 'team', 'bundle')
+        entered, release, order = threading.Event(), threading.Event(), []
+
+        class Connection:
+            closed = False
+            def request_many(self, requests):
+                entered.set(); release.wait(2); order.append('answered')
+                return [('response', 200, b'')] * len(requests)
+            def close(self): order.append('closed')
+        client._connections[('device', client.hosts['production'])] = Connection()
+        sender = threading.Thread(target=client.push, args=('a1', {'aps': {}}))
+        sender.start(); entered.wait(2)
+        closer = threading.Thread(target=client.close)
+        closer.start(); time.sleep(0.05)
+        self.assertEqual(order, [], 'close waits while the push is on the wire')
+        release.set(); sender.join(2); closer.join(2)
+        self.assertEqual(order, ['answered', 'closed'])

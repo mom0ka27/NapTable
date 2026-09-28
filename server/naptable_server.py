@@ -9,7 +9,7 @@ import argparse, hashlib, json, os, secrets, sqlite3, threading, re
 from datetime import datetime, timedelta, timezone
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from pathlib import Path
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
@@ -134,6 +134,29 @@ def _is_date(value):
     except ValueError:
         return False
 
+MAX_WEEK = 40
+# (field names, lowest, highest) as `ImportedSchedule.makeCourse` reads them.
+# 0 is legal where it means "no fixed slot" (free-time rows) or, for
+# time_count (periods *after* the first), "one period"; a free-time row may
+# carry a negative count, which the client clamps.
+COURSE_BOUNDS = ((("week_time", "weekTime"), 0, 7), (("start_time", "startTime"), 0, 64),
+                 (("time_count", "timeCount"), -64, 31))
+
+def _bounded(value, low, high, name):
+    """An integer in [low, high]. Numeric strings pass, since the client's codec
+    accepts them; floats, booleans and anything larger are refused."""
+    if isinstance(value, str) and re.fullmatch(r"\s*-?\d{1,12}\s*", value): value = int(value)
+    if type(value) is not int or not low <= value <= high:
+        raise ValueError(f"{name} 必须是 {low}-{high} 的整数")
+    return value
+
+def _text(value, name, limit=200):
+    """An optional string field of an admin form; None means empty."""
+    if value is None: return ""
+    if not isinstance(value, str): raise ValueError(f"{name} must be a string")
+    if len(value) > limit: raise ValueError(f"{name} 最多 {limit} 个字符")
+    return value
+
 def normalize_courses(value):
     """Validate uploaded rows and return them with their encoded form.
 
@@ -149,6 +172,21 @@ def normalize_courses(value):
         if not isinstance(course, dict): raise ValueError("each course must be an object")
         name = course.get("name")
         if not isinstance(name, str) or not name.strip(): raise ValueError("每门课程都需要名称")
+        # Readers decode these into fixed-width integers: an unbounded value
+        # crashes the app that installs the share.
+        for keys, low, high in COURSE_BOUNDS:
+            for key in keys:
+                if course.get(key) is not None: _bounded(course[key], low, high, key)
+        weeks = course.get("weeks")
+        if isinstance(weeks, str):
+            # The Flutter-era `"[1,2,3]"` string: every number in it is a week,
+            # as `ImportedSchedule.normalizeWeeks` reads it.
+            if len(weeks) > 400: raise ValueError("weeks 过长")
+            weeks = re.findall(r"\d+", weeks)
+        if isinstance(weeks, list):
+            if len(weeks) > 400: raise ValueError("weeks 过长")
+            for week in weeks: _bounded(week, 1, MAX_WEEK, "weeks")
+        elif weeks is not None: raise ValueError("weeks must be a list")
     encoded = json.dumps(value, ensure_ascii=False)
     if len(encoded.encode()) > MAX_COURSE_BYTES: raise ValueError("课表内容过大，无法分享")
     return value, encoded
@@ -168,6 +206,9 @@ def normalize_periods(value):
         rows.append({"id": index, "name": f"第{index}节", "start": start, "end": end})
         previous = end
     return rows
+
+class SchoolExists(ValueError):
+    """`save_school(create=True)` for an id already in the catalogue."""
 
 class Store:
     def __init__(self, path):
@@ -201,11 +242,10 @@ class Store:
     def create_admin_session(self, secret, ttl=ADMIN_SESSION_TTL):
         raw = secrets.token_urlsafe(32)
         stamp = datetime.now(timezone.utc)
-        with self.lock:
+        with self.lock, self.db:
             self.db.execute("DELETE FROM admin_sessions WHERE expires_at<=?", (stamp.isoformat(),))
             self.db.execute("INSERT INTO admin_sessions (token_hash,secret_hash,created_at,expires_at) VALUES (?,?,?,?)",
                             (self._digest(raw), self._digest(secret), stamp.isoformat(), (stamp + ttl).isoformat()))
-            self.db.commit()
         return raw
     def admin_session_valid(self, raw, secret, ttl=ADMIN_SESSION_TTL):
         """Accept a console session cookie, sliding its expiry so an admin who
@@ -213,21 +253,18 @@ class Store:
         if not raw or not secret: return False
         digest = self._digest(raw)
         stamp = datetime.now(timezone.utc)
-        with self.lock:
+        with self.lock, self.db:
             row = self.db.execute("SELECT secret_hash,expires_at FROM admin_sessions WHERE token_hash=?", (digest,)).fetchone()
             if not row: return False
             if row["expires_at"] <= stamp.isoformat() or not secrets.compare_digest(row["secret_hash"], self._digest(secret)):
                 self.db.execute("DELETE FROM admin_sessions WHERE token_hash=?", (digest,))
-                self.db.commit()
                 return False
             self.db.execute("UPDATE admin_sessions SET expires_at=? WHERE token_hash=?", ((stamp + ttl).isoformat(), digest))
-            self.db.commit()
         return True
     def delete_admin_session(self, raw):
         if not raw: return
-        with self.lock:
+        with self.lock, self.db:
             self.db.execute("DELETE FROM admin_sessions WHERE token_hash=?", (self._digest(raw),))
-            self.db.commit()
     def apns_config(self):
         """Return the WebUI-managed APNs settings, or None before first save."""
         with self.lock:
@@ -270,21 +307,19 @@ class Store:
                 if separator and environment in ("production", "sandbox") and school_id and channel:
                     clean_channels[f"{environment}:{school_id}"] = channel
         stamp = now()
-        with self.lock:
+        with self.lock, self.db:
             self.db.execute(
                 "INSERT INTO apns_config (id,key_path,key_id,team_id,bundle_id,tick_seconds,channels_json,updated_at) VALUES (1,?,?,?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET key_path=excluded.key_path,key_id=excluded.key_id,team_id=excluded.team_id,bundle_id=excluded.bundle_id,tick_seconds=excluded.tick_seconds,channels_json=excluded.channels_json,updated_at=excluded.updated_at",
                 (fields["keyPath"], fields["keyID"], fields["teamID"], fields["bundleID"], tick,
                  json.dumps(clean_channels, ensure_ascii=False), stamp))
-            self.db.commit()
         return self.apns_config()
     def save_apns_channels(self, channels):
         config = self.apns_config()
         if not config: return None
-        with self.lock:
+        with self.lock, self.db:
             self.db.execute("UPDATE apns_config SET channels_json=?,updated_at=? WHERE id=1",
                             (json.dumps(channels, ensure_ascii=False), now()))
-            self.db.commit()
         return self.apns_config()
     def reconcile_apns_channels(self, client):
         config = self.apns_config()
@@ -387,11 +422,10 @@ class Store:
     def save_global_calendar(self, value):
         adjustments = normalize_adjustments(value.get("adjustments") if isinstance(value, dict) else None)
         stamp = now()
-        with self.lock:
+        with self.lock, self.db:
             self.db.execute("UPDATE global_calendar SET version=version+1,adjustments_json=?,updated_at=? WHERE id=1",
                             (json.dumps(adjustments, ensure_ascii=False), stamp))
             self.db.execute("UPDATE school_terms SET version=version+1,updated_at=?", (stamp,))
-            self.db.commit()
         return self.global_calendar()
     def import_calendar(self, value):
         """Preview the published arrangement against what is already stored.
@@ -479,8 +513,23 @@ class Store:
                 # Shares retain their frozen timetable, name and scope; only the
                 # reference used by resync and clients changes.
                 self.db.execute("UPDATE shares SET school_id=? WHERE school_id=?", (new_id, old_id))
-                if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='la_devices'").fetchone():
-                    self.db.execute("UPDATE la_devices SET school_id=? WHERE school_id=?", (new_id, old_id))
+                tables = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in ("la_devices", "la_day_channels"):
+                    if table in tables:
+                        self.db.execute(f"UPDATE {table} SET school_id=? WHERE school_id=?", (new_id, old_id))
+                if {"la_timetables", "la_channels", "la_schedule_versions", "la_v2_broadcasts"} <= tables:
+                    # Leftovers of a deleted school with the new id would collide
+                    # with the moved rows; they go once their channels retire.
+                    if any(self.db.execute(f"SELECT 1 FROM {table} WHERE school=? LIMIT 1", (new_id,)).fetchone()
+                           for table in ("la_channels", "la_schedule_versions")):
+                        raise ValueError("该学校 ID 的旧实时活动频道仍在回收，请稍后再试")
+                    self.db.execute("UPDATE la_timetables SET school=? WHERE school=?", (new_id, old_id))
+                    self.db.execute("UPDATE la_schedule_versions SET school=? WHERE school=?", (new_id, old_id))
+                    # The channel's logical key names the school: broadcasts follow it.
+                    key = "bundle||':'||environment||':'||?||':'||schedule||':'||version||':end-period-'||final_period"
+                    self.db.execute(f"UPDATE la_v2_broadcasts SET channel_key=(SELECT {key} FROM la_channels c WHERE c.logical_key=la_v2_broadcasts.channel_key) "
+                                    "WHERE channel_key IN (SELECT logical_key FROM la_channels WHERE school=?)", (new_id, old_id))
+                    self.db.execute(f"UPDATE la_channels SET school=?,logical_key={key} WHERE school=?", (new_id, new_id, old_id))
                 config = self.db.execute("SELECT channels_json FROM apns_config WHERE id=1").fetchone()
                 if config:
                     channels = json.loads(config[0] or "{}")
@@ -491,23 +540,58 @@ class Store:
                     self.db.execute("UPDATE apns_config SET channels_json=? WHERE id=1",
                                     (json.dumps(channels, ensure_ascii=False),))
             return self.school(self.db.execute("SELECT * FROM school_configs WHERE id=?", (new_id,)).fetchone())
-    def save_school(self, value):
-        required = value.get("id"), value.get("name")
-        if not all(required): raise ValueError("id/name/periods are required")
+    def save_school(self, value, create=False):
+        """Insert or update a school. With `create`, an existing id is left
+        alone and reported, so a console adding a school cannot overwrite one."""
+        name = _text(value.get("name"), "name", 80).strip()
+        if not value.get("id") or not name: raise ValueError("id/name/periods are required")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", str(value["id"])):
             raise ValueError("invalid school id")
+        semester_start = _text(value.get("semesterStart"), "semesterStart", 40)
+        note = _text(value.get("note"), "note", 400)
         periods = normalize_periods(value.get("periods"))
         stamp=now()
-        with self.lock:
+        with self.lock, self.db:
             existing = self.db.execute("SELECT periods_json FROM school_configs WHERE id=?", (value["id"],)).fetchone()
+            if create and existing is not None: raise SchoolExists(value["id"])
             encoded_periods = json.dumps(periods, ensure_ascii=False)
             periods_changed = existing is None or json.loads(existing["periods_json"] or "[]") != periods
-            self.db.execute("INSERT INTO school_configs VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,semester_start=excluded.semester_start,periods_json=excluded.periods_json,note=excluded.note,updated_at=excluded.updated_at", (value["id"],value["name"],value.get("semesterStart", ""),encoded_periods,value.get("note", ""),stamp))
+            self.db.execute("INSERT INTO school_configs VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,semester_start=excluded.semester_start,periods_json=excluded.periods_json,note=excluded.note,updated_at=excluded.updated_at", (value["id"],name,semester_start,encoded_periods,note,stamp))
             if periods_changed:
                 self.db.execute("UPDATE school_terms SET version=version+1,updated_at=? WHERE school_id=?", (stamp, value["id"]))
-            self.db.commit()
-        row = self.db.execute("SELECT * FROM school_configs WHERE id=?", (value["id"],)).fetchone()
-        return self.school(row)
+            return self.school(self.db.execute("SELECT * FROM school_configs WHERE id=?", (value["id"],)).fetchone())
+    def save_term(self, school_id, value):
+        """Insert or update one term of a school; the version and the current
+        flag are decided inside the write, so concurrent saves cannot race."""
+        required=[value.get("id"),value.get("semesterStartMonday"),value.get("weekCount"),value.get("timezone")]
+        if not all(required): raise ValueError("term id, semesterStartMonday, weekCount and timezone are required")
+        if not isinstance(value["id"], str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", value["id"]):
+            raise ValueError("invalid term id")
+        if type(value["weekCount"]) is not int or not 1 <= value["weekCount"] <= 40:
+            raise ValueError("weekCount must be an integer between 1 and 40")
+        if value["timezone"] != "Asia/Shanghai" or not isinstance(value["semesterStartMonday"], str) or not ISO_DATE.fullmatch(value["semesterStartMonday"]):
+            raise ValueError("only Asia/Shanghai and ISO date are supported")
+        from datetime import date
+        try: parsed=date.fromisoformat(value["semesterStartMonday"])
+        except ValueError: raise ValueError("invalid semesterStartMonday")
+        if parsed.isoweekday() != 1: raise ValueError("semesterStartMonday must be Monday")
+        note = _text(value.get("note"), "note", 400)
+        requested = value.get("current")
+        if requested is not None and not isinstance(requested, bool): raise ValueError("current must be a boolean")
+        stamp=now()
+        with self.lock, self.db:
+            if not self.db.execute("SELECT 1 FROM school_configs WHERE id=?", (school_id,)).fetchone():
+                raise ValueError("unknown schoolID")
+            last=self.db.execute("SELECT is_current FROM school_terms WHERE school_id=? AND term_id=?",(school_id,value["id"])).fetchone()
+            other_current = self.db.execute(
+                "SELECT 1 FROM school_terms WHERE school_id=? AND term_id!=? AND is_current=1",
+                (school_id, value["id"])).fetchone()
+            # A school must always retain one current term. Switch by marking
+            # another term current, not by clearing the only one.
+            make_current = requested is True or not other_current
+            if make_current: self.db.execute("UPDATE school_terms SET is_current=0 WHERE school_id=?", (school_id,))
+            self.db.execute("INSERT INTO school_terms (school_id,term_id,version,semester_start_monday,week_count,periods_json,timezone,note,updated_at,adjustments_json,is_current) VALUES (?,?,1,?,?,'[]',?,?,?,'[]',?) ON CONFLICT(school_id,term_id) DO UPDATE SET version=version+1,semester_start_monday=excluded.semester_start_monday,week_count=excluded.week_count,timezone=excluded.timezone,note=excluded.note,updated_at=excluded.updated_at,is_current=excluded.is_current",(school_id,value["id"],value["semesterStartMonday"],value["weekCount"],value["timezone"],note,stamp,int(make_current)))
+            return self.term(self.db.execute("SELECT * FROM school_terms WHERE school_id=? AND term_id=?",(school_id,value["id"])).fetchone())
     def report_usage(self, installation_id, secret, value):
         if not re.fullmatch(r"[a-fA-F0-9-]{36}", installation_id):
             raise ValueError("invalid installation ID")
@@ -680,12 +764,11 @@ class Store:
         what lets a timetable from another school keep its own bell schedule."""
         stamp=now()
         fields=[term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp]
-        with self.lock:
+        with self.lock, self.db:
             if payload is None:
                 self.db.execute("UPDATE shares SET semester_start_monday=?,class_time_list_json=?,adjustments_json=?,term_id=?,term_version=?,term_snapshot_json=?,updated_at=? WHERE code=?",(*fields,code.upper()))
             else:
                 self.db.execute("UPDATE shares SET payload_json=?,school_id=?,school_name=?,semester_start_monday=?,class_time_list_json=?,adjustments_json=?,term_id=?,term_version=?,term_snapshot_json=?,updated_at=? WHERE code=?",(payload["courses"],payload["schoolID"],self.school_name(payload["schoolID"]),*fields,code.upper()))
-            self.db.commit()
         return self.get(code)
     def update(self, code, token, value):
         row = self.authorize(code, token)
@@ -713,20 +796,28 @@ class Store:
     def revoke(self, code, token):
         """Delete the share. None when it no longer exists, so an owner whose
         share is already gone can drop the stale credential."""
-        with self.lock:
+        with self.lock, self.db:
             if self.db.execute("SELECT 1 FROM shares WHERE code=?",(code.upper(),)).fetchone() is None: return None
             if not self.authorize(code, token): return False
-            self.db.execute("DELETE FROM shares WHERE code=?",(code.upper(),)); self.db.commit()
+            self.db.execute("DELETE FROM shares WHERE code=?",(code.upper(),))
         return True
+
+def _same_secret(supplied, secret):
+    """`compare_digest` refuses non-ASCII str; bytes compare whatever was sent."""
+    return secrets.compare_digest(str(supplied).encode(), str(secret).encode())
 
 class Handler(BaseHTTPRequestHandler):
     store=None
     live_activity=None
+    # A client that stops sending mid-request must not hold a thread forever.
+    timeout=15
+    _head=False
     def log_message(self, fmt, *args): return
     def send_json(self, status, value, headers=()):
         data=json.dumps(value,ensure_ascii=False).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data)))
         for name, header_value in headers: self.send_header(name, header_value)
-        self.end_headers(); self.wfile.write(data)
+        self.end_headers()
+        if not self._head: self.wfile.write(data)
     def admin_secret(self): return os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
     def cookie(self, name):
         jar = SimpleCookie()
@@ -745,27 +836,65 @@ class Handler(BaseHTTPRequestHandler):
     def require_admin(self):
         secret = self.admin_secret()
         if not secret: return False
-        if secrets.compare_digest(self.headers.get("X-Admin-Token", ""), secret): return True
+        if _same_secret(self.headers.get("X-Admin-Token", ""), secret): return True
         return self.same_origin() and self.store.admin_session_valid(self.cookie(ADMIN_COOKIE), secret)
     def session_cookie(self, value, max_age):
         parts = [f"{ADMIN_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
         if self.headers.get("X-Forwarded-Proto", "").lower() == "https": parts.append("Secure")
         return "; ".join(parts)
-    def send_file(self, path, content_type):
+    def send_file(self, path, content_type, cache="no-store"):
         try: data = path.read_bytes()
         except OSError: return self.send_json(404, {"error": "not found"})
-        self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", "no-store"); self.end_headers(); self.wfile.write(data)
+        self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", cache); self.end_headers()
+        if not self._head: self.wfile.write(data)
+    def versioned(self):
+        """Console assets are cached only when admin.html asks for them by
+        version (`?v=`), so a deploy is picked up on the next page load."""
+        return "public, max-age=86400" if "v" in parse_qs(urlparse(self.path).query) else "no-store"
     def body(self):
-        n = int(self.headers.get("Content-Length", 0))
+        """The request body, which every route expects to be a JSON object."""
+        try: n = int(self.headers.get("Content-Length", 0))
+        except ValueError: raise ValueError("invalid Content-Length")
         if n < 0 or n > MAX_REQUEST_BYTES:
             raise ValueError(f"request body exceeds {MAX_REQUEST_BYTES} bytes")
-        return json.loads(self.rfile.read(n) or b"{}")
+        try: value = json.loads(self.rfile.read(n) or b"{}")
+        except UnicodeDecodeError: raise ValueError("request body must be UTF-8 JSON")
+        if not isinstance(value, dict): raise ValueError("request body must be a JSON object")
+        return value
     def apns_status(self):
         value = self.store.apns_config() or {"keyPath": "", "keyID": "", "teamID": "", "bundleID": "", "tickSeconds": 5, "channels": {}}
         if self.live_activity is not None and hasattr(self.live_activity, "v2"):
             value["liveActivityHealth"] = self.live_activity.v2.health()
         return value
-    def do_GET(self):
+    def _dispatch(self, route):
+        """Every method's outermost frame: a request never drops the connection
+        without an answer, whatever a route raised."""
+        try: route()
+        except (ValueError, KeyError, TypeError, live_activity.apns.APNsError) as error:
+            self._fail(400, str(error))
+        except Exception as error:
+            print(f"request failed: {self.command} {self.path}: {type(error).__name__}: {error}")
+            self._fail(500, "internal error")
+    def _fail(self, status, message):
+        # A store write that failed half way must not leave its transaction open.
+        store = self.store
+        if store is not None:
+            with store.lock:
+                try:
+                    if store.db.in_transaction: store.db.rollback()
+                except sqlite3.Error: pass
+        try: self.send_json(status, {"error": message})
+        except OSError: pass
+    def do_GET(self): self._dispatch(self._route_GET)
+    def do_POST(self): self._dispatch(self._route_POST)
+    def do_PUT(self): self._dispatch(self._route_PUT)
+    def do_DELETE(self): self._dispatch(self._route_DELETE)
+    def do_HEAD(self):
+        """GET's status and headers without the body."""
+        self._head = True
+        try: self._dispatch(self._route_GET)
+        finally: self._head = False
+    def _route_GET(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "GET", path): return
         if path == "/": return self.send_file(SITE_ROOT / "index.html", "text/html; charset=utf-8")
@@ -773,10 +902,10 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/site/"):
             name = path[len("/site/"):]
             if name not in SITE_ASSETS: return self.send_json(404, {"error": "not found"})
-            return self.send_file(SITE_ROOT / name, SITE_ASSETS[name])
+            return self.send_file(SITE_ROOT / name, SITE_ASSETS[name], "public, max-age=86400")
         if path in ("/admin", "/admin/"): return self.send_file(STATIC_ROOT / "admin.html", "text/html; charset=utf-8")
-        if path == "/static/admin.css": return self.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8")
-        if path == "/static/admin.js": return self.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8")
+        if path == "/static/admin.css": return self.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8", self.versioned())
+        if path == "/static/admin.js": return self.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8", self.versioned())
         if path == "/health": return self.send_json(200,{"ok":True})
         if path == "/v1/admin/session":
             if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
@@ -800,7 +929,7 @@ class Handler(BaseHTTPRequestHandler):
             else: return self.send_json(404,{"error":"not found"})
             return self.send_json(200,value) if value else self.send_json(404,{"error":"share not found"})
         self.send_json(404,{"error":"not found"})
-    def do_POST(self):
+    def _route_POST(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "POST", path): return
         try:
@@ -811,7 +940,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/admin/session":
                 secret = self.admin_secret()
                 supplied = str(self.body().get("token", ""))
-                if not secret or not secrets.compare_digest(supplied, secret):
+                if not secret or not _same_secret(supplied, secret):
                     return self.send_json(403, {"error": "admin token required"})
                 cookie = self.session_cookie(self.store.create_admin_session(secret),
                                              int(ADMIN_SESSION_TTL.total_seconds()))
@@ -821,13 +950,18 @@ class Handler(BaseHTTPRequestHandler):
                 candidate = self.body()
                 # Parse the key before writing, so a typo cannot replace a
                 # working configuration with one that the dispatcher cannot use.
+                # The client checked here is the one the dispatcher then uses.
                 client = live_activity._client_from_config(candidate)
-                if self.live_activity is not None and hasattr(self.live_activity, "v2"):
-                    self.live_activity.v2.validate_client(client)
-                value = self.store.save_apns_config(candidate)
-                if client is not None: client.close()
+                try:
+                    if self.live_activity is not None and hasattr(self.live_activity, "v2"):
+                        self.live_activity.v2.validate_client(client)
+                    value = self.store.save_apns_config(candidate)
+                except BaseException:
+                    if client is not None: client.close()
+                    raise
                 if self.live_activity is not None:
-                    live_activity.apply_config(self.live_activity, value)
+                    live_activity.apply_config(self.live_activity, value, client=client)
+                elif client is not None: client.close()
                 return self.send_json(200, self.apns_status())
             if path == "/v1/admin/apns/reconcile":
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
@@ -841,9 +975,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, self.store.import_calendar(self.body()))
             if re.fullmatch(r"/v1/admin/schools/[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}/rename", path):
                 if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                body = self.body()
-                if not isinstance(body, dict): return self.send_json(400, {"error": "request body must be an object"})
-                new_id = body.get("id")
+                new_id = self.body().get("id")
                 saved = self.store.rename_school(path.split("/")[4], new_id)
                 if not saved: return self.send_json(404, {"error": "school not found"})
                 if self.live_activity is not None:
@@ -864,57 +996,26 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.require_admin():
                     return self.send_json(403,{"error":"school template is read-only without admin token"})
                 value=self.body(); value["id"]=path.rsplit("/",1)[-1]
-                saved = self.store.save_school(value)
+                # A contract with admin.js: `"create": true` adds a school and
+                # never overwrites one that already has this id.
+                try: saved = self.store.save_school(value, create=value.pop("create", False) is True)
+                except SchoolExists: return self.send_json(409, {"error": "school exists"})
                 return self.send_json(200, saved)
             if path.startswith("/v1/admin/schools/") and path.endswith("/terms"):
                 if not self.require_admin(): return self.send_json(403,{"error":"admin token required"})
-                school_id = path.split("/")[4]; value=self.body(); required=[value.get("id"),value.get("semesterStartMonday"),value.get("weekCount"),value.get("timezone")]
-                if not all(required): return self.send_json(400,{"error":"term id, semesterStartMonday, weekCount and timezone are required"})
-                if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", str(value["id"])):
-                    return self.send_json(400, {"error": "invalid term id"})
-                if type(value["weekCount"]) is not int or not 1 <= value["weekCount"] <= 40:
-                    return self.send_json(400, {"error": "weekCount must be an integer between 1 and 40"})
-                if not self.store.db.execute("SELECT 1 FROM school_configs WHERE id=?", (school_id,)).fetchone():
-                    return self.send_json(400, {"error": "unknown schoolID"})
-                if value["timezone"] != "Asia/Shanghai" or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value["semesterStartMonday"]): return self.send_json(400,{"error":"only Asia/Shanghai and ISO date are supported"})
-                from datetime import date
-                try:
-                    parsed=date.fromisoformat(value["semesterStartMonday"])
-                    if parsed.isoweekday() != 1: return self.send_json(400,{"error":"semesterStartMonday must be Monday"})
-                except ValueError: return self.send_json(400,{"error":"invalid semesterStartMonday"})
-                last=self.store.db.execute("SELECT version,is_current FROM school_terms WHERE school_id=? AND term_id=?",(school_id,value["id"])).fetchone()
-                other_current = self.store.db.execute(
-                    "SELECT 1 FROM school_terms WHERE school_id=? AND term_id!=? AND is_current=1",
-                    (school_id, value["id"])).fetchone()
-                stamp=now(); value["version"]=(int(last[0])+1) if last else 1; value["updatedAt"]=stamp
-                requested_current = bool(value["current"]) if "current" in value else None
-                if requested_current is True:
-                    make_current = True
-                elif last and last["is_current"] and not other_current:
-                    # A school must always retain one current term. Switch by
-                    # marking another term current, not by clearing the only one.
-                    make_current = True
-                elif not last and not other_current:
-                    make_current = True
-                else:
-                    make_current = False
-                with self.store.lock:
-                    if make_current: self.store.db.execute("UPDATE school_terms SET is_current=0 WHERE school_id=?", (school_id,))
-                    self.store.db.execute("INSERT INTO school_terms (school_id,term_id,version,semester_start_monday,week_count,periods_json,timezone,note,updated_at,adjustments_json,is_current) VALUES (?,?,?,?,?,'[]',?,?,?,'[]',?) ON CONFLICT(school_id,term_id) DO UPDATE SET version=excluded.version,semester_start_monday=excluded.semester_start_monday,week_count=excluded.week_count,timezone=excluded.timezone,note=excluded.note,updated_at=excluded.updated_at,is_current=excluded.is_current",(school_id,value["id"],value["version"],value["semesterStartMonday"],int(value["weekCount"]),value["timezone"],value.get("note",""),stamp,int(make_current)))
-                    self.store.db.commit()
-                return self.send_json(200,self.store.find_term(school_id,value["id"]))
+                return self.send_json(200, self.store.save_term(path.split("/")[4], self.body()))
             self.send_json(404,{"error":"not found"})
-        except (ValueError, KeyError, json.JSONDecodeError, live_activity.apns.APNsError) as e: self.send_json(400,{"error":str(e)})
-    def do_PUT(self):
+        except (ValueError, KeyError, json.JSONDecodeError, live_activity.apns.APNsError) as e: self._fail(400,str(e))
+    def _route_PUT(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "PUT", path): return
         token=self.headers.get("X-Write-Token","")
         if path.startswith("/v1/shares/"):
             try: value=self.store.update(path.rsplit("/",1)[-1],token,self.body())
-            except (ValueError, KeyError, json.JSONDecodeError) as e: return self.send_json(400,{"error":str(e)})
+            except (ValueError, KeyError, json.JSONDecodeError) as e: return self._fail(400,str(e))
             return self.send_json(200,value) if value else self.send_json(403,{"error":"invalid write token"})
         self.send_json(404,{"error":"not found"})
-    def do_DELETE(self):
+    def _route_DELETE(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "DELETE", path): return
         if path == "/v1/admin/session":
