@@ -3,8 +3,8 @@ import io, json, sqlite3, tempfile, threading, unittest
 from datetime import date
 
 from server import holidays
-from server.naptable_server import Handler, Store
-from tests.server_support import FastServer, JSONClientMixin
+from server.naptable_server import Store
+from tests.server_support import JSONClientMixin, LiveServer
 
 ARRANGEMENT = {
     "year": 2026,
@@ -122,11 +122,8 @@ class HolidayPlanTests(unittest.TestCase):
 class ImportEndpointTests(JSONClientMixin, unittest.TestCase):
     def setUp(self):
         self.db = tempfile.NamedTemporaryFile(suffix=".sqlite3")
-        Handler.store = Store(self.db.name)
-        Handler.live_activity = None
-        self.http = FastServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
-        self.thread.start()
+        self.store = Store(self.db.name)
+        self.http = LiveServer(self.store)
         self._fetch = holidays.fetch_year
         holidays.fetch_year = lambda year, opener=None: {
             "year": year, "papers": [], "source": f"test://{year}",
@@ -137,8 +134,8 @@ class ImportEndpointTests(JSONClientMixin, unittest.TestCase):
 
     def tearDown(self):
         holidays.fetch_year = self._fetch
-        self.http.shutdown(); self.http.server_close(); self.thread.join(timeout=2)
-        Handler.store.close(); self.db.close()
+        self.http.shutdown()
+        self.store.close(); self.db.close()
         import os
         os.environ.pop("NAPTABLE_ADMIN_TOKEN", None)
 
@@ -180,7 +177,7 @@ class ImportEndpointTests(JSONClientMixin, unittest.TestCase):
         self.assertEqual([r["date"] for r in result["proposed"]], ["2026-10-01"])
         self.assertEqual(result["endDate"], "2027-07-31")
         self.assertEqual(len(result["errors"]), 1)
-        self.assertEqual(Handler.store.global_calendar()["adjustments"], [])
+        self.assertEqual(self.store.global_calendar()["adjustments"], [])
         saved = [{"date": "2026-10-01", "kind": "off", "note": "国庆节"},
                  {"date": "2026-10-10", "kind": "swap", "source": "2026-10-02", "note": "补课"}]
         before = self.req("GET", "/v1/schools")["schools"]

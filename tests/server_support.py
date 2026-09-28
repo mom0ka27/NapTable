@@ -1,16 +1,32 @@
 """Shared plumbing for the HTTP-level server tests."""
-import http.client, json, socketserver
-from http.server import ThreadingHTTPServer
+import http.client, json, socket, threading, time
+
+import uvicorn
+
+from server.naptable_server import create_app, server_config
 
 
-class FastServer(ThreadingHTTPServer):
-    """`HTTPServer.server_bind` resolves the host's FQDN, which blocks for the
-    DNS timeout on a machine without a resolver. The value only ever reaches
-    the `Server:` header."""
+class LiveServer:
+    """The app on a real uvicorn socket, with the settings `main` uses, but
+    without the Live Activity worker threads: tests drive those by hand."""
 
-    def server_bind(self):
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.socket.getsockname()[:2]
+    def __init__(self, store, live_activity=None):
+        self.store, self.live_activity = store, live_activity
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        self.server_port = sock.getsockname()[1]
+        self.server = uvicorn.Server(server_config(create_app(store, live_activity, workers=False)))
+        self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [sock]}, daemon=True)
+        self.thread.start()
+        deadline = time.monotonic() + 5
+        while not self.server.started:
+            if not self.thread.is_alive() or time.monotonic() > deadline:
+                raise RuntimeError("test server did not start")
+            time.sleep(0.01)
+
+    def shutdown(self):
+        self.server.should_exit = True
+        self.thread.join(timeout=5)
 
 
 class JSONClientMixin:

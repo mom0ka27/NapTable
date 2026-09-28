@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Small persistent NapTable sharing/configuration server.
 
-Standard library only. Intended for a LAN or private deployment; put it behind
-TLS/authentication at the edge for a public deployment.
+FastAPI on uvicorn, in one process. Intended for a LAN or private deployment;
+put it behind TLS/authentication at the edge for a public deployment.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, secrets, sqlite3, threading, re
+import argparse, hashlib, html, json, os, secrets, sqlite3, threading, re
+from contextlib import asynccontextmanager
+from email.utils import formatdate
 from datetime import datetime, timedelta, timezone
 from http.cookies import CookieError, SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import DEFAULT_ERROR_CONTENT_TYPE, DEFAULT_ERROR_MESSAGE, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
+
+import anyio, uvicorn
+from fastapi import Depends, FastAPI, Request, Response
+from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
     from . import holidays, live_activity
@@ -806,18 +812,66 @@ def _same_secret(supplied, secret):
     """`compare_digest` refuses non-ASCII str; bytes compare whatever was sent."""
     return secrets.compare_digest(str(supplied).encode(), str(secret).encode())
 
-class Handler(BaseHTTPRequestHandler):
-    store=None
-    live_activity=None
-    # A client that stops sending mid-request must not hold a thread forever.
-    timeout=15
-    _head=False
-    def log_message(self, fmt, *args): return
+
+# -- HTTP ----------------------------------------------------------------------
+# FastAPI picks the route; the route bodies are the chains the stdlib handler
+# ran, in the same order, so every status, header and error text stays what
+# the released apps and the console expect.
+
+HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "DELETE")
+# A client that stops sending mid-request must not hold its request forever.
+BODY_TIMEOUT = 15
+SCHOOL_ID = r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}"
+
+class SchoolIDConvertor(Convertor):
+    regex = SCHOOL_ID
+    def convert(self, value): return value
+    def to_string(self, value): return value
+
+register_url_convertor("school", SchoolIDConvertor())
+
+class Exchange:
+    """One request as the routes and `live_activity.handle` see it: headers,
+    a JSON body parsed on first use, and the one response they send."""
+    def __init__(self, request):
+        self.store = request.app.state.store
+        self.live_activity = request.app.state.live_activity
+        self.headers = request.headers
+        self.command = request.method
+        self.target = request.scope["naptable.target"]
+        self.path = urlparse(self.target).path
+        self.response = None
+        self._raw, self._error = b"", None
+    async def receive(self, request):
+        """Read the body before the route runs, so no worker thread waits on a
+        slow client. A problem with it is raised by `body()`, where the route
+        asks for it: a request refused before its body is read still is."""
+        try: n = int(self.headers.get("Content-Length", 0))
+        except ValueError: self._error = ValueError("invalid Content-Length"); return
+        if n < 0 or n > MAX_REQUEST_BYTES:
+            self._error = ValueError(f"request body exceeds {MAX_REQUEST_BYTES} bytes"); return
+        if not n: return  # without a length there is no body, chunked or not
+        chunks = []
+        stream = request.stream()
+        try:
+            while True:
+                with anyio.fail_after(BODY_TIMEOUT): chunk = await anext(stream, None)
+                if chunk is None: break
+                chunks.append(chunk)
+        except Exception as error: self._error = error; return
+        self._raw = b"".join(chunks)
+    def body(self):
+        """The request body, which every route expects to be a JSON object."""
+        if self._error is not None: raise self._error
+        try: value = json.loads(self._raw or b"{}")
+        except UnicodeDecodeError: raise ValueError("request body must be UTF-8 JSON")
+        if not isinstance(value, dict): raise ValueError("request body must be a JSON object")
+        return value
+    def send(self, status, data, content_type, headers=()):
+        if self.response is not None: return  # the first answer is the one the client got
+        self.response = _response(status, data, [("Content-Type", content_type), ("Content-Length", str(len(data))), *headers])
     def send_json(self, status, value, headers=()):
-        data=json.dumps(value,ensure_ascii=False).encode(); self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8"); self.send_header("Content-Length",str(len(data)))
-        for name, header_value in headers: self.send_header(name, header_value)
-        self.end_headers()
-        if not self._head: self.wfile.write(data)
+        self.send(status, json.dumps(value,ensure_ascii=False).encode(), "application/json; charset=utf-8", headers)
     def admin_secret(self): return os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
     def cookie(self, name):
         jar = SimpleCookie()
@@ -845,37 +899,17 @@ class Handler(BaseHTTPRequestHandler):
     def send_file(self, path, content_type, cache="no-store"):
         try: data = path.read_bytes()
         except OSError: return self.send_json(404, {"error": "not found"})
-        self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Content-Length", str(len(data))); self.send_header("Cache-Control", cache); self.end_headers()
-        if not self._head: self.wfile.write(data)
+        self.send(200, data, content_type, [("Cache-Control", cache)])
     def versioned(self):
         """Console assets are cached only when admin.html asks for them by
         version (`?v=`), so a deploy is picked up on the next page load."""
-        return "public, max-age=86400" if "v" in parse_qs(urlparse(self.path).query) else "no-store"
-    def body(self):
-        """The request body, which every route expects to be a JSON object."""
-        try: n = int(self.headers.get("Content-Length", 0))
-        except ValueError: raise ValueError("invalid Content-Length")
-        if n < 0 or n > MAX_REQUEST_BYTES:
-            raise ValueError(f"request body exceeds {MAX_REQUEST_BYTES} bytes")
-        try: value = json.loads(self.rfile.read(n) or b"{}")
-        except UnicodeDecodeError: raise ValueError("request body must be UTF-8 JSON")
-        if not isinstance(value, dict): raise ValueError("request body must be a JSON object")
-        return value
+        return "public, max-age=86400" if "v" in parse_qs(urlparse(self.target).query) else "no-store"
     def apns_status(self):
         value = self.store.apns_config() or {"keyPath": "", "keyID": "", "teamID": "", "bundleID": "", "tickSeconds": 5, "channels": {}}
         if self.live_activity is not None and hasattr(self.live_activity, "v2"):
             value["liveActivityHealth"] = self.live_activity.v2.health()
         return value
-    def _dispatch(self, route):
-        """Every method's outermost frame: a request never drops the connection
-        without an answer, whatever a route raised."""
-        try: route()
-        except (ValueError, KeyError, TypeError, live_activity.apns.APNsError) as error:
-            self._fail(400, str(error))
-        except Exception as error:
-            print(f"request failed: {self.command} {self.path}: {type(error).__name__}: {error}")
-            self._fail(500, "internal error")
-    def _fail(self, status, message):
+    def fail(self, status, message):
         # A store write that failed half way must not leave its transaction open.
         store = self.store
         if store is not None:
@@ -883,165 +917,298 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if store.db.in_transaction: store.db.rollback()
                 except sqlite3.Error: pass
-        try: self.send_json(status, {"error": message})
-        except OSError: pass
-    def do_GET(self): self._dispatch(self._route_GET)
-    def do_POST(self): self._dispatch(self._route_POST)
-    def do_PUT(self): self._dispatch(self._route_PUT)
-    def do_DELETE(self): self._dispatch(self._route_DELETE)
-    def do_HEAD(self):
-        """GET's status and headers without the body."""
-        self._head = True
-        try: self._dispatch(self._route_GET)
-        finally: self._head = False
-    def _route_GET(self):
-        path=urlparse(self.path).path
-        if live_activity.handle(self, self.live_activity, "GET", path): return
-        if path == "/": return self.send_file(SITE_ROOT / "index.html", "text/html; charset=utf-8")
-        if path in ("/privacy", "/privacy/"): return self.send_file(SITE_ROOT / "privacy.html", "text/html; charset=utf-8")
-        if path.startswith("/site/"):
-            name = path[len("/site/"):]
-            if name not in SITE_ASSETS: return self.send_json(404, {"error": "not found"})
-            return self.send_file(SITE_ROOT / name, SITE_ASSETS[name], "public, max-age=86400")
-        if path in ("/admin", "/admin/"): return self.send_file(STATIC_ROOT / "admin.html", "text/html; charset=utf-8")
-        if path == "/static/admin.css": return self.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8", self.versioned())
-        if path == "/static/admin.js": return self.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8", self.versioned())
-        if path == "/health": return self.send_json(200,{"ok":True})
-        if path == "/v1/admin/session":
-            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-            return self.send_json(200, {"authenticated": True})
-        if path == "/v1/admin/apns":
-            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-            return self.send_json(200, self.apns_status())
-        if path in ("/v1/admin/calendar", "/v1/admin/stats"):
-            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-            value = self.store.global_calendar() if path.endswith("/calendar") else self.store.usage_stats()
-            return self.send_json(200, value)
-        if path == "/v1/schools": return self.send_json(200,{"schools":self.store.schools()})
-        # The unified holiday arrangement on its own, for tables not bound to a
-        # school term. Kept out of /v1/schools: released clients decode that
-        # body as a plain {"schools": [...]} map and would reject a new key.
-        if path == "/v1/calendar": return self.send_json(200, self.store.global_calendar())
-        if path.startswith("/v1/shares/"):
-            parts=[p for p in path[len("/v1/shares/"):].split("/") if p]
-            if len(parts)==1: value=self.store.get(parts[0])
-            elif parts[1:]==["meta"]: value=self.store.meta(parts[0])
-            else: return self.send_json(404,{"error":"not found"})
-            return self.send_json(200,value) if value else self.send_json(404,{"error":"share not found"})
-        self.send_json(404,{"error":"not found"})
-    def _route_POST(self):
-        path=urlparse(self.path).path
-        if live_activity.handle(self, self.live_activity, "POST", path): return
-        try:
-            if path.startswith("/v1/usage/devices/"):
-                accepted = self.store.report_usage(path.removeprefix("/v1/usage/devices/"),
-                                                   self.headers.get("X-Device-Secret", ""), self.body())
-                return self.send_json(200, {"accepted": True}) if accepted else self.send_json(403, {"error": "invalid device secret"})
-            if path == "/v1/admin/session":
-                secret = self.admin_secret()
-                supplied = str(self.body().get("token", ""))
-                if not secret or not _same_secret(supplied, secret):
-                    return self.send_json(403, {"error": "admin token required"})
-                cookie = self.session_cookie(self.store.create_admin_session(secret),
-                                             int(ADMIN_SESSION_TTL.total_seconds()))
-                return self.send_json(200, {"authenticated": True}, [("Set-Cookie", cookie)])
-            if path == "/v1/admin/apns":
-                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                candidate = self.body()
-                # Parse the key before writing, so a typo cannot replace a
-                # working configuration with one that the dispatcher cannot use.
-                # The client checked here is the one the dispatcher then uses.
-                client = live_activity._client_from_config(candidate)
-                try:
-                    if self.live_activity is not None and hasattr(self.live_activity, "v2"):
-                        self.live_activity.v2.validate_client(client)
-                    value = self.store.save_apns_config(candidate)
-                except BaseException:
-                    if client is not None: client.close()
-                    raise
-                if self.live_activity is not None:
-                    live_activity.apply_config(self.live_activity, value, client=client)
-                elif client is not None: client.close()
-                return self.send_json(200, self.apns_status())
-            if path == "/v1/admin/apns/reconcile":
-                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                return self.send_json(200, {"config": self.apns_status(), "created": [], "errors": []})
+        self.send_json(status, {"error": message})
 
-            if path == "/v1/admin/calendar":
-                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                return self.send_json(200, self.store.save_global_calendar(self.body()))
-            if path == "/v1/admin/calendar/import":
-                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                return self.send_json(200, self.store.import_calendar(self.body()))
-            if re.fullmatch(r"/v1/admin/schools/[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}/rename", path):
-                if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-                new_id = self.body().get("id")
-                saved = self.store.rename_school(path.split("/")[4], new_id)
-                if not saved: return self.send_json(404, {"error": "school not found"})
-                if self.live_activity is not None:
-                    config = self.store.apns_config()
-                    self.live_activity.channels = live_activity._channels_from_value(config.get("channels", {}) if config else {})
-                return self.send_json(200, saved)
-            if path == "/v1/shares": return self.send_json(201,self.store.create(self.body()))
-            if path.startswith("/v1/shares/") and path.endswith("/replace"):
-                code = path[len("/v1/shares/"):-len("/replace")]
-                value = self.store.create(self.body(), previous_code=code,
-                                          write_token=self.headers.get("X-Write-Token", ""))
-                return self.send_json(201, value) if value else self.send_json(403, {"error": "invalid write token"})
-            if path.startswith("/v1/shares/") and path.endswith("/resync"):
-                code=path[len("/v1/shares/"):-len("/resync")]
-                value=self.store.resync(code,self.headers.get("X-Write-Token",""))
-                return self.send_json(200,value) if value else self.send_json(403,{"error":"invalid write token"})
-            if path.startswith("/v1/schools/"):
-                if not self.require_admin():
-                    return self.send_json(403,{"error":"school template is read-only without admin token"})
-                value=self.body(); value["id"]=path.rsplit("/",1)[-1]
-                # A contract with admin.js: `"create": true` adds a school and
-                # never overwrites one that already has this id.
-                try: saved = self.store.save_school(value, create=value.pop("create", False) is True)
-                except SchoolExists: return self.send_json(409, {"error": "school exists"})
-                return self.send_json(200, saved)
-            if path.startswith("/v1/admin/schools/") and path.endswith("/terms"):
-                if not self.require_admin(): return self.send_json(403,{"error":"admin token required"})
-                return self.send_json(200, self.store.save_term(path.split("/")[4], self.body()))
-            self.send_json(404,{"error":"not found"})
-        except (ValueError, KeyError, json.JSONDecodeError, live_activity.apns.APNsError) as e: self._fail(400,str(e))
-    def _route_PUT(self):
-        path=urlparse(self.path).path
-        if live_activity.handle(self, self.live_activity, "PUT", path): return
-        token=self.headers.get("X-Write-Token","")
-        if path.startswith("/v1/shares/"):
-            try: value=self.store.update(path.rsplit("/",1)[-1],token,self.body())
-            except (ValueError, KeyError, json.JSONDecodeError) as e: return self._fail(400,str(e))
-            return self.send_json(200,value) if value else self.send_json(403,{"error":"invalid write token"})
-        self.send_json(404,{"error":"not found"})
-    def _route_DELETE(self):
-        path=urlparse(self.path).path
-        if live_activity.handle(self, self.live_activity, "DELETE", path): return
-        if path == "/v1/admin/session":
-            self.store.delete_admin_session(self.cookie(ADMIN_COOKIE))
-            return self.send_json(200, {"authenticated": False}, [("Set-Cookie", self.session_cookie("", 0))])
-        if re.fullmatch(r"/v1/schools/[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", path):
-            if not self.require_admin(): return self.send_json(403, {"error": "admin token required"})
-            if not self.store.delete_school(path.rsplit("/", 1)[-1]):
-                return self.send_json(404, {"error": "school not found"})
-            return self.send_json(200, {"deleted": True})
-        token=self.headers.get("X-Write-Token","")
-        if path.startswith("/v1/shares/"):
-            revoked=self.store.revoke(path.rsplit("/",1)[-1],token)
-            if revoked is None: return self.send_json(404,{"error":"share not found"})
-            return self.send_json(200,{"revoked":True}) if revoked else self.send_json(403,{"error":"invalid write token"})
-        self.send_json(404,{"error":"not found"})
+def _dispatch(x, route):
+    """Every route's outermost frame: a request never goes without an answer,
+    whatever the route raised."""
+    try: route(x)
+    except (ValueError, KeyError, TypeError, live_activity.apns.APNsError) as error:
+        x.fail(400, str(error))
+    except Exception as error:
+        print(f"request failed: {x.command} {x.target}: {type(error).__name__}: {error}")
+        x.fail(500, "internal error")
+
+ROUTES = []
+def route(methods, *paths):
+    """Register a route body for `create_app`. Order is precedence: the first
+    route whose path and method match answers."""
+    def register(body):
+        for path in paths: ROUTES.append((methods.split(), path, body))
+        return body
+    return register
+
+def admin_only(x):
+    if x.require_admin(): return False
+    x.send_json(403, {"error": "admin token required"}); return True
+
+# Live Activity answers first, as `live_activity.handle` always did; with no
+# service, or a path it does not own, the request is simply not found.
+@route("GET HEAD POST PUT DELETE", "/v1/live-activity{rest:path}", "/v2/live-activity{rest:path}")
+def live_activity_route(x):
+    # HEAD is GET without the body.
+    method = "GET" if x.command == "HEAD" else x.command
+    if not live_activity.handle(x, x.live_activity, method, x.path): x.send_json(404, {"error": "not found"})
+
+@route("GET HEAD", "/")
+def site_index(x): x.send_file(SITE_ROOT / "index.html", "text/html; charset=utf-8")
+
+@route("GET HEAD", "/privacy", "/privacy/")
+def site_privacy(x): x.send_file(SITE_ROOT / "privacy.html", "text/html; charset=utf-8")
+
+@route("GET HEAD", "/site/{name:path}")
+def site_asset(x):
+    name = x.path[len("/site/"):]
+    if name not in SITE_ASSETS: return x.send_json(404, {"error": "not found"})
+    x.send_file(SITE_ROOT / name, SITE_ASSETS[name], "public, max-age=86400")
+
+@route("GET HEAD", "/admin", "/admin/")
+def admin_page(x): x.send_file(STATIC_ROOT / "admin.html", "text/html; charset=utf-8")
+
+@route("GET HEAD", "/static/admin.css")
+def admin_css(x): x.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8", x.versioned())
+
+@route("GET HEAD", "/static/admin.js")
+def admin_js(x): x.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8", x.versioned())
+
+@route("GET HEAD", "/health")
+def health(x): x.send_json(200,{"ok":True})
+
+@route("GET HEAD", "/v1/admin/session")
+def admin_session(x):
+    if admin_only(x): return
+    x.send_json(200, {"authenticated": True})
+
+@route("GET HEAD", "/v1/admin/apns")
+def admin_apns(x):
+    if admin_only(x): return
+    x.send_json(200, x.apns_status())
+
+@route("GET HEAD", "/v1/admin/calendar")
+def admin_calendar(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.global_calendar())
+
+@route("GET HEAD", "/v1/admin/stats")
+def admin_stats(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.usage_stats())
+
+@route("GET HEAD", "/v1/schools")
+def schools(x): x.send_json(200,{"schools":x.store.schools()})
+
+# The unified holiday arrangement on its own, for tables not bound to a
+# school term. Kept out of /v1/schools: released clients decode that
+# body as a plain {"schools": [...]} map and would reject a new key.
+@route("GET HEAD", "/v1/calendar")
+def calendar(x): x.send_json(200, x.store.global_calendar())
+
+@route("GET HEAD", "/v1/shares/{rest:path}")
+def share(x):
+    parts=[p for p in x.path[len("/v1/shares/"):].split("/") if p]
+    if len(parts)==1: value=x.store.get(parts[0])
+    elif parts[1:]==["meta"]: value=x.store.meta(parts[0])
+    else: return x.send_json(404,{"error":"not found"})
+    x.send_json(200,value) if value else x.send_json(404,{"error":"share not found"})
+
+@route("POST", "/v1/usage/devices/{installation:path}")
+def report_usage(x):
+    accepted = x.store.report_usage(x.path.removeprefix("/v1/usage/devices/"),
+                                    x.headers.get("X-Device-Secret", ""), x.body())
+    x.send_json(200, {"accepted": True}) if accepted else x.send_json(403, {"error": "invalid device secret"})
+
+@route("POST", "/v1/admin/session")
+def sign_in(x):
+    secret = x.admin_secret()
+    supplied = str(x.body().get("token", ""))
+    if not secret or not _same_secret(supplied, secret):
+        return x.send_json(403, {"error": "admin token required"})
+    cookie = x.session_cookie(x.store.create_admin_session(secret), int(ADMIN_SESSION_TTL.total_seconds()))
+    x.send_json(200, {"authenticated": True}, [("Set-Cookie", cookie)])
+
+@route("POST", "/v1/admin/apns")
+def save_apns(x):
+    if admin_only(x): return
+    candidate = x.body()
+    # Parse the key before writing, so a typo cannot replace a
+    # working configuration with one that the dispatcher cannot use.
+    # The client checked here is the one the dispatcher then uses.
+    client = live_activity._client_from_config(candidate)
+    try:
+        if x.live_activity is not None and hasattr(x.live_activity, "v2"):
+            x.live_activity.v2.validate_client(client)
+        value = x.store.save_apns_config(candidate)
+    except BaseException:
+        if client is not None: client.close()
+        raise
+    if x.live_activity is not None:
+        live_activity.apply_config(x.live_activity, value, client=client)
+    elif client is not None: client.close()
+    x.send_json(200, x.apns_status())
+
+@route("POST", "/v1/admin/apns/reconcile")
+def reconcile_apns(x):
+    if admin_only(x): return
+    x.send_json(200, {"config": x.apns_status(), "created": [], "errors": []})
+
+@route("POST", "/v1/admin/calendar")
+def save_calendar(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.save_global_calendar(x.body()))
+
+@route("POST", "/v1/admin/calendar/import")
+def import_calendar(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.import_calendar(x.body()))
+
+@route("POST", "/v1/admin/schools/{school_id:school}/rename")
+def rename_school(x):
+    if admin_only(x): return
+    new_id = x.body().get("id")
+    saved = x.store.rename_school(x.path.split("/")[4], new_id)
+    if not saved: return x.send_json(404, {"error": "school not found"})
+    if x.live_activity is not None:
+        config = x.store.apns_config()
+        x.live_activity.channels = live_activity._channels_from_value(config.get("channels", {}) if config else {})
+    x.send_json(200, saved)
+
+@route("POST", "/v1/shares")
+def create_share(x): x.send_json(201,x.store.create(x.body()))
+
+@route("POST", "/v1/shares/{rest:path}")
+def share_action(x):
+    path = x.path
+    if path.endswith("/replace"):
+        code = path[len("/v1/shares/"):-len("/replace")]
+        value = x.store.create(x.body(), previous_code=code, write_token=x.headers.get("X-Write-Token", ""))
+        return x.send_json(201, value) if value else x.send_json(403, {"error": "invalid write token"})
+    if path.endswith("/resync"):
+        code=path[len("/v1/shares/"):-len("/resync")]
+        value=x.store.resync(code,x.headers.get("X-Write-Token",""))
+        return x.send_json(200,value) if value else x.send_json(403,{"error":"invalid write token"})
+    x.send_json(404,{"error":"not found"})
+
+@route("POST", "/v1/schools/{rest:path}")
+def save_school(x):
+    if not x.require_admin():
+        return x.send_json(403,{"error":"school template is read-only without admin token"})
+    value=x.body(); value["id"]=x.path.rsplit("/",1)[-1]
+    # A contract with admin.js: `"create": true` adds a school and
+    # never overwrites one that already has this id.
+    try: saved = x.store.save_school(value, create=value.pop("create", False) is True)
+    except SchoolExists: return x.send_json(409, {"error": "school exists"})
+    x.send_json(200, saved)
+
+@route("POST", "/v1/admin/schools/{rest:path}")
+def save_term(x):
+    if not x.path.endswith("/terms"): return x.send_json(404,{"error":"not found"})
+    if admin_only(x): return
+    x.send_json(200, x.store.save_term(x.path.split("/")[4], x.body()))
+
+@route("PUT", "/v1/shares/{rest:path}")
+def update_share(x):
+    value=x.store.update(x.path.rsplit("/",1)[-1],x.headers.get("X-Write-Token",""),x.body())
+    x.send_json(200,value) if value else x.send_json(403,{"error":"invalid write token"})
+
+@route("DELETE", "/v1/admin/session")
+def sign_out(x):
+    x.store.delete_admin_session(x.cookie(ADMIN_COOKIE))
+    x.send_json(200, {"authenticated": False}, [("Set-Cookie", x.session_cookie("", 0))])
+
+@route("DELETE", "/v1/schools/{school_id:school}")
+def delete_school(x):
+    if admin_only(x): return
+    if not x.store.delete_school(x.path.rsplit("/", 1)[-1]):
+        return x.send_json(404, {"error": "school not found"})
+    x.send_json(200, {"deleted": True})
+
+@route("DELETE", "/v1/shares/{rest:path}")
+def revoke_share(x):
+    revoked=x.store.revoke(x.path.rsplit("/",1)[-1],x.headers.get("X-Write-Token",""))
+    if revoked is None: return x.send_json(404,{"error":"share not found"})
+    x.send_json(200,{"revoked":True}) if revoked else x.send_json(403,{"error":"invalid write token"})
+
+@route("GET HEAD POST PUT DELETE", "/{rest:path}")
+def not_found(x): x.send_json(404,{"error":"not found"})
+
+async def _exchange(request: Request):
+    x = Exchange(request)
+    await x.receive(request)
+    return x
+
+def _endpoint(body):
+    # Plain `def`: FastAPI runs it on its thread pool, so the store's lock
+    # and SQLite never block the event loop.
+    def endpoint(x: Exchange = Depends(_exchange)):
+        _dispatch(x, body)
+        return x.response
+    endpoint.__name__ = body.__name__
+    return endpoint
+
+class RequestTarget:
+    """Route on the request target as it was sent, as `BaseHTTPRequestHandler`
+    did: undecoded, so `%2F` inside a code is no separator, and with a leading
+    `//` collapsed. A method it had no `do_*` for keeps its 501 page."""
+    def __init__(self, app): self.app = app
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http": return await self.app(scope, receive, send)
+        raw = scope.get("raw_path") or scope["path"].encode()
+        query = scope.get("query_string") or b""
+        target = (raw + b"?" + query if query else raw).decode("latin-1")
+        if target.startswith("//"): target = "/" + target.lstrip("/")
+        if scope["method"] not in HTTP_METHODS: return await _unsupported(scope["method"])(scope, receive, send)
+        path = urlparse(target).path
+        if not path.startswith("/"):  # `*`, or an absolute URI without a path
+            data = b'{"error": "not found"}'
+            return await _response(404, data, [("Content-Type", "application/json; charset=utf-8"), ("Content-Length", str(len(data)))])(scope, receive, send)
+        await self.app(dict(scope, path=path, root_path="", **{"naptable.target": target}), receive, send)
+
+def _unsupported(method):
+    message = "Unsupported method (%r)" % method
+    page = DEFAULT_ERROR_MESSAGE % {"code": 501, "message": html.escape(message, quote=False),
+                                    "explain": html.escape(BaseHTTPRequestHandler.responses[501][1], quote=False)}
+    data = page.encode("UTF-8", "replace")
+    return _response(501, data, [("Connection", "close"), ("Content-Type", DEFAULT_ERROR_CONTENT_TYPE), ("Content-Length", str(len(data)))])
+
+def _response(status, data, headers):
+    """A response with exactly these headers, in this order and casing, after
+    the Date line, as the stdlib server wrote them."""
+    response = Response(data, status)
+    response.raw_headers = [(b"Date", formatdate(usegmt=True).encode())] + [
+        (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers]
+    return response
+
+def create_app(store, service=None, workers=True):
+    """The HTTP app over `store` and the Live Activity `service`. With
+    `workers`, the service's dispatch threads run for the app's lifetime."""
+    @asynccontextmanager
+    async def lifespan(app):
+        if workers and service is not None: service.start()
+        try: yield
+        finally:
+            if workers and service is not None: await anyio.to_thread.run_sync(service.stop)
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False, lifespan=lifespan)
+    app.state.store, app.state.live_activity = store, service
+    for methods, path, body in ROUTES:
+        app.add_api_route(path, _endpoint(body), methods=methods, include_in_schema=False)
+    app.add_middleware(RequestTarget)
+    return app
+
+def server_config(app, **options):
+    """uvicorn as `main` runs it; the tests serve through the same settings.
+    nginx in front sets X-Forwarded-Proto, which the cookie code reads itself,
+    so uvicorn leaves the proxy headers alone."""
+    return uvicorn.Config(app, http="h11", ws="none", lifespan="on", access_log=False, server_header=False,
+                          proxy_headers=False, date_header=False, log_level="warning", timeout_graceful_shutdown=10, **options)
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument("--host",default="127.0.0.1"); p.add_argument("--port",type=int,default=8787); p.add_argument("--db",default="naptable.sqlite3"); a=p.parse_args()
-    Handler.store=Store(a.db)
-    Handler.live_activity=live_activity.build_service(Handler.store.db, Handler.store.lock, config=Handler.store.apns_config())
-    Handler.live_activity.start()
-    server=ThreadingHTTPServer((a.host,a.port),Handler)
-    configured = "已配置" if Handler.live_activity.client else "未配置（只接受注册与计划，不发推送）"
+    store=Store(a.db)
+    service=live_activity.build_service(store.db, store.lock, config=store.apns_config())
+    configured = "已配置" if service.client else "未配置（只接受注册与计划，不发推送）"
     print(f"NapTable server listening on http://{a.host}:{a.port}")
     print(f"实况通知推送：APNs {configured}")
-    try: server.serve_forever()
-    finally: Handler.live_activity.stop()
+    # Exactly one process: the Live Activity schedule lives in this process's
+    # memory, and a lock on the database refuses a second scheduler.
+    uvicorn.Server(server_config(create_app(store, service), host=a.host, port=a.port)).run()
 if __name__ == "__main__": main()

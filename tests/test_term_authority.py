@@ -4,12 +4,12 @@ import os
 import tempfile
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from server.naptable_server import Handler, Store
+from server.naptable_server import Store
+from tests.server_support import LiveServer
 
 
 class TermAuthorityTests(unittest.TestCase):
@@ -17,17 +17,12 @@ class TermAuthorityTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.directory.name, 'schedule.sqlite3')
         self.store = Store(self.path)
-        handler = type('TestHandler', (Handler,), {'store': self.store})
-        self.http = ThreadingHTTPServer(('127.0.0.1', 0), handler)
-        self.thread = threading.Thread(target=self.http.serve_forever)
-        self.thread.start()
+        self.http = LiveServer(self.store)
         self.env = patch.dict(os.environ, {'NAPTABLE_ADMIN_TOKEN': 'term-test-admin'})
         self.env.start()
 
     def tearDown(self):
         self.http.shutdown()
-        self.http.server_close()
-        self.thread.join()
         self.store.close()
         self.env.stop()
         self.directory.cleanup()

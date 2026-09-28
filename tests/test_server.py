@@ -1,15 +1,15 @@
 import http.client, json, os, sqlite3, tempfile, threading, unittest
 from datetime import datetime, timedelta, timezone
-from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from server.naptable_server import Handler, MAX_REQUEST_BYTES, Store
+from server.naptable_server import MAX_REQUEST_BYTES, Store
+from tests.server_support import LiveServer
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
-        self.db=tempfile.NamedTemporaryFile(suffix='.sqlite3'); Handler.store=Store(self.db.name); Handler.live_activity=None
-        self.http=ThreadingHTTPServer(('127.0.0.1',0),Handler); self.thread=threading.Thread(target=self.http.serve_forever); self.thread.start(); self.base=f'http://127.0.0.1:{self.http.server_port}'
-    def tearDown(self): self.http.shutdown(); self.http.server_close(); self.thread.join(timeout=2); Handler.store.close(); self.db.close()
+        self.db=tempfile.NamedTemporaryFile(suffix='.sqlite3'); self.store=Store(self.db.name)
+        self.http=LiveServer(self.store); self.base=f'http://127.0.0.1:{self.http.server_port}'
+    def tearDown(self): self.http.shutdown(); self.store.close(); self.db.close()
     def req(self, method, path, value=None, headers=None):
         data=None if value is None else json.dumps(value).encode(); h={'Content-Type':'application/json'}; h.update(headers or {})
         try:
@@ -29,7 +29,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 403)
         self.req('DELETE','/v1/shares/'+code,headers={'X-Write-Token':token})
         with self.assertRaises(Exception): self.req('GET','/v1/shares/'+code)
-        self.assertIsNone(Handler.store.db.execute('SELECT 1 FROM shares WHERE code=?',(code,)).fetchone())
+        self.assertIsNone(self.store.db.execute('SELECT 1 FROM shares WHERE code=?',(code,)).fetchone())
         with self.assertRaises(HTTPError) as caught: self.req('DELETE','/v1/shares/'+code,headers={'X-Write-Token':token})
         self.assertEqual(caught.exception.code, 404)
     def test_replacing_a_share_deletes_the_old_code(self):
@@ -37,11 +37,11 @@ class ServerTests(unittest.TestCase):
         old=self.req('POST','/v1/shares',payload); extra=self.req('POST','/v1/shares',payload)
         new=self.req('POST','/v1/shares/'+old['id']+'/replace',{**payload,'courses':[{'name':'物理'}],
             'previousShares':[{'code':extra['id'],'token':extra['writeToken']}]},{'X-Write-Token':old['writeToken']})
-        codes={row[0] for row in Handler.store.db.execute('SELECT code FROM shares')}
+        codes={row[0] for row in self.store.db.execute('SELECT code FROM shares')}
         self.assertEqual(codes, {new['id']})
     def test_startup_purges_shares_flagged_by_older_servers(self):
         created=self.req('POST','/v1/shares',{'owner':'A','schoolID':'nju','termID':'2026-fall-template','courses':[]})
-        Handler.store.db.execute('UPDATE shares SET revoked=1'); Handler.store.db.commit()
+        self.store.db.execute('UPDATE shares SET revoked=1'); self.store.db.commit()
         reopened=Store(self.db.name)
         try: self.assertIsNone(reopened.db.execute('SELECT 1 FROM shares WHERE code=?',(created['id'],)).fetchone())
         finally: reopened.close()
@@ -73,11 +73,11 @@ class ServerTests(unittest.TestCase):
             headers={'X-Admin-Token':'admin-test'}
             saved=self.req('POST','/v1/admin/calendar',{'adjustments':[{'date':'2026-10-01','kind':'off','note':'国庆节'}]},headers)
             self.assertEqual(saved['version'],2); self.assertEqual(saved['adjustments'][0]['note'],'国庆节')
-            with Handler.store.lock:
-                Handler.store.db.execute('CREATE TABLE la_devices (device_id TEXT PRIMARY KEY, school_id TEXT, enabled INTEGER)')
-                Handler.store.db.executemany('INSERT INTO la_devices VALUES (?,?,?)', [
+            with self.store.lock:
+                self.store.db.execute('CREATE TABLE la_devices (device_id TEXT PRIMARY KEY, school_id TEXT, enabled INTEGER)')
+                self.store.db.executemany('INSERT INTO la_devices VALUES (?,?,?)', [
                     ('a','nju',1), ('b','nju',1), ('c','cpu',1), ('off','nju',0)])
-                Handler.store.db.commit()
+                self.store.db.commit()
             stats=self.req('GET','/v1/admin/stats',headers=headers)
             self.assertEqual(stats['totalUsers'],0)  # Legacy notification devices are not usage reports.
             self.assertEqual(next(item['users'] for item in stats['schools'] if item['id']=='nju'),0)
@@ -94,19 +94,19 @@ class ServerTests(unittest.TestCase):
                 channel=f'{environment}-{len(self.environments)}'
                 self.channels[environment].add(channel)
                 return channel
-        Handler.store.save_apns_config({'tickSeconds':5})
+        self.store.save_apns_config({'tickSeconds':5})
         client=Client()
-        first=Handler.store.reconcile_apns_channels(client)
+        first=self.store.reconcile_apns_channels(client)
         self.assertEqual(len(first['created']),2)
         self.assertEqual(set(first['config']['channels']), {
             'production:nju','sandbox:nju'})
-        second=Handler.store.reconcile_apns_channels(client)
+        second=self.store.reconcile_apns_channels(client)
         self.assertEqual(second['created'],[]); self.assertEqual(len(client.environments),2)
     def test_apns_bundle_change_discards_channels_from_the_old_app(self):
-        Handler.store.save_apns_config({
+        self.store.save_apns_config({
             'keyPath':'/key.p8','keyID':'K','teamID':'T','bundleID':'old.app',
             'channels':{'production:nju':'old-channel'}})
-        saved=Handler.store.save_apns_config({
+        saved=self.store.save_apns_config({
             'keyPath':'/key.p8','keyID':'K','teamID':'T','bundleID':'new.app'})
         self.assertEqual(saved['channels'],{})
     def test_legacy_terms_are_promoted_to_the_new_owners(self):
@@ -172,17 +172,16 @@ class AdminSessionTests(unittest.TestCase):
 
     def setUp(self):
         self.db = tempfile.NamedTemporaryFile(suffix='.sqlite3')
-        Handler.store = Store(self.db.name); Handler.live_activity = None
-        self.http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.thread = threading.Thread(target=self.http.serve_forever); self.thread.start()
+        self.store = Store(self.db.name)
+        self.http = LiveServer(self.store)
         self.previous = os.environ.get('NAPTABLE_ADMIN_TOKEN')
         os.environ['NAPTABLE_ADMIN_TOKEN'] = 'admin-test'
 
     def tearDown(self):
         if self.previous is None: os.environ.pop('NAPTABLE_ADMIN_TOKEN', None)
         else: os.environ['NAPTABLE_ADMIN_TOKEN'] = self.previous
-        self.http.shutdown(); self.http.server_close(); self.thread.join(timeout=2)
-        Handler.store.close(); self.db.close()
+        self.http.shutdown()
+        self.store.close(); self.db.close()
 
     def raw(self, method, path, value=None, headers=None):
         body = None if value is None else json.dumps(value).encode()
@@ -238,9 +237,9 @@ class AdminSessionTests(unittest.TestCase):
     def test_an_expired_session_is_refused(self):
         session = self.sign_in()[1].split(';')[0]
         expired = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
-        with Handler.store.lock:
-            Handler.store.db.execute('UPDATE admin_sessions SET expires_at=?', (expired,))
-            Handler.store.db.commit()
+        with self.store.lock:
+            self.store.db.execute('UPDATE admin_sessions SET expires_at=?', (expired,))
+            self.store.db.commit()
         self.assertEqual(self.raw('GET', '/v1/admin/session', headers={'Cookie': session})[0], 403)
 
     def test_the_header_still_works_for_non_browser_clients(self):

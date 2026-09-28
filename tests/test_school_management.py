@@ -6,8 +6,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from server.naptable_server import Handler, Store
-from tests.server_support import FastServer, JSONClientMixin
+from server.naptable_server import Store
+from tests.server_support import JSONClientMixin, LiveServer
 
 
 class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
@@ -15,18 +15,13 @@ class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = self.directory.name + '/schools.sqlite3'
         self.store = Store(self.path)
-        self.handler = type('SchoolHandler', (Handler,), {'store': self.store, 'live_activity': None})
-        self.http = FastServer(('127.0.0.1', 0), self.handler)
-        self.thread = threading.Thread(target=self.http.serve_forever)
-        self.thread.start()
+        self.http = LiveServer(self.store)
         self.environment = patch.dict(os.environ, {'NAPTABLE_ADMIN_TOKEN': 'school-test'})
         self.environment.start()
         self.headers = {'X-Admin-Token': 'school-test'}
 
     def tearDown(self):
         self.http.shutdown()
-        self.http.server_close()
-        self.thread.join()
         self.store.close()
         self.environment.stop()
         self.directory.cleanup()
@@ -213,3 +208,63 @@ class AdminWriteTests(JSONClientMixin, unittest.TestCase):
                 if cache: self.assertEqual((headers['Cache-Control'], got_headers['Cache-Control']), (cache, cache))
         status, _, empty = self.raw('HEAD', '/nope')
         self.assertEqual((status, empty), (404, b''))
+
+
+class HTTPContractTests(JSONClientMixin, unittest.TestCase):
+    """What the stdlib handler answered at the edges, which the FastAPI app
+    must keep: released apps and the console depend on these exact shapes."""
+    setUp, tearDown = SchoolManagementTests.setUp, SchoolManagementTests.tearDown
+    raw = AdminWriteTests.raw
+
+    def test_anything_unrouted_is_a_json_not_found(self):
+        for method, path in (('GET', '/nope'), ('POST', '/nope'), ('PUT', '/nope'), ('DELETE', '/nope'),
+                             ('PUT', '/health'), ('DELETE', '/v1/schools'), ('POST', '/v1/calendar'),
+                             ('GET', '/docs'), ('GET', '/openapi.json'), ('GET', '/redoc'), ('GET', '/health/'),
+                             ('GET', '/v1/%73chools'), ('GET', '/static/admin.html'), ('GET', '*'),
+                             ('POST', '/v1/shares/X/other'), ('POST', '/v1/admin/schools/nju/other'),
+                             ('DELETE', '/v1/schools/a/b'), ('GET', '/v2/live-activity/devices/x')):
+            with self.subTest(method=method, path=path):
+                status, headers, raw = self.raw(method, path, headers=self.headers)
+                self.assertEqual((status, raw), (404, b'{"error": "not found"}'))
+                self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+                self.assertEqual(headers['Content-Length'], str(len(raw)))
+
+    def test_methods_without_a_handler_are_not_implemented(self):
+        for method in ('PATCH', 'OPTIONS', 'get'):
+            with self.subTest(method=method):
+                status, headers, raw = self.raw(method, '/health')
+                self.assertEqual(status, 501)
+                self.assertEqual((headers['Content-Type'], headers['Connection']), ('text/html;charset=utf-8', 'close'))
+                self.assertIn(f"Unsupported method ('{method}')", raw.decode())
+
+    def test_the_path_is_matched_as_sent(self):
+        # `%2F` is part of the code, not a separator; a leading `//` collapses.
+        status, _, raw = self.raw('GET', '/v1/shares/AB%2FCD')
+        self.assertEqual((status, json.loads(raw)), (404, {'error': 'share not found'}))
+        self.assertEqual(self.raw('GET', '//health')[:3:2], (200, b'{"ok": true}'))
+        self.assertEqual(self.raw('GET', '/health?probe=1')[0], 200)
+        self.assertEqual(self.raw('GET', '/admin/')[0], 200)
+        status, _, raw = self.raw('POST', '/v1/shares/replace', b'{}', {'Content-Length': '2'})
+        self.assertEqual((status, json.loads(raw)), (400, {'error': 'unknown schoolID/termID'}))
+
+    def test_console_assets_are_cached_only_by_version(self):
+        for query, cache in (('?v=3', 'public, max-age=86400'), ('?v=', 'no-store'), ('', 'no-store')):
+            with self.subTest(query=query):
+                status, headers, _ = self.raw('GET', '/static/admin.js' + query)
+                self.assertEqual((status, headers['Cache-Control']), (200, cache))
+
+    def test_a_route_refuses_before_it_reads_the_body(self):
+        oversized = {'Content-Length': str(1024 * 1024 + 1)}
+        status, _, raw = self.raw('POST', '/v1/admin/calendar', headers=oversized)
+        self.assertEqual((status, json.loads(raw)), (403, {'error': 'admin token required'}))
+        status, _, raw = self.raw('POST', '/v1/admin/calendar', headers={**self.headers, **oversized})
+        self.assertEqual((status, json.loads(raw)), (400, {'error': 'request body exceeds 1048576 bytes'}))
+
+    def test_a_body_without_a_length_is_empty(self):
+        # Only Content-Length was ever read: a chunked upload counts as `{}`.
+        body = json.dumps({'token': 'school-test'}).encode()
+        status, _, raw = self.raw('POST', '/v1/admin/session', b'%x\r\n%s\r\n0\r\n\r\n' % (len(body), body),
+                                  {'Transfer-Encoding': 'chunked'})
+        self.assertEqual((status, json.loads(raw)), (403, {'error': 'admin token required'}))
+        status, _, raw = self.raw('POST', '/v1/shares', b'3\r\n[1]\r\n0\r\n\r\n', {'Transfer-Encoding': 'chunked'})
+        self.assertEqual((status, json.loads(raw)), (400, {'error': 'unknown schoolID/termID'}))

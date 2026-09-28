@@ -6,18 +6,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from server.naptable_server import Handler, Store
-from tests.server_support import FastServer, JSONClientMixin
+from server.naptable_server import Store
+from tests.server_support import JSONClientMixin, LiveServer
 
 
 class UsageTests(JSONClientMixin, unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.store = Store(self.directory.name + '/usage.sqlite3')
-        handler = type('UsageHandler', (Handler,), {'store': self.store, 'live_activity': None})
-        self.http = FastServer(('127.0.0.1', 0), handler)
-        self.thread = threading.Thread(target=self.http.serve_forever)
-        self.thread.start()
+        self.http = LiveServer(self.store)
         self.env = patch.dict(os.environ, {'NAPTABLE_ADMIN_TOKEN': 'usage-admin'})
         self.env.start()
         self.device = str(uuid.uuid4())
@@ -26,7 +23,7 @@ class UsageTests(JSONClientMixin, unittest.TestCase):
                           deviceModel='iPhone17,1', appVersion='1.0')
 
     def tearDown(self):
-        self.http.shutdown(); self.http.server_close(); self.thread.join()
+        self.http.shutdown()
         self.store.close(); self.directory.cleanup(); self.env.stop()
 
     def report(self, value=None, device=None, secret=None, expect=200):

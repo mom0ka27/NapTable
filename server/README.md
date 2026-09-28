@@ -4,12 +4,15 @@
 
 ## 本地启动
 
-课表/分享服务需要 Python 3；启用 v2 远程实时活动还需安装 `server/requirements.txt` 中的 token 加密依赖。在项目根目录执行：
+服务端需要 Python 3.10 以上，HTTP 层是 FastAPI + uvicorn，先安装 `server/requirements.txt`（其中也有 v2 远程实时活动所需的 token 加密依赖）。在项目根目录执行：
 
 ```sh
+python3 -m pip install -r server/requirements.txt
 export NAPTABLE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python3 server/naptable_server.py --host 127.0.0.1 --port 8787 --db naptable.sqlite3
 ```
+
+`naptable_server.py` 自己启动 uvicorn，只用一个进程：实时活动的排程保存在进程内存里，数据库上的进程锁也会拒绝第二个调度进程，不要改用 `uvicorn --workers` 或多开实例。Ctrl-C 或 SIGTERM 会先停掉后台推送线程再退出。
 
 本地服务是明文 HTTP。改成 `--host 0.0.0.0` 让局域网里的手机访问时，管理员令牌和会话 Cookie 会在局域网内明文传输，只在可信网络里临时这样做，用完改回 `127.0.0.1`。
 
@@ -77,7 +80,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 ## 网页管理
 
-启动服务后，浏览器打开 `http://127.0.0.1:8787/admin`。网页与 API 由同一个 Python 进程提供，无需安装 Node.js 或运行前端构建命令。如果服务已在运行，更新代码后需重启服务进程。
+启动服务后，浏览器打开 `http://127.0.0.1:8787/admin`。网页与 API 由同一个 Python 进程（FastAPI + uvicorn）提供，无需安装 Node.js 或运行前端构建命令。如果服务已在运行，更新代码后需重启服务进程。
 
 1. 在页面输入启动服务时设置的 `NAPTABLE_ADMIN_TOKEN`。
 2. 在「学校配置」点击「新增学校」即可创建并保存，随后维护该校共用的节次时间；「删除学校」会同时删除学期配置，已有分享快照保留。

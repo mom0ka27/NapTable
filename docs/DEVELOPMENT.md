@@ -7,7 +7,7 @@
 | `NapTable/` | App 本体，包括导入、数据模型、课表视图和设置页 |
 | `WidgetCore/` | App 与小组件共用的 payload、主题、显示选项和 Live Activity model |
 | `NapTableWidgets/` | 小组件扩展 target，包括临近课程、今日课表、两日课表和实时活动 |
-| `server/` | Python 标准库 + SQLite 服务端，负责学校配置、分享和可选推送调度 |
+| `server/` | Python（FastAPI + uvicorn）+ SQLite 服务端，负责学校配置、分享和可选推送调度 |
 | `tests/` | Swift 模型检查和 Python 服务端测试 |
 | `Config/` | App 与扩展的 Info.plist、entitlements 和构建配置 |
 
@@ -78,9 +78,10 @@ Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-ex
 for script in tests/check-*.sh; do bash "$script" || break; done
 ```
 
-服务端测试（加密相关用例需先安装 `server/requirements.txt`，否则跳过）：
+服务端测试需先安装 `server/requirements.txt`（FastAPI、uvicorn 和加密依赖；`deploy/deploy.sh` 发布前也用本机 `python3` 跑这些测试）：
 
 ```sh
+python3 -m pip install -r server/requirements.txt
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 

@@ -7,9 +7,9 @@ the CRUD.
 """
 import json, os, tempfile, threading, unittest
 
-from server.naptable_server import (Handler, MAX_ADJUSTMENTS, MAX_COURSES, Store,
+from server.naptable_server import (MAX_ADJUSTMENTS, MAX_COURSES, Store,
                                     normalize_adjustments, normalize_courses)
-from tests.server_support import FastServer, JSONClientMixin
+from tests.server_support import JSONClientMixin, LiveServer
 
 ADMIN = "admin-shares-test"
 # A second school whose day starts earlier and runs shorter periods, so a
@@ -98,11 +98,8 @@ class AdjustmentValidationTests(unittest.TestCase):
 class ShareTests(JSONClientMixin, unittest.TestCase):
     def setUp(self):
         self.file = tempfile.NamedTemporaryFile(suffix=".sqlite3")
-        Handler.store = Store(self.file.name)
-        Handler.live_activity = None
-        self.http = FastServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.http.serve_forever)
-        self.thread.start()
+        self.store = Store(self.file.name)
+        self.http = LiveServer(self.store)
         self.previous = os.environ.get("NAPTABLE_ADMIN_TOKEN")
         os.environ["NAPTABLE_ADMIN_TOKEN"] = ADMIN
         self.req("POST", "/v1/schools/seu", {"name": "东南大学", "periods": SEU_TERM["periods"]},
@@ -115,9 +112,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         else:
             os.environ["NAPTABLE_ADMIN_TOKEN"] = self.previous
         self.http.shutdown()
-        self.http.server_close()
-        self.thread.join(timeout=2)
-        Handler.store.close()
+        self.store.close()
         self.file.close()
 
     def create(self, school="nju", term="2026-fall-template", courses=None, owner="张三"):
@@ -160,7 +155,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         result = self.replace(old, changed_ids, expect=400)
         self.assertIn("没有变更", result["error"])
         self.req("GET", f"/v1/shares/{old['id']}")
-        self.assertEqual(Handler.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
 
     def test_failed_replacement_preserves_old_share(self):
         old = self.create()
@@ -171,7 +166,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         self.replace(old, [{"name": "物理"}], expect=403,
                      previousShares=[{"code": old["id"], "token": "wrong"}])
         self.req("GET", f"/v1/shares/{old['id']}")
-        self.assertEqual(Handler.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM shares").fetchone()[0], 1)
 
     def test_replacement_revokes_all_authenticated_legacy_codes(self):
         first, latest = self.create(), self.create()
@@ -182,9 +177,9 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
 
     def test_calendar_change_alone_allows_replacement(self):
         old = self.create()
-        with Handler.store.lock:
-            Handler.store.db.execute("UPDATE school_terms SET week_count=week_count+1 WHERE school_id='nju'")
-            Handler.store.db.commit()
+        with self.store.lock:
+            self.store.db.execute("UPDATE school_terms SET week_count=week_count+1 WHERE school_id='nju'")
+            self.store.db.commit()
         new = self.replace(old, old["courses"])
         self.assertEqual(new["scheduleScope"], old["scheduleScope"])
         self.assertNotEqual(new["id"], old["id"])
@@ -348,9 +343,9 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
 
     def test_resync_reports_a_term_that_no_longer_exists(self):
         created = self.create()
-        with Handler.store.lock:
-            Handler.store.db.execute("UPDATE shares SET term_id='gone' WHERE code=?", (created["id"],))
-            Handler.store.db.commit()
+        with self.store.lock:
+            self.store.db.execute("UPDATE shares SET term_id='gone' WHERE code=?", (created["id"],))
+            self.store.db.commit()
         body = self.req("POST", f"/v1/shares/{created['id']}/resync", None,
                         {"X-Write-Token": created["writeToken"]}, expect=400)
         self.assertIn("学期", body["error"])

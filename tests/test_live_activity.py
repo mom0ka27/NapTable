@@ -2,8 +2,8 @@
 import json, sqlite3, tempfile, threading, unittest
 
 from server import live_activity
-from server.naptable_server import Handler, Store
-from tests.server_support import FastServer, JSONClientMixin
+from server.naptable_server import Store
+from tests.server_support import JSONClientMixin, LiveServer
 
 STATE = {"phase": "upcoming", "courseName": "数学", "startDate": 1_700_003_600.0, "endDate": 1_700_006_600.0}
 ATTRIBUTES = {"semester": "2026-fall", "dateKey": "2026-09-18", "week": 3}
@@ -409,20 +409,15 @@ class ServiceTests(unittest.TestCase):
 class EndpointTests(JSONClientMixin, unittest.TestCase):
     def setUp(self):
         self.file = tempfile.NamedTemporaryFile(suffix=".sqlite3")
-        Handler.store = Store(self.file.name)
+        self.store = Store(self.file.name)
         self.client = FakeClient()
-        Handler.live_activity = live_activity.LiveActivityService(
-            Handler.store.db, Handler.store.lock, client=self.client, now=lambda: 1_700_000_000.0)
-        self.http = FastServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.http.serve_forever)
-        self.thread.start()
+        self.service = live_activity.LiveActivityService(
+            self.store.db, self.store.lock, client=self.client, now=lambda: 1_700_000_000.0)
+        self.http = LiveServer(self.store, self.service)
 
     def tearDown(self):
         self.http.shutdown()
-        self.http.server_close()
-        self.thread.join(timeout=2)
-        Handler.store.close()
-        Handler.live_activity = None
+        self.store.close()
         self.file.close()
 
     def test_health_reports_whether_apns_is_configured(self):
