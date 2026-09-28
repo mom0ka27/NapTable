@@ -71,11 +71,32 @@ install -d -o root -g naptable -m 0750 /etc/naptable/keys
 install -d -o nginx -g nginx -m 0755 /var/www/letsencrypt
 install -d -o root -g root -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 
-if [[ ! -f /etc/naptable/naptable.env ]]; then
-    umask 077
-    printf 'NAPTABLE_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > /etc/naptable/naptable.env
-    echo "首次部署：已生成管理员令牌，保存在 /etc/naptable/naptable.env"
+admin_token_value=
+if [[ -f /etc/naptable/naptable.env ]]; then
+    admin_token_value=$(sed -n 's/^NAPTABLE_ADMIN_TOKEN=//p' /etc/naptable/naptable.env | tail -n 1 | tr -d "\"' \t\r")
 fi
+if [[ -z $admin_token_value ]]; then
+    # 单独取值并校验：openssl 失败时不能把空令牌写进去，否则以后再也不会重新生成。
+    admin_token=$(openssl rand -hex 32)
+    if [[ ! $admin_token =~ ^[0-9a-f]{64}$ ]]; then
+        echo "生成管理员令牌失败（openssl rand 输出异常）" >&2
+        exit 1
+    fi
+    umask 077
+    if [[ -f /etc/naptable/naptable.env ]]; then
+        # 保留其他配置，只替换空的令牌行。
+        env_next=$(mktemp /etc/naptable/naptable.env.XXXXXX)
+        grep -v '^NAPTABLE_ADMIN_TOKEN=' /etc/naptable/naptable.env > "$env_next" || true
+        printf 'NAPTABLE_ADMIN_TOKEN=%s\n' "$admin_token" >> "$env_next"
+        mv -f "$env_next" /etc/naptable/naptable.env
+        echo "管理员令牌为空，已重新生成，保存在 /etc/naptable/naptable.env"
+    else
+        printf 'NAPTABLE_ADMIN_TOKEN=%s\n' "$admin_token" > /etc/naptable/naptable.env
+        echo "首次部署：已生成管理员令牌，保存在 /etc/naptable/naptable.env"
+    fi
+    unset admin_token
+fi
+unset admin_token_value
 chown root:root /etc/naptable/naptable.env
 chmod 0600 /etc/naptable/naptable.env
 
@@ -99,6 +120,9 @@ required_files=(
     server/static/admin.html
     server/static/admin.css
     server/static/admin.js
+    server/static/site/index.html
+    server/static/site/privacy.html
+    server/static/site/site.css
     deploy/backup.py
     deploy/naptable.service
     deploy/naptable-backup.service
@@ -198,31 +222,51 @@ render_nginx() {
     chmod 0644 "$2"
 }
 
+nginx_conf=/etc/nginx/conf.d/naptable.conf
+# 让新写的配置生效：nginx 已在运行时 enable --now 不会重新加载。
+apply_nginx() {
+    # 在 if 条件里调用时 errexit 不生效，要显式传出失败。
+    systemctl enable nginx.service || return
+    if systemctl is-active --quiet nginx.service; then
+        systemctl reload nginx.service
+    else
+        systemctl start nginx.service
+    fi
+}
+
 if [[ ! -f /etc/letsencrypt/live/$domain/fullchain.pem ]]; then
     step "还没有 $domain 的证书，申请 Let's Encrypt 证书"
-    render_nginx "$release_path/deploy/nginx-bootstrap.conf" /etc/nginx/conf.d/naptable.conf
-    nginx -t
-    systemctl enable --now nginx.service
-    certbot certonly --webroot --webroot-path /var/www/letsencrypt \
-        --domain "$domain" --non-interactive --agree-tos --register-unsafely-without-email
+    nginx_conf_backup=
+    if [[ -f $nginx_conf ]]; then
+        nginx_conf_backup=$(mktemp /etc/nginx/naptable.conf.before-bootstrap.XXXXXX)
+        cp -p "$nginx_conf" "$nginx_conf_backup"
+    fi
+    # 申请失败时把原配置放回去，否则磁盘上留着只会返回 503 的临时配置，下次 reload 线上就挂了。
+    restore_nginx_conf() {
+        if [[ -n $nginx_conf_backup ]]; then
+            mv -f "$nginx_conf_backup" "$nginx_conf"
+        else
+            rm -f "$nginx_conf"
+        fi
+        if nginx -t && systemctl is-active --quiet nginx.service; then
+            systemctl reload nginx.service || true
+        fi
+    }
+    render_nginx "$release_path/deploy/nginx-bootstrap.conf" "$nginx_conf"
+    if ! { nginx -t && apply_nginx && certbot certonly --webroot --webroot-path /var/www/letsencrypt \
+        --domain "$domain" --non-interactive --agree-tos --register-unsafely-without-email; }; then
+        echo "申请证书失败，已恢复原来的 nginx 配置" >&2
+        restore_nginx_conf
+        exit 1
+    fi
+    [[ -z $nginx_conf_backup ]] || rm -f "$nginx_conf_backup"
 fi
-render_nginx "$release_path/deploy/nginx.conf" /etc/nginx/conf.d/naptable.conf
+render_nginx "$release_path/deploy/nginx.conf" "$nginx_conf"
 nginx -t
 
 if [[ -f /var/lib/naptable/naptable.sqlite3 ]]; then
     step "备份数据库（服务仍在运行）"
     runuser -u naptable -- "$release_path/.venv/bin/python" "$release_path/deploy/backup.py"
-fi
-
-previous_release=
-if [[ -L $current_link ]]; then
-    previous_release=$(readlink -f "$current_link")
-elif [[ -d $current_link ]]; then
-    legacy_release=$release_root/legacy-$(date -u +%Y%m%dT%H%M%SZ)
-    install -d -o root -g root -m 0755 "$legacy_release"
-    mv "$current_link" "$legacy_release/server"
-    cp -R "$release_path/deploy" "$legacy_release/deploy"
-    previous_release=$legacy_release
 fi
 
 activate_release() {
@@ -232,11 +276,23 @@ activate_release() {
     mv -Tf "$next_link" "$current_link"
 }
 
+previous_release=
+legacy_release=
 activated=false
 stopped=false
+# 旧布局迁移把 current 目录搬走了；还没切换版本就失败时要原样搬回来，旧服务才能启动。
+restore_legacy_layout() {
+    if [[ -n $legacy_release && -d $legacy_release/server && ! -e $current_link ]]; then
+        echo "正在恢复旧布局的 $current_link" >&2
+        mv "$legacy_release/server" "$current_link" && rm -rf "$legacy_release"
+    fi
+}
 rollback_on_error() {
     local status=$?
     trap - ERR
+    if [[ $activated != true ]]; then
+        restore_legacy_layout || echo "恢复旧布局失败，请手动把 $legacy_release/server 移回 $current_link" >&2
+    fi
     if [[ $stopped == true && $activated != true ]]; then
         # 已停服务但还没切换版本：旧版本原样拉起即可，否则线上会一直停着。
         echo "部署失败，尚未切换版本，正在重新启动原来的服务" >&2
@@ -256,6 +312,16 @@ rollback_on_error() {
     exit "$status"
 }
 trap rollback_on_error ERR
+
+if [[ -L $current_link ]]; then
+    previous_release=$(readlink -f "$current_link")
+elif [[ -d $current_link ]]; then
+    legacy_release=$release_root/legacy-$(date -u +%Y%m%dT%H%M%SZ)
+    install -d -o root -g root -m 0755 "$legacy_release"
+    mv "$current_link" "$legacy_release/server"
+    cp -R "$release_path/deploy" "$legacy_release/deploy"
+    previous_release=$legacy_release
+fi
 
 # Quiesce old scheduling before taking the final pre-migration backup.
 step "停止服务并做迁移前的最终备份"
@@ -303,7 +369,11 @@ if [[ $public_healthy != true ]]; then
     echo "公网健康检查失败：https://$domain/health（检查 nginx 和证书）" >&2
     false
 fi
-systemctl start naptable-backup.service
+# 新版本已经在线上跑通，之后的收尾步骤失败不值得回滚，只提示人工处理。
+trap - ERR
+set +e
+systemctl start naptable-backup.service \
+    || echo "警告：部署后的数据库备份失败，请检查：journalctl -u naptable-backup.service" >&2
 
 step "清理旧版本（保留最近 5 个）"
 mapfile -t old_releases < <(
@@ -312,7 +382,7 @@ mapfile -t old_releases < <(
 for old_release in "${old_releases[@]}"; do
     old_path=$release_root/$old_release
     if [[ $old_path != "$(readlink -f "$current_link")" && $old_path != "$previous_release" ]]; then
-        rm -rf "$old_path"
+        rm -rf "$old_path" || echo "警告：清理旧版本失败：$old_path" >&2
     fi
 done
 
