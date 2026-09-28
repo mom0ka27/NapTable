@@ -458,3 +458,18 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
   .dialog form { padding: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* Accounts */
+.account-layout { margin-top: 16px; }
+.account-layout .badge:empty { display: none; }
+.account-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.account-table th, .account-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.account-table th { color: var(--muted); font-weight: 500; }
+.account-table tbody tr { cursor: pointer; }
+.account-table tbody tr:hover, .account-table tbody tr:focus-visible { background: var(--surface-soft); outline: none; }
+.account-detail { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 11px; }
+.account-detail h3 { font-size: 13px; margin: 0 0 6px; }
+.account-detail ul { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; }
+.account-detail li small { color: var(--subtle); margin-left: 8px; }
+.account-avatar { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.account-avatar img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; border: 1px solid var(--line); }

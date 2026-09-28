@@ -121,6 +121,22 @@ APNs HTTP/2/JWT 连接实现在 `server/apns.py`；缺失 HTTP 状态视为结�
 
 关心共享课表时改用令牌模式：`PUT /v2/live-activity/devices/{id}/activities/{occurrenceId}` 只上传这个活动的推送令牌 `{"token": "…"}`，存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）；刷新和响铃时刻由服务器按排程计算，在内存中排队，`token-updates` 工作循环每秒按时推送 update/end，管理页健康数据里的 `tokenUpdates` 只给活动数和待发数，不含令牌。`DELETE` 同一路径停止刷新。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
+## 账户与订阅
+
+实时通知的收费规则由 `server/accounts.py` 实现：
+
+- **登录**：App 通过 Apple 登录，只取 Apple 给的 `sub`，服务器也只保存它的哈希，不要邮箱和姓名。流程是先 `POST /v1/account/nonce` 取一次性随机串，App 把它的 SHA-256 交给 Apple；再 `POST /v1/account/apple`，提交 `identityToken`、`authorizationCode` 和 `nonce`，换回会话令牌。之后的请求带 `Authorization: Bearer <令牌>`。会话 180 天不用就失效。
+- **绑定设备**：`PUT /v1/account/devices/{id}` 同时带会话令牌和该设备的 `X-Device-Secret`，把实时通知设备绑到账户；`DELETE` 同一路径解绑。`GET /v1/account` 返回账户码和额度状态，`DELETE /v1/account` 删除账户，`DELETE /v1/account/session` 退出登录。
+- **Apple 通知**：`POST /v1/account/apple-events` 接收 Apple 的服务器通知，需要在开发者后台填这个地址。用户撤销授权时退出全部会话并解绑设备；用户删除 Apple 账户时删除本地账户。
+- **额度**：新账户送 `trialDays` 个使用日，默认 30。同一个 Apple ID 只送一次，删除账户后重新注册不再送。某个 UTC+8 自然日里，只要账户任意一台设备真正开始了一次提醒，这天就扣 1 个使用日，其中服务器远程启动的按发送计，手机本地预约的按提醒时间到了计。订阅有效期间不扣额度。
+- **开关**：`enforceAfter` 为空时，所有人免费、也不扣额度，行为和上线前一样。设了日期后，从这天起没登录或额度用完的设备，服务器不再远程启动、不再分配本地预约、不再接受进入 App 时开启的提醒，`GET /v2/live-activity/devices/{id}` 的 `entitled` 会变成 `false`。重新有了额度（登录、发放使用日、订阅）后，未开始的提醒会重新排队，正在上的课会立刻补发。
+- **管理页**："账户与订阅"页可以设置开始收费日期和免费天数，按账户码或分组（全部、免费额度中、订阅中、额度已用完）发放或扣减使用日，发放前可预览人数。每次操作写入 `account_audit`。
+- **撤销授权的密钥**：删除账户时要用 Sign in with Apple 密钥撤销 Apple 授权，路径、Key ID、Team ID 在同一页配置。可以和 APNs 共用一把同时启用了两项能力的 `.p8`。没配置时账户照常删除，但不会撤销授权，App 上架前必须配好。
+
+- **头像**：Apple 登录不提供头像，由用户在 App 里自选。App 先把图片缩到 256 像素，再用 `PUT /v1/account/avatar` 上传，请求体是 `{"image": "<base64>"}`，只接受 JPEG 或 PNG，最大 256 KB；`DELETE` 同一路径删除。图片公开放在 `/v1/avatars/{版本}`，每次上传都换一个随机地址，所以可以永久缓存。登录状态下发布或替换的分享会记住发布账户，读者拿到的分享和 `/meta` 里多一个 `ownerAvatar` 字段，值是头像地址，没有头像时为 `null`；不登录替换分享时，沿用原来的发布账户。管理页的账户详情里可以清除头像，清除操作会记入审计。
+
+App Store 订阅（第 2 期）会写入 `subscriptions` 表，现在这张表还是空的。
+
 ## 分享课表
 
 一个分享是「一份课程 + 发布时那个学校学期的完整时间配置」的快照。读的人只要分享码，不需要和分享者在同一所学校，也不需要本机有那所学校的配置——节次时间、第一周周一、总周数和调休都随分享一起下发。

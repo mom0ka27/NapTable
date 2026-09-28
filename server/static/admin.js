@@ -58,6 +58,7 @@
     schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
     stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
+    accounts: ["账户与订阅", "查看账户额度与订阅，设置收费规则，给账户增加使用日。"],
     apns: ["APNs 推送", "配置实况通知的推送凭据。"]
   };
   const mobileNavigation = window.matchMedia("(max-width: 760px)");
@@ -433,6 +434,109 @@
     tickSeconds: Number($("apnsTickSeconds").value)
   });
 
+  const accountStatus = { trial: "免费额度中", subscribed: "订阅中", expired: "额度已用完" };
+  const stamp = value => value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(value * 1000)) : "—";
+  const fillAccounts = summary => {
+    state.accountSummary = summary;
+    $("accountTotal").textContent = summary.accounts;
+    $("accountTrial").textContent = summary.trial;
+    $("accountSubscribed").textContent = summary.subscribed;
+    $("accountExpired").textContent = summary.expired;
+    $("accountNewDetail").textContent = `近 7 天新增 ${summary.newLast7Days}`;
+    $("accountChargedDetail").textContent = `近 7 天扣费账户 ${summary.chargedLast7Days}`;
+    const settings = summary.settings;
+    $("accountEnforceAfter").value = settings.enforceAfter || "";
+    $("accountTrialDays").value = settings.trialDays;
+    $("accountKeyPath").value = settings.keyPath || "";
+    $("accountKeyID").value = settings.keyID || "";
+    $("accountTeamID").value = settings.teamID || "";
+    $("accountBundleID").value = settings.bundleID || "";
+    $("accountSignInStatus").textContent = settings.signInConfigured ? "已配置密钥" : "未配置密钥";
+    $("accountSignInStatus").className = `badge ${settings.signInConfigured ? "configured" : ""}`;
+  };
+  const renderAccountList = list => {
+    const body = $("accountTable");
+    body.replaceChildren();
+    $("accountListSummary").textContent = list.total > list.accounts.length ? `共 ${list.total} 个账户，显示最近注册的 ${list.accounts.length} 个` : `共 ${list.total} 个账户`;
+    for (const account of list.accounts) {
+      const row = document.createElement("tr");
+      row.tabIndex = 0;
+      row.innerHTML = `<td><code>${escapeHTML(account.code)}</code>${account.name ? ` ${escapeHTML(account.name)}` : ""}</td><td>${escapeHTML(accountStatus[account.status])}</td><td>${account.creditDays}</td><td>${account.usedDays}</td><td>${escapeHTML(account.lastChargedDay || "—")}</td><td>${stamp(account.subscriptionExpiresAt)}</td><td>${account.devices}</td><td>${stamp(account.createdAt)}</td>`;
+      const open = () => showAccount(account.code);
+      row.onclick = open;
+      row.onkeydown = event => { if (event.key === "Enter") open(); };
+      body.append(row);
+    }
+    if (!list.accounts.length) body.innerHTML = '<tr><td colspan="8">还没有账户</td></tr>';
+  };
+  const loadAccounts = async () => {
+    const [summary, list] = await Promise.all([
+      request("/v1/admin/accounts/summary"), request(`/v1/admin/accounts?q=${encodeURIComponent($("accountSearch").value.trim())}`)
+    ]);
+    fillAccounts(summary); renderAccountList(list);
+  };
+  const showAccount = async code => {
+    try {
+      const account = await request(`/v1/admin/accounts/${encodeURIComponent(code)}`);
+      const reasons = { trial: "新账户免费", grant: "管理员发放" };
+      const ledger = account.ledger.map(item => `<li><b>${item.days > 0 ? "+" : ""}${item.days}</b> ${escapeHTML(reasons[item.reason] || item.reason)}${item.note ? ` · ${escapeHTML(item.note)}` : ""}<small>${stamp(item.createdAt)}</small></li>`).join("");
+      const detail = $("accountDetail");
+      const avatar = account.avatar ? `<div class="account-avatar"><img src="${escapeAttr(account.avatar)}" alt="账户头像" width="56" height="56"><button id="clearAvatarButton" class="button danger" type="button">清除头像</button></div>` : "";
+      detail.innerHTML = `${avatar}<h3>账户 <code>${escapeHTML(account.code)}</code> · ${escapeHTML(accountStatus[account.status])}</h3><p>剩余 ${account.creditDays} 个使用日，已用 ${account.usedDays} 天；最近扣费：${escapeHTML(account.chargedDays.slice(0, 7).join("、") || "无")}</p><ul>${ledger}</ul>`;
+      detail.hidden = false;
+      if (account.avatar) $("clearAvatarButton").onclick = () => clearAvatar(account.code);
+      $("grantTarget").value = "account"; $("grantCode").value = account.code;
+    } catch (error) { notice(error.message, "error"); }
+  };
+  const clearAvatar = async code => {
+    // The avatar is shown to everyone following this account's shares.
+    if (!confirm(`清除账户 ${code} 的头像？关注其分享课表的人将不再看到它。`)) return;
+    try {
+      await request(`/v1/admin/accounts/${encodeURIComponent(code)}/avatar`, { method: "DELETE" });
+      await showAccount(code);
+      notice("头像已清除", "success");
+    } catch (error) { notice(error.message, "error"); }
+  };
+  const saveAccountSettings = async () => {
+    const button = $("saveAccountSettingsButton");
+    setLoading(button, true);
+    try {
+      await request("/v1/admin/accounts/settings", { method: "POST", body: JSON.stringify({
+        enforceAfter: $("accountEnforceAfter").value, trialDays: Number($("accountTrialDays").value),
+        keyPath: $("accountKeyPath").value.trim(), keyID: $("accountKeyID").value.trim(),
+        teamID: $("accountTeamID").value.trim(), bundleID: $("accountBundleID").value.trim()
+      }) });
+      await loadAccounts();
+      notice("收费规则已保存", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
+  const grantValue = dryRun => {
+    const value = { target: $("grantTarget").value, days: Number($("grantDays").value), note: $("grantNote").value.trim(), dryRun };
+    if (value.target === "account") value.code = $("grantCode").value.trim().toUpperCase();
+    return value;
+  };
+  const previewGrant = async () => {
+    try {
+      const result = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(true)) });
+      $("grantPreview").textContent = `将发给 ${result.accounts} 个账户`;
+    } catch (error) { notice(error.message, "error"); }
+  };
+  const grant = async () => {
+    const button = $("grantButton");
+    try {
+      const preview = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(true)) });
+      if (!confirm(`给 ${preview.accounts} 个账户各增加 ${preview.days} 个使用日？`)) return;
+      setLoading(button, true);
+      const result = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(false)) });
+      $("grantPreview").textContent = "";
+      await loadAccounts();
+      if (result.accounts && $("grantTarget").value === "account") showAccount($("grantCode").value.trim());
+      notice(`已给 ${result.accounts} 个账户各增加 ${result.days} 个使用日`, "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
+
   const saveSchool = async () => {
     const button = $("saveSchoolButton");
     try {
@@ -607,6 +711,8 @@
     state.school = null; state.term = null; state.calendar = calendar; state.stats = stats;
     $("saveApnsButton").disabled = false; $("saveCalendarButton").disabled = false;
     fillApns(apns); renderCalendar(); renderStats(); renderSchools(); updateMetrics(); updateConnectionUI(true);
+    // Accounts load on their own: a server without them still opens the console.
+    loadAccounts().catch(error => notice(error.message, "error"));
     if (state.schools.length) selectSchool(state.schools[0].id);
     else { $("editor").hidden = true; $("editorEmpty").hidden = false; }
   };
@@ -668,6 +774,12 @@
   $("deleteSchoolButton").onclick = deleteSchool;
   $("refreshStatsButton").onclick = refreshStats;
   $("statsSchoolFilter").onchange = renderDeviceStats;
+  $("saveAccountSettingsButton").onclick = saveAccountSettings;
+  $("previewGrantButton").onclick = previewGrant;
+  $("grantButton").onclick = grant;
+  $("grantTarget").onchange = () => { $("grantCode").disabled = $("grantTarget").value !== "account"; $("grantPreview").textContent = ""; };
+  let accountSearchTimer;
+  $("accountSearch").oninput = () => { clearTimeout(accountSearchTimer); accountSearchTimer = setTimeout(() => loadAccounts().catch(error => notice(error.message, "error")), 250); };
   $("schoolSearch").oninput = renderSchools;
   $("addSchoolPeriodButton").onclick = () => {
     state.school.periods = periodRows();

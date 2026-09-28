@@ -19,9 +19,11 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import holidays, live_activity
+    from . import accounts, holidays, live_activity
+    from .live_activity_timeline import ProtocolError, identifier
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import holidays, live_activity
+    import accounts, holidays, live_activity
+    from live_activity_timeline import ProtocolError, identifier
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 SITE_ROOT = STATIC_ROOT / "site"
@@ -238,6 +240,8 @@ class Store:
             if "term_id" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_id TEXT NOT NULL DEFAULT ''")
             if "term_version" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_version INTEGER NOT NULL DEFAULT 0")
             if "term_snapshot_json" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+            # The signed-in account that published it, whose avatar readers see; '' when anonymous.
+            if "account" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN account TEXT NOT NULL DEFAULT ''")
             # Revoking or replacing a share used to only flag the row.
             self.db.execute("DELETE FROM shares WHERE revoked!=0")
             self.db.commit(); self.seed(); self._migrate_configuration_model()
@@ -692,7 +696,7 @@ class Store:
         with self.lock:
             r=self.db.execute("SELECT name FROM school_configs WHERE id=?",(school_id,)).fetchone()
         return r["name"] if r else school_id
-    def create(self, value, previous_code=None, write_token=None):
+    def create(self, value, previous_code=None, write_token=None, account=""):
         term = self.find_term(value.get("schoolID", ""), value.get("termID", ""))
         if not term: raise ValueError("unknown schoolID/termID")
         _, payload = normalize_courses(value.get("courses"))
@@ -735,7 +739,9 @@ class Store:
                 if unchanged: raise ValueError("课表没有变更，请继续使用现有分享码")
             self.db.execute("INSERT INTO shares (code,write_token_hash,owner,school_id,school_name,payload_json,semester_start_monday,class_time_list_json,adjustments_json,term_id,term_version,term_snapshot_json,created_at,updated_at,revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", (code,hashlib.sha256(token.encode()).hexdigest(),owner,value["schoolID"],self.school_name(value["schoolID"]),payload,term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp,stamp))
             scope = previous["schedule_scope"] if previous_code is not None else secrets.token_hex(16)
-            self.db.execute("UPDATE shares SET schedule_scope=? WHERE code=?", (scope, code))
+            # A replacement keeps its publisher unless it is republished signed in.
+            owner_account = account or (previous["account"] if previous_code is not None else "")
+            self.db.execute("UPDATE shares SET schedule_scope=?,account=? WHERE code=?", (scope, owner_account, code))
             for obsolete_code in obsolete_codes:
                 self.db.execute("DELETE FROM shares WHERE code=?", (obsolete_code,))
         return self.get(code, include_token=True, token=token)
@@ -755,6 +761,9 @@ class Store:
         if not r: return None
         snapshot=json.loads(r["term_snapshot_json"] or "{}")
         return {"id":r["code"],"scheduleScope":r["schedule_scope"],"timeZone":snapshot.get("timezone"),"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"courseCount":len(json.loads(r["payload_json"])),"semester_start_monday":r["semester_start_monday"],"term_week_count":snapshot.get("weekCount",0),"adjustmentCount":len(json.loads(r["adjustments_json"] or "[]")),"updatedAt":r["updated_at"]}
+    def share_account(self, code):
+        with self.lock: r=self.db.execute("SELECT account FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
+        return r["account"] if r else ""
     def authorize(self, code, token):
         """The share row when `token` is its write token, otherwise None.
 
@@ -836,6 +845,7 @@ class Exchange:
     def __init__(self, request):
         self.store = request.app.state.store
         self.live_activity = request.app.state.live_activity
+        self.accounts = request.app.state.accounts
         self.headers = request.headers
         self.command = request.method
         self.target = request.scope["naptable.target"]
@@ -1009,7 +1019,8 @@ def share(x):
     if len(parts)==1: value=x.store.get(parts[0])
     elif parts[1:]==["meta"]: value=x.store.meta(parts[0])
     else: return x.send_json(404,{"error":"not found"})
-    x.send_json(200,value) if value else x.send_json(404,{"error":"share not found"})
+    if not value: return x.send_json(404,{"error":"share not found"})
+    x.send_json(200,with_avatar(x,value))
 
 @route("POST", "/v1/usage/devices/{installation:path}")
 def report_usage(x):
@@ -1072,16 +1083,33 @@ def rename_school(x):
         x.live_activity.channels = live_activity._channels_from_value(config.get("channels", {}) if config else {})
     x.send_json(200, saved)
 
+def publisher(x):
+    """The account publishing a share: '' when anonymous, None (answered 401)
+    when the app sent a session that is no longer valid."""
+    if not x.headers.get("Authorization") or x.accounts is None: return ""
+    try: return x.accounts.authenticate(x.headers["Authorization"])
+    except accounts.AccountError as error: x.send_json(error.status, {"error": str(error)})
+
+def with_avatar(x, value):
+    """A share as readers get it: with its publisher's avatar, or null."""
+    account = x.store.share_account(value["id"]) if x.accounts is not None else ""
+    return {**value, "ownerAvatar": x.accounts.avatar_path(account) if account else None}
+
 @route("POST", "/v1/shares")
-def create_share(x): x.send_json(201,x.store.create(x.body()))
+def create_share(x):
+    account = publisher(x)
+    if account is None: return
+    x.send_json(201,with_avatar(x,x.store.create(x.body(),account=account)))
 
 @route("POST", "/v1/shares/{rest:path}")
 def share_action(x):
     path = x.path
     if path.endswith("/replace"):
         code = path[len("/v1/shares/"):-len("/replace")]
-        value = x.store.create(x.body(), previous_code=code, write_token=x.headers.get("X-Write-Token", ""))
-        return x.send_json(201, value) if value else x.send_json(403, {"error": "invalid write token"})
+        account = publisher(x)
+        if account is None: return
+        value = x.store.create(x.body(), previous_code=code, write_token=x.headers.get("X-Write-Token", ""), account=account)
+        return x.send_json(201, with_avatar(x, value)) if value else x.send_json(403, {"error": "invalid write token"})
     if path.endswith("/resync"):
         code=path[len("/v1/shares/"):-len("/resync")]
         value=x.store.resync(code,x.headers.get("X-Write-Token",""))
@@ -1127,6 +1155,123 @@ def revoke_share(x):
     revoked=x.store.revoke(x.path.rsplit("/",1)[-1],x.headers.get("X-Write-Token",""))
     if revoked is None: return x.send_json(404,{"error":"share not found"})
     x.send_json(200,{"revoked":True}) if revoked else x.send_json(403,{"error":"invalid write token"})
+
+# MARK: Accounts
+#
+# The app signs in with Apple and holds a session (`Authorization: Bearer`);
+# a Live Activity device joins the account with its own `X-Device-Secret`.
+
+def account_route(body):
+    """An account route: AccountError answers with its status."""
+    def run(x):
+        if x.accounts is None: return x.send_json(404, {"error": "not found"})
+        try: body(x)
+        except accounts.AccountError as error: x.send_json(error.status, {"error": str(error)})
+        except ProtocolError as error: x.send_json(error.status, {"error": str(error)})
+    run.__name__ = body.__name__
+    return run
+
+def signed_in(x): return x.accounts.authenticate(x.headers.get("Authorization", ""))
+
+def bound_device(x):
+    """The device in the path, proven by its own secret."""
+    service = getattr(x.live_activity, "v2", None)
+    if service is None: raise accounts.AccountError("live activity unavailable", 503)
+    device = identifier(x.path.rsplit("/", 1)[-1])
+    service.authenticate(device, x.headers.get("X-Device-Secret", ""))
+    return device
+
+@route("POST", "/v1/account/nonce")
+@account_route
+def account_nonce(x): x.send_json(200, x.accounts.nonce())
+
+@route("POST", "/v1/account/apple")
+@account_route
+def account_sign_in(x): x.send_json(200, x.accounts.sign_in(x.body()))
+
+@route("POST", "/v1/account/apple-events")
+@account_route
+def account_apple_event(x): x.send_json(200, x.accounts.apple_event(x.body()))
+
+@route("GET HEAD", "/v1/account")
+@account_route
+def account_summary(x): x.send_json(200, x.accounts.summary(signed_in(x)))
+
+@route("DELETE", "/v1/account")
+@account_route
+def account_delete(x): x.send_json(200, x.accounts.delete(signed_in(x)))
+
+@route("DELETE", "/v1/account/session")
+@account_route
+def account_sign_out(x): x.send_json(200, x.accounts.sign_out(x.headers.get("Authorization", "")))
+
+@route("PUT", "/v1/account/devices/{device}")
+@account_route
+def account_bind(x):
+    account = signed_in(x)
+    x.send_json(200, x.accounts.bind(account, bound_device(x)))
+
+@route("DELETE", "/v1/account/devices/{device}")
+@account_route
+def account_unbind(x):
+    account = signed_in(x)
+    x.send_json(200, x.accounts.unbind(account, identifier(x.path.rsplit("/", 1)[-1])))
+
+@route("PUT", "/v1/account/profile")
+@account_route
+def account_set_profile(x): x.send_json(200, x.accounts.set_profile(signed_in(x), x.body()))
+
+@route("PUT", "/v1/account/avatar")
+@account_route
+def account_set_avatar(x): x.send_json(200, x.accounts.set_avatar(signed_in(x), x.body()))
+
+@route("DELETE", "/v1/account/avatar")
+@account_route
+def account_clear_avatar(x): x.send_json(200, x.accounts.clear_avatar(signed_in(x)))
+
+@route("GET HEAD", "/v1/avatars/{version}")
+@account_route
+def avatar(x):
+    found = x.accounts.avatar(x.path.rsplit("/", 1)[-1])
+    if found is None: return x.send_json(404, {"error": "not found"})
+    # A new upload is a new path, so this one never changes.
+    x.send(200, found[1], found[0], [("Cache-Control", "public, max-age=31536000, immutable")])
+
+@route("DELETE", "/v1/admin/accounts/{code}/avatar")
+@account_route
+def admin_clear_avatar(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.admin_clear_avatar(x.path.split("/")[4]))
+
+@route("GET HEAD", "/v1/admin/accounts")
+@account_route
+def admin_accounts(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.admin_list(parse_qs(urlparse(x.target).query).get("q", [""])[0]))
+
+@route("GET HEAD", "/v1/admin/accounts/summary")
+@account_route
+def admin_accounts_summary(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.admin_summary())
+
+@route("POST", "/v1/admin/accounts/settings")
+@account_route
+def admin_accounts_settings(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.save_settings(x.body()))
+
+@route("POST", "/v1/admin/accounts/grants")
+@account_route
+def admin_accounts_grant(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.grant(x.body()))
+
+@route("GET HEAD", "/v1/admin/accounts/{code}")
+@account_route
+def admin_account(x):
+    if admin_only(x): return
+    x.send_json(200, x.accounts.admin_detail(x.path.rsplit("/", 1)[-1]))
 
 @route("GET HEAD POST PUT DELETE", "/{rest:path}")
 def not_found(x): x.send_json(404,{"error":"not found"})
@@ -1178,7 +1323,18 @@ def _response(status, data, headers):
         (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers]
     return response
 
-def create_app(store, service=None, workers=True):
+def wire_accounts(store, service=None):
+    """The accounts over `store`, gating the Live Activity `service`: an
+    entitlement it grants queues the devices' pending reminders again."""
+    v2 = getattr(service, "v2", None)
+    if store is None: return None
+    found = accounts.Accounts(store.db, store.lock, vault=getattr(v2, "vault", None))
+    if v2 is not None:
+        found.now = v2.now
+        v2.entitlement, found.on_change = found, v2.requeue
+    return found
+
+def create_app(store, service=None, workers=True, account_store=None):
     """The HTTP app over `store` and the Live Activity `service`. With
     `workers`, the service's dispatch threads run for the app's lifetime."""
     @asynccontextmanager
@@ -1189,6 +1345,7 @@ def create_app(store, service=None, workers=True):
             if workers and service is not None: await anyio.to_thread.run_sync(service.stop)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.store, app.state.live_activity = store, service
+    app.state.accounts = account_store if account_store is not None else wire_accounts(store, service)
     for methods, path, body in ROUTES:
         app.add_api_route(path, _endpoint(body), methods=methods, include_in_schema=False)
     app.add_middleware(RequestTarget)

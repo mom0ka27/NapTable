@@ -148,6 +148,10 @@ class Service:
         self.redraws = {}    # (device, occurrence) → Redraws of a token-mode activity
         self.redraw_due = [] # heap of (instant, device, occurrence) to try a refresh at
         self.built = None    # the UTC+8 day every plan was last built on
+        # `accounts.Accounts`, once wired: who may get a reminder on which day,
+        # and the usage day a started reminder costs. None lets everyone.
+        self.entitlement = None
+        self.charged_until = self.now() - DAY  # local reservations charged up to here
         self._after = []     # memory changes waiting for the transaction to commit
         with self.lock:
             path = self.db.execute("PRAGMA database_list").fetchone()[2]
@@ -293,11 +297,13 @@ class Service:
             history = self.db.execute("SELECT occurrence,state,expires_at FROM la_starts WHERE device=? ORDER BY fire_at", (device,)).fetchall()
             timetable = self.db.execute("SELECT revision,push_mode,follow_scope FROM la_timetables WHERE device=?", (device,)).fetchone()
             pending = len(self._pending(device, {item['occurrence'] for item in history}, now))
+            entitled = self._allowed(self.db, device, schedule_engine.today(now))
         return {"deviceID": device, "protocolVersion": 2, "revoked": bool(row['revoked']), "error": row['error'],
                 "pendingCount": pending, "hasStartToken": bool(row['token']), "pushConfigured": self.client is not None,
                 "history": [{"occurrenceId": item['occurrence'], "state": item['state'], "end": item['expires_at']} for item in history],
                 "timetableRevision": timetable['revision'] if timetable else 0,
-                "pushMode": timetable['push_mode'] if timetable else None, "following": bool(timetable and timetable['follow_scope'])}
+                "pushMode": timetable['push_mode'] if timetable else None, "following": bool(timetable and timetable['follow_scope']),
+                "entitled": entitled}
 
     @staticmethod
     def key(bundle, environment, school, schedule, version, period):
@@ -463,8 +469,10 @@ class Service:
         first = schedule_engine.today(now)
         found, omitted = schedule_engine.conflicts_between(device, first, min((share or own).last_day(), first + timedelta(days=200)),
                                                            own, share, body['settings'], body['conflicts'], now)
+        with self.lock:
+            entitled = self._allowed(self.db, device, first)
         return {"revision": revision, "pushMode": stored['push_mode'], "following": bool(stored['follow_scope']),
-                "conflicts": found, "omitted": omitted, "pendingCount": pending, "channels": channels}
+                "conflicts": found, "omitted": omitted, "pendingCount": pending, "channels": channels, "entitled": entitled}
 
     def _payload(self, occurrence, stored, texts, scope, channel):
         """The start push, built when it is sent or claimed: the plan keeps its times only."""
@@ -616,6 +624,38 @@ class Service:
         for stamp in activity.unsent():
             heapq.heappush(self.redraw_due, (stamp, device, occurrence))
 
+    # MARK: Entitlement
+
+    def _allowed(self, db, device, day):
+        return self.entitlement is None or self.entitlement.allows(db, device, day.isoformat())
+
+    def _charge(self, db, device, day):
+        if self.entitlement is not None:
+            self.entitlement.charge(db, device, day.isoformat())
+
+    def requeue(self, devices):
+        """Devices (None: all) that may have become entitled: queue their pending reminders
+        again. A reminder whose time passed but whose class still runs starts
+        at once; entries that turn out stale are dropped when they fall due."""
+        now = self.now()
+        with self.lock:
+            for device in list(self.plans) if devices is None else devices:
+                taken = {row[0] for row in self.db.execute("SELECT occurrence FROM la_starts WHERE device=?", (device,))}
+                for item in self._pending(device, taken, now):
+                    heapq.heappush(self.due, (item.fire_at, device, item.id))
+
+    def charge_reservations(self):
+        """The phone's own reservations start on the phone: once one's time has
+        come, its day is charged. Released ones are gone from the ledger by then."""
+        if self.entitlement is None:
+            return
+        now = self.now()
+        with self.transaction() as db:
+            for row in db.execute("SELECT DISTINCT device,day FROM la_starts WHERE state='local' AND fire_at>? AND fire_at<=?",
+                                  (self.charged_until, now)).fetchall():
+                self._charge(db, row['device'], date.fromisoformat(row['day']))
+            self.charged_until = now
+
     def claim(self, device, value):
         """Hand the nearest `slots` pending occurrences to the phone's own
         reservations and return what it needs to reserve them."""
@@ -628,7 +668,8 @@ class Service:
                 raise ProtocolError("device revoked", 409)
             taken = {row[0] for row in db.execute("SELECT occurrence FROM la_starts WHERE device=?", (device,))}
             # A reminder about to fire is safer left to the server than raced.
-            fresh = sorted(((day, item) for day, items in self.plans.get(device, {}).items() for item in items
+            allowed = {day for day in self.plans.get(device, {}) if self._allowed(db, device, day)}
+            fresh = sorted(((day, item) for day, items in self.plans.get(device, {}).items() if day in allowed for item in items
                             if item.id not in taken and item.fire_at > now + 30), key=lambda pair: pair[1].fire_at)
             for day, item in fresh[:value['slots']]:
                 db.execute("INSERT INTO la_starts(device,occurrence,day,state,fire_at,expires_at) VALUES(?,?,?,'local',?,?)",
@@ -650,7 +691,8 @@ class Service:
                                 "scheduleScope": scope, "scheduleVersion": stored['version'], "channel": channel,
                                 "shared": attributes.get('shared', [])})
             channels = self._channels(db, owner, source[0] if source else None)
-        return {"claims": claimed, "channels": channels}
+            entitled = self._allowed(db, device, schedule_engine.today(now))
+        return {"claims": claimed, "channels": channels, "entitled": entitled}
 
     def release(self, device, occurrence):
         """A reservation the phone could not make goes back to the server."""
@@ -682,6 +724,10 @@ class Service:
                 raise ProtocolError("device revoked", 409)
             found = None if local else self._find(device, occurrence)
             if local:
+                # Started by the app on entry: a reminder like any other, so it needs the entitlement and costs the day.
+                if not self._allowed(db, device, schedule_engine.today(now)):
+                    raise ProtocolError("subscription required", 402)
+                self._charge(db, device, schedule_engine.today(now))
                 # The server's own occurrence of that class, when it has one, lends its refreshes.
                 same = [(day, item) for day, items in self.plans.get(device, {}).items() for item in items if item.fire_at <= now and item.end == end]
                 day, item = same[0] if same else (schedule_engine.today(now), Occurrence(occurrence, now, end, (), ()))
@@ -868,6 +914,9 @@ class Service:
                 owner = db.execute("SELECT * FROM la_v2_devices WHERE id=?", (device,)).fetchone()
                 if owner is None or owner['revoked']:
                     continue
+                # Not entitled: dropped from the queue; `requeue` brings it back if that changes.
+                if not self._allowed(db, device, day):
+                    continue
                 # Built now from the timetable: the plan keeps its times only.
                 built, stored, texts, scope = self._resolve(db, device, occurrence, day)
                 if built is None:
@@ -887,6 +936,7 @@ class Service:
                 sealed[(device, occurrence)] = owner['token']
                 db.execute("INSERT INTO la_starts(device,occurrence,day,state,fire_at,expires_at) VALUES(?,?,?,'submitting',?,?)",
                            (device, occurrence, day.isoformat(), built['reminder'], built['end']))
+                self._charge(db, device, day)
             payload['aps']['timestamp'] = int(now)
             # APNs keeps it for a phone that is offline at the reminder, until the course ends.
             claimed.append(((device, occurrence), owner['environment'], {"device_token": token, "payload": payload, "expiration": int(built['end']),
@@ -1055,7 +1105,7 @@ class Service:
     def start(self):
         if self.workers:
             return
-        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels', self.maintain_channels, 60), ('broadcast-plan', self.plan_broadcasts, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1), ('nightly', self.nightly, 30), ('follow-shares', self.follow_shares, 30)]:
+        for name, action, delay in [('legacy-drain', self.drain_legacy, 5), ('channels', self.maintain_channels, 60), ('broadcast-plan', self.plan_broadcasts, 60), ('starts', self.dispatch_starts, 1), ('broadcasts', self.dispatch_broadcasts, 1), ('token-updates', self.dispatch_token_updates, 1), ('nightly', self.nightly, 30), ('follow-shares', self.follow_shares, 30), ('charges', self.charge_reservations, 30)]:
             def run(action=action, delay=delay):
                 while not self.stop_event.is_set():
                     try:
