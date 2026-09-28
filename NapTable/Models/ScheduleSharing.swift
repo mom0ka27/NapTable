@@ -62,6 +62,11 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
     var adjustments: [CalendarAdjustment]
     var fetchedAt: Date
     var remark: String? = nil
+    /// 分享者已经撤销了这份分享（服务端返回 404）。本机的副本照常能看，只是
+    /// 不会再更新。旧缓存没有这个键，所以是可选值。
+    var revoked: Bool? = nil
+
+    var isRevoked: Bool { revoked == true }
 
     // Older servers include the publisher in meta.name; never use it as a display label.
     var name: String { remark?.trimmedNonEmpty ?? meta.schoolName.trimmedNonEmpty ?? "共享课表" }
@@ -196,11 +201,22 @@ extension ScheduleSharingService {
 
     /// Delete the share from the server. A share the server no longer has is
     /// already gone, so its credential is dropped as well.
+    ///
+    /// 服务端拒绝凭证（403）时抛 `ShareRevokeError.tokenRejected`，凭证留着，
+    /// 由界面让用户决定要不要 `forget` 掉——否则这条凭证永远删不掉。
     func revoke(_ credential: ShareCredential) async throws {
         do {
             _ = try await request(path: "/v1/shares/\(credential.code)", method: "DELETE",
                                   headers: ["X-Write-Token": credential.token])
-        } catch ScheduleServiceError.server(let reason) where reason == "share not found" {}
+        } catch ScheduleServiceError.server(let reason) where reason == "share not found" {
+        } catch ScheduleServiceError.server(let reason) where reason == "invalid write token" {
+            throw ShareRevokeError.tokenRejected
+        }
+        forget(credential)
+    }
+
+    /// 只从本机删掉这条分享凭证，不联系服务端。
+    func forget(_ credential: ShareCredential) {
         store(myShares.filter { $0.code != credential.code })
     }
 
@@ -268,8 +284,14 @@ extension ScheduleSharingService {
             _ = try? await follow(code)
             return
         }
-        guard let data = try? await request(path: "/v1/shares/\(code)/meta", method: "GET"),
-              let meta = try? JSONDecoder().decode(ShareMeta.self, from: data) else { return }
+        let data: Data
+        do {
+            data = try await request(path: "/v1/shares/\(code)/meta", method: "GET")
+        } catch ScheduleServiceError.server(let reason) where reason == "share not found" {
+            markRevoked(code)
+            return
+        } catch { return }
+        guard let meta = try? JSONDecoder().decode(ShareMeta.self, from: data) else { return }
         // `updatedAt` is bumped by every server-side write, and the full share
         // document carries no `adjustmentCount`, so comparing whole metas
         // would re-download on every poll.
@@ -278,6 +300,33 @@ extension ScheduleSharingService {
             refreshed.remark = cached.remark
             try? saveShared(refreshed, remark: cached.name)
         }
+    }
+
+    /// 没有设为关心的共享课表不会被 `refreshFollowed` 轮询，打开列表时顺带问一下
+    /// 它们还在不在。只看 404，其他错误（离线等）不改状态。
+    func refreshSharedStatus() async {
+        for schedule in sharedSchedules where !schedule.isRevoked && schedule.meta.code != followedCode {
+            do {
+                _ = try await request(path: "/v1/shares/\(schedule.meta.code)/meta", method: "GET")
+            } catch ScheduleServiceError.server(let reason) where reason == "share not found" {
+                markRevoked(schedule.meta.code)
+            } catch {}
+        }
+    }
+
+    /// 分享被撤销：保留本机副本，只打上标记，让列表能告诉用户它不会再更新了。
+    func markRevoked(_ code: String) {
+        var list = sharedSchedules
+        guard let index = list.firstIndex(where: { $0.meta.code == code }), !list[index].isRevoked else { return }
+        list[index].revoked = true
+        if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: Self.importedKey)
+        }
+        if followedCode == code, var followed = followedSchedule {
+            followed.revoked = true
+            persist(followed, notify: false)
+        }
+        objectWillChange.send()
     }
 
     private func fetchFollowed(_ code: String) async throws -> FollowedSchedule {
@@ -290,13 +339,21 @@ extension ScheduleSharingService {
         }
         // Preserve publisher row IDs independently of the import editor, which
         // intentionally reassigns IDs when installing into a local table.
+        // 越界的行在解码时会被丢掉，所以按行配对，不能按下标对齐。
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let rows = object?["courses"] as? [[String: Any]] ?? []
         var courses = schedule.courses
-        if rows.count == courses.count {
-            let ids = rows.map { ($0["id"] as? NSNumber)?.intValue ?? 0 }
+        if !rows.isEmpty {
+            let pairs = rows.compactMap { row in
+                CoursePayloadCodec.makeCourse(from: row).map { ($0, (row["id"] as? NSNumber)?.intValue ?? 0) }
+            }
+            let ids = pairs.map(\.1)
             let unique = Set(ids).count == ids.count
-            for index in courses.indices { courses[index].id = unique && ids[index] > 0 ? ids[index] : 0 }
+            courses = pairs.map { course, id in
+                var value = course
+                value.id = unique && id > 0 ? id : 0
+                return value
+            }
         }
         return FollowedSchedule(
             meta: meta,
@@ -317,6 +374,15 @@ extension ScheduleSharingService {
     }
 
     private var groupDefaults: UserDefaults? { UserDefaults(suiteName: NextWidgetConfiguration.appGroup) }
+}
+
+nonisolated enum ShareRevokeError: LocalizedError {
+    /// 服务端不认本机保存的写入凭证（403），通常是凭证已被替换。
+    case tokenRejected
+
+    var errorDescription: String? {
+        "服务端不接受本机保存的管理凭证，无法撤销这份分享。可以仅从本机移除这个分享码。"
+    }
 }
 
 extension Notification.Name {

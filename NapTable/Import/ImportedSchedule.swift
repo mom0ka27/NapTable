@@ -163,13 +163,22 @@ nonisolated enum CoursePayloadCodec {
     static func makeCourse(from map: [String: Any]) -> Course? {
         let name = string(map, "name")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !name.isEmpty else { return nil }
-        let weeks = normalizeWeeks(map["weeks"])
+        let rawWeeks = normalizeWeeks(map["weeks"])
+        let weeks = rawWeeks.filter { CourseLimits.weeks.contains($0) }
+        // 周次全部越界的行不是真课，丢掉；空列表保持原来的含义。
+        guard rawWeeks.isEmpty || !weeks.isEmpty else { return nil }
         let rawWeekTime = integer(map, "week_time", "weekTime") ?? 0
         let startTime = integer(map, "start_time", "startTime") ?? 0
         var timeCount = integer(map, "time_count", "timeCount") ?? 0
+        // 分享码是公开的，内容可能被人改过：星期、节次越界的行直接丢弃，
+        // 否则 `time_count = Int.max` 这种值会让按节次循环的代码溢出崩溃。
+        // 负的星期和以前一样当作自由时间。
+        guard rawWeekTime <= CourseLimits.weekdays.upperBound,
+              startTime <= CourseLimits.slots.upperBound,
+              timeCount <= CourseLimits.maxTimeCount else { return nil }
         // Free-time rows carry no slots at all; a fixed row with no length still
         // has to occupy one.
-        let weekTime = min(max(rawWeekTime, 0), 7)
+        let weekTime = max(rawWeekTime, 0)
         let hasFixedSlot = weekTime > 0 && startTime > 0
         if hasFixedSlot, timeCount < 0 { timeCount = 0 }
         return Course(
@@ -192,7 +201,7 @@ nonisolated enum CoursePayloadCodec {
             info: string(map, "info"),
             color: string(map, "color"),
             courseKey: integer(map, "course_id", "courseId")
-        )
+        ).clamped()
     }
 
     private static func string(_ map: [String: Any], _ keys: String...) -> String? {

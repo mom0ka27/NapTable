@@ -148,7 +148,11 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     var isFreeTime: Bool { weekTime == 0 || startTime <= 0 }
 
     /// Inclusive last slot. A course with `timeCount = 0` occupies one slot.
-    var endTime: Int { startTime + max(0, timeCount) }
+    /// 饱和加法：解码时已经钳过范围，这里再兜一层，坏数据最多画错，不会溢出崩溃。
+    var endTime: Int {
+        let (sum, overflow) = startTime.addingReportingOverflow(max(0, timeCount))
+        return overflow ? Int.max : sum
+    }
 
     var displayClassroom: String {
         let value = classroom?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -156,6 +160,65 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     }
 
     func contains(week: Int) -> Bool { weeks.contains(week) }
+
+    /// 把各字段钳进 `CourseLimits`。分享、存档和 App Group 里的缓存都可能带着
+    /// 越界的值（恶意分享的 `time_count = Int.max` 会让按节次循环的代码溢出或
+    /// 卡死），所以每条解码路径都经过这里。
+    func clamped() -> Course {
+        var value = self
+        if !CourseLimits.weekdays.contains(value.weekTime) { value.weekTime = 0 }
+        value.startTime = min(max(value.startTime, 0), CourseLimits.slots.upperBound)
+        value.timeCount = min(max(value.timeCount, 0), CourseLimits.maxTimeCount)
+        var seen = Set<Int>()
+        value.weeks = value.weeks.filter { CourseLimits.weeks.contains($0) && seen.insert($0).inserted }
+        return value
+    }
+}
+
+/// 课程字段的合法范围，比任何真实课表都宽，只用来挡住坏数据。
+nonisolated enum CourseLimits {
+    /// 节次。`startTime = 0` 另有含义（自由时间），所以不在这个范围里也保留。
+    static let slots = 1...64
+    /// `timeCount` 是起始节之后再占的节数（见 `Course.timeCount`），0 表示只占一节。
+    static let maxTimeCount = 32
+    static let weeks = 1...40
+    /// 1 = 周一 … 7 = 周日，0 是自由时间。
+    static let weekdays = 0...7
+}
+
+// 存档约定：`Course`、`CourseTable`、`AppStateFile` 以后新增的字段一律用可选类型
+// （或者像这里一样手写 `decodeIfPresent` 给默认值）。合成的 `Decodable` 遇到缺键的
+// 非可选字段会让整份存档解码失败，旧版本写的文件就会被当成损坏的。
+extension Course {
+    private enum CodingKeys: String, CodingKey {
+        case id, tableId, name, weeks, weekTime, startTime, timeCount, importType
+        case classroom, classNumber, teacher, testTime, testLocation, link, info, color, courseKey, hidden
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(Int.self, forKey: .id),
+            tableId: try c.decode(Int.self, forKey: .tableId),
+            name: try c.decode(String.self, forKey: .name),
+            weeks: try c.decodeIfPresent([Int].self, forKey: .weeks) ?? [],
+            weekTime: try c.decodeIfPresent(Int.self, forKey: .weekTime) ?? 0,
+            startTime: try c.decodeIfPresent(Int.self, forKey: .startTime) ?? 0,
+            timeCount: try c.decodeIfPresent(Int.self, forKey: .timeCount) ?? 0,
+            importType: try c.decodeIfPresent(Int.self, forKey: .importType) ?? ImportKind.imported,
+            classroom: try c.decodeIfPresent(String.self, forKey: .classroom),
+            classNumber: try c.decodeIfPresent(String.self, forKey: .classNumber),
+            teacher: try c.decodeIfPresent(String.self, forKey: .teacher),
+            testTime: try c.decodeIfPresent(String.self, forKey: .testTime),
+            testLocation: try c.decodeIfPresent(String.self, forKey: .testLocation),
+            link: try c.decodeIfPresent(String.self, forKey: .link),
+            info: try c.decodeIfPresent(String.self, forKey: .info),
+            color: try c.decodeIfPresent(String.self, forKey: .color),
+            courseKey: try c.decodeIfPresent(Int.self, forKey: .courseKey),
+            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden)
+        )
+        self = clamped()
+    }
 }
 
 nonisolated enum ImportKind {

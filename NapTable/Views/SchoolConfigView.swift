@@ -87,6 +87,10 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                                 Text(schedule.name).font(.headline)
                                 Text("\(schedule.meta.schoolName) · \(schedule.courses.count) 门课程")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if schedule.isRevoked {
+                                    Label("分享已撤销，不会再更新", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
                             }
                             Spacer(minLength: 0)
                             Button(role: .destructive) {
@@ -170,7 +174,10 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                 message = "已导入「\(name)」，可在课表顶部切换查看"
             }
         }
-        .task { await service.refreshFollowed() }
+        .task {
+            await service.refreshFollowed()
+            await service.refreshSharedStatus()
+        }
     }
 
 }
@@ -182,6 +189,8 @@ private struct ShareOwnScheduleView: View {
     @State private var errorMessage: String?
     @State private var pendingRevoke: ShareCredential?
     @State private var revoking = false
+    /// 服务端不认凭证（403）的那条分享，确认框里改成提供「仅从本机移除」。
+    @State private var rejectedCredential: ShareCredential?
 
     private var currentShare: ShareCredential? {
         guard let table = store.selectedTable else { return nil }
@@ -271,6 +280,9 @@ private struct ShareOwnScheduleView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.large)
                         .disabled(busy || revoking || !canGenerateShare)
+                        Text("生成分享码会把这张课表的课程名称、教师、教室、周次和节次上传到 你以为课表 服务端，拿到分享码的人都能查看；撤销后服务端删除这份分享。")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let credential = currentShare {
@@ -280,6 +292,10 @@ private struct ShareOwnScheduleView: View {
                         }
                         .buttonStyle(.borderless)
                         .disabled(busy || revoking)
+                        // 和垃圾桶按钮一样挂在触发它的按钮上：iOS 26 起确认框从触发视图
+                        // 旁边弹出，挂在整个 ScrollView 上会飘到屏幕中间。
+                        .modifier(RevokeDialogs(credential: credential, pendingRevoke: $pendingRevoke,
+                                                rejected: $rejectedCredential, revoke: revoke, forget: forget))
                     }
 
                     if let errorMessage {
@@ -320,6 +336,8 @@ private struct ShareOwnScheduleView: View {
                                 .buttonStyle(.bordered)
                                 .disabled(busy || revoking)
                                 .accessibilityLabel("撤销分享码 \(credential.code)")
+                                .modifier(RevokeDialogs(credential: credential, pendingRevoke: $pendingRevoke,
+                                                        rejected: $rejectedCredential, revoke: revoke, forget: forget))
                             }
                             .padding(16)
                             .background(Color.appSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 16))
@@ -334,13 +352,6 @@ private struct ShareOwnScheduleView: View {
         .background(Color.appGroupedBackground)
         .navigationTitle("分享课表")
         .appInlineNavigationTitle()
-        .confirmationDialog("撤销分享码 \(pendingRevoke?.code ?? "")？",
-                            isPresented: Binding(get: { pendingRevoke != nil }, set: { if !$0 { pendingRevoke = nil } }),
-                            titleVisibility: .visible, presenting: pendingRevoke) { credential in
-            Button("撤销并删除", role: .destructive) { revoke(credential) }
-        } message: { _ in
-            Text("服务端会删除这份分享，朋友将无法再读取或关心它。")
-        }
     }
 
     private var sharingHint: String {
@@ -365,10 +376,19 @@ private struct ShareOwnScheduleView: View {
             defer { revoking = false }
             do {
                 try await service.revoke(credential)
+            } catch ShareRevokeError.tokenRejected {
+                errorMessage = ShareRevokeError.tokenRejected.localizedDescription
+                rejectedCredential = credential
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func forget(_ credential: ShareCredential) {
+        service.forget(credential)
+        rejectedCredential = nil
+        errorMessage = nil
     }
 
     private func generateShare() {
@@ -383,6 +403,44 @@ private struct ShareOwnScheduleView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// 撤销分享的确认框，挂在触发它的按钮上。服务端拒绝凭证（403）之后同一个确认框
+/// 改为只提供「仅从本机移除」。合成一个是因为同一视图上叠两个确认框不可靠。
+private struct RevokeDialogs: ViewModifier {
+    let credential: ShareCredential
+    @Binding var pendingRevoke: ShareCredential?
+    @Binding var rejected: ShareCredential?
+    let revoke: (ShareCredential) -> Void
+    let forget: (ShareCredential) -> Void
+
+    private var isRejected: Bool { rejected?.code == credential.code }
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                isRejected ? "无法撤销分享码 \(credential.code)" : "撤销分享码 \(credential.code)？",
+                isPresented: Binding(
+                    get: { pendingRevoke?.code == credential.code || isRejected },
+                    set: { if !$0 { pendingRevoke = nil; rejected = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if isRejected {
+                    Button("仅从本机移除", role: .destructive) { forget(credential) }
+                } else {
+                    Button("撤销并删除", role: .destructive) {
+                        pendingRevoke = nil
+                        revoke(credential)
+                    }
+                }
+                Button("取消", role: .cancel) { pendingRevoke = nil; rejected = nil }
+            } message: {
+                Text(isRejected
+                     ? "服务端不接受本机保存的管理凭证。仅从本机移除后，这个分享码不再显示在这里，但服务端上的分享不会被删除。"
+                     : "服务端会删除这份分享，朋友将无法再获取更新。已保存到对方设备上的副本不会被删除。")
+            }
     }
 }
 
