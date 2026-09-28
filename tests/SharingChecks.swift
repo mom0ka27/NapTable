@@ -104,6 +104,30 @@ struct SharingChecks {
         await store.refresh()
         precondition(!store.isReadOnly && service.followedCode == nil)
         precondition(store.periods == ownPeriods)
+
+        // MARK: Course editor round trip
+        // Saving from the editor keeps what it does not manage and leaves untouched rows alone.
+        let imported = app.addCourse(Course(tableId: app.selectedTableId, name: "有机化学", weeks: [1, 2, 3], weekTime: 2, startTime: 3, timeCount: 1,
+                                            importType: ImportKind.imported, classroom: "1教105", classNumber: "01", teacher: nil, testTime: "第18周",
+                                            testLocation: "体育馆", link: "https://example.invalid", info: nil, color: "#8AD297"))
+        let untouched = app.addCourse(Course(tableId: app.selectedTableId, name: "物理", weeks: [1], weekTime: 3, startTime: 1, timeCount: 0,
+                                             importType: ImportKind.imported, color: "#F9A883"))
+        var edits = try await store.loadScheduleEdits()
+        try await store.saveScheduleEdits(edits)
+        precondition(app.courses.first { $0.id == imported.id } == imported && app.courses.first { $0.id == untouched.id } == untouched,
+                     "An unchanged save rewrites nothing")
+        let index = edits.custom.firstIndex { $0.id == "course:\(imported.id)" }!
+        let old = edits.custom[index].course
+        // What the editor sends back: a new room, "" for the empty teacher, the period range for the empty note.
+        edits.custom[index] = NativeScheduleCustomItem(id: edits.custom[index].id, sourceKey: nil, day: 2, bigSlot: 2, course: NativeScheduleCourse(
+            name: old.name, teacher: "", weeks: old.weeks, weekList: old.weekList, location: "2教201", slotNote: "第 3-4 节",
+            startSlot: 3, endSlot: 4, customId: old.customId, custom: true))
+        try await store.saveScheduleEdits(edits)
+        let saved = app.courses.first { $0.id == imported.id }!
+        var expected = imported
+        expected.classroom = "2教201"
+        precondition(saved == expected, "Only the edited field changes: colour, course key, import kind, exam and link stay")
+        precondition(app.courses.first { $0.id == untouched.id } == untouched)
         print("PASS: own-share rejection, required remarks, duplicate import, caring selects notifications, legacy settings, switching and cancellation, independent viewing and weeks, read-only protection, removal fallback")
     }
 }

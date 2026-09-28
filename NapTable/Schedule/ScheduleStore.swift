@@ -32,6 +32,10 @@ final class NativeScheduleStore: ObservableObject {
     /// Courses with no fixed weekday ("自由时间"). CpuTime has no such concept,
     /// so they stay out of the grid and are surfaced separately by the view.
     @Published private(set) var freeCourses: [NativeScheduleCourse] = []
+    /// The displayed timetable's own zone: its term's, or a viewed share's.
+    /// Decides which day is "today" and the times written into an export.
+    @Published private(set) var timeZone: TimeZone = NativeScheduleStore.fallbackTimeZone
+    static let fallbackTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
 
     private var viewedShareCode: String?
     private var sharedWeek: Int?
@@ -48,9 +52,10 @@ final class NativeScheduleStore: ObservableObject {
         self.app = app
         bag.removeAll()
         // `objectWillChange` fires *before* the mutation lands, so hop to the
-        // next runloop turn to read the settled value.
+        // next main-queue turn to read the settled value. Not `RunLoop.main`:
+        // that one waits out a scroll (tracking mode) before delivering.
         app.objectWillChange
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.rebuild() }
             .store(in: &bag)
         rebuild()
@@ -194,18 +199,21 @@ final class NativeScheduleStore: ObservableObject {
             uniquingKeysWith: { first, _ in first }
         )
 
+        let existing = Dictionary(app.currentCourses.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
         // Anything the editor dropped is a deletion.
         for course in app.currentCourses where incoming[Self.editID(for: course)] == nil {
             app.deleteCourse(id: course.id)
         }
 
         for item in edits.custom {
-            var course = Self.makeCourse(item.course, day: item.day, tableID: tableID)
-            if let id = Int(item.id.replacingOccurrences(of: Self.editPrefix, with: "")) {
-                course.id = id
-                app.updateCourse(course)
+            if let id = Int(item.id.replacingOccurrences(of: Self.editPrefix, with: "")), let original = existing[id] {
+                // Only what the editor manages changes; colour, course key,
+                // import kind and the rest stay. Untouched rows are not written.
+                let course = Self.apply(item.course, day: item.day, to: original)
+                if course != original { app.updateCourse(course) }
             } else {
-                app.addCourse(course)
+                app.addCourse(Self.makeCourse(item.course, day: item.day, tableID: tableID))
             }
         }
         rebuild()
@@ -284,6 +292,35 @@ final class NativeScheduleStore: ObservableObject {
         )
     }
 
+    /// `original` with the fields the editor manages taken from `native`.
+    static func apply(_ native: NativeScheduleCourse, day: Int, to original: Course) -> Course {
+        let edited = makeCourse(native, day: day, tableID: original.tableId)
+        var course = original
+        course.name = edited.name
+        course.weeks = edited.weeks
+        course.weekTime = edited.weekTime
+        course.startTime = edited.startTime
+        course.timeCount = edited.timeCount
+        // The editor sends "" for an empty field and fills an empty note with
+        // the period range; neither is a change to a field that was empty.
+        func text(_ value: String?, _ old: String?) -> String? {
+            value?.trimmedNonEmpty == nil && old?.trimmedNonEmpty == nil ? old : value
+        }
+        course.classroom = text(edited.classroom, original.classroom)
+        course.teacher = text(edited.teacher, original.teacher)
+        let generated = edited.isFreeTime ? "自由时间" : "第 \(edited.startTime)-\(edited.endTime) 节"
+        course.info = original.info?.trimmedNonEmpty == nil && edited.info == generated ? original.info : text(edited.info, original.info)
+        return course
+    }
+
+    /// Publishes only a changed value: every assignment to a `@Published`
+    /// property redraws the surface, even an equal one.
+    private func update<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<NativeScheduleStore, Value>, _ value: Value) -> Bool {
+        guard self[keyPath: keyPath] != value else { return false }
+        self[keyPath: keyPath] = value
+        return true
+    }
+
     private func rebuild() {
         guard let app else { return }
 
@@ -295,11 +332,13 @@ final class NativeScheduleStore: ObservableObject {
             ScheduleSlot(number: $0.offset + 1, start: $0.element.start, end: $0.element.end)
         }
         ScheduleSlot.all = slots.isEmpty ? ScheduleSlot.fallback : slots
-        selectedSemester = viewed.map { "share:" + $0.meta.code } ?? String(app.selectedTableId)
-        selectedWeek = String(viewed == nil ? app.displayWeek : min(max(sharedWeek ?? display.currentWeek, 1), display.weekCount))
-        periods = display.classTimes.enumerated().map {
+        _ = update(\.selectedSemester, viewed.map { "share:" + $0.meta.code } ?? String(app.selectedTableId))
+        _ = update(\.selectedWeek, String(viewed == nil ? app.displayWeek : min(max(sharedWeek ?? display.currentWeek, 1), display.weekCount)))
+        let zone = (viewed?.meta.timeZone ?? app.selectedTable?.termTimezone).flatMap(TimeZone.init(identifier:)) ?? Self.fallbackTimeZone
+        _ = update(\.timeZone, zone)
+        var changed = update(\.periods, display.classTimes.enumerated().map {
             NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
-        }
+        })
         let choices = app.tables.map {
             NativeScheduleSemester(value: String($0.id), label: $0.name, current: String($0.id) == selectedSemester)
         } + shares.map {
@@ -311,25 +350,26 @@ final class NativeScheduleStore: ObservableObject {
             classTimes: display.classTimes, semesterStartMonday: display.semesterStartMonday,
             weekCount: display.weekCount, currentWeek: display.currentWeek, adjustments: display.adjustments
         )
-        result = makeResult(visible)
-        calendar = makeCalendar(visible)
+        changed = update(\.result, makeResult(visible)) || changed
+        changed = update(\.calendar, makeCalendar(visible)) || changed
         // 月历和日期栏的节假日按服务端的统一假期安排算，小组件那边随 payload 同步。
         ChineseCalendarInfo.usePublishedHolidays(PublishedHoliday.fromOffDays(
             app.holidayCalendarAdjustments.filter { $0.kind == .off }.map { (date: $0.date, note: $0.note) }
         ))
-        freeCourses = display.courses.filter(\.isFreeTime).map(Self.makeNativeCourse)
+        changed = update(\.freeCourses, display.courses.filter(\.isFreeTime).map(Self.makeNativeCourse)) || changed
         if app.tables.isEmpty && viewed == nil {
             // `.idle` would fall through to the loading card and spin forever;
             // NapTable always has a table unless the user erased everything.
-            state = .failed
-            errorMessage = "还没有课表，请先导入课表或在设置里新建一张"
+            _ = update(\.state, .failed)
+            _ = update(\.errorMessage, "还没有课表，请先导入课表或在设置里新建一张")
         } else {
-            state = .loaded
-            errorMessage = app.loadErrorMessage
+            _ = update(\.state, .loaded)
+            _ = update(\.errorMessage, app.loadErrorMessage)
         }
-        source = .cache
-        sourceLabel = viewed?.name
-        lastUpdatedAt = Date()
+        _ = update(\.source, .cache)
+        _ = update(\.sourceLabel, viewed?.name)
+        // Stamps the timetable content, not each pass over it.
+        if changed || lastUpdatedAt == nil { lastUpdatedAt = Date() }
     }
 
     /// Everything the snapshot builders read.
