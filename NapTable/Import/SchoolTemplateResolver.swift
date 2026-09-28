@@ -14,17 +14,20 @@ enum SchoolTemplateResolver {
         var candidates = school.terms.filter {
             WeekCalculator.parseDay($0.semesterStartMonday) != nil && !$0.periods.isEmpty
         }
+        // 页面上的学年学期（`schedule.name` 由提取脚本从课表页读出）优先：
+        // 学生现在能看到的那张课表属于哪个学期，只有页面说得准，用当前学期会把
+        // 暑假里提前导入的课表落到上一个学期上。
         if let explicit = schedule.termID, !explicit.isEmpty {
             candidates = candidates.filter { $0.id == explicit }
+        } else if let academic = academicTerm(in: schedule.name),
+                  case let matched = terms(candidates, in: academic), !matched.isEmpty {
+            // 对得上的有多个时，下面照常优先校准过的学期、仍有歧义就报错。
+            candidates = matched
         } else if let currentTermID = school.currentTermID {
             candidates = candidates.filter { $0.id == currentTermID }
-        } else if let academic = academicTerm(in: schedule.name) {
-            candidates = candidates.filter { term in
-                guard let date = WeekCalculator.parseDay(term.semesterStartMonday) else { return false }
-                let year = WeekCalculator.calendar.component(.year, from: date)
-                let month = WeekCalculator.calendar.component(.month, from: date)
-                return year == academic.year && (academic.fall ? month >= 7 : month < 7)
-            }
+        } else if academicTerm(in: schedule.name) != nil {
+            // 页面写了学年学期却一个都对不上、服务端也没标当前学期：不拿今天去猜。
+            candidates = []
         } else {
             let active = candidates.filter { term in
                 guard let start = WeekCalculator.parseDay(term.semesterStartMonday),
@@ -58,6 +61,17 @@ enum SchoolTemplateResolver {
         result.classTimeList = term.classTimes
         result.calendarAdjustments = term.calendarAdjustments
         return result
+    }
+
+    private static func terms(
+        _ candidates: [ServiceTermConfiguration], in academic: (year: Int, fall: Bool)
+    ) -> [ServiceTermConfiguration] {
+        candidates.filter { term in
+            guard let date = WeekCalculator.parseDay(term.semesterStartMonday) else { return false }
+            let year = WeekCalculator.calendar.component(.year, from: date)
+            let month = WeekCalculator.calendar.component(.month, from: date)
+            return year == academic.year && (academic.fall ? month >= 7 : month < 7)
+        }
     }
 
     /// 导入课表的默认名，如「2026 秋」。优先按学期第一周的年月算（7 月起算秋季，
