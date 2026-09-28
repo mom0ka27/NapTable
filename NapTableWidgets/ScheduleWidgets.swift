@@ -1877,10 +1877,7 @@ private struct TodayScheduleView: View {
 
     /// 没显示的都排在最后一行之后（已经上完的才会被省在前面），所以说「后面」。
     private func remainingText(_ count: Int) -> some View {
-        Text("后面还有 \(count) 门课")
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(WidgetPalette.muted)
-            .lineLimit(1)
+        RemainingCoursesText(count: count)
     }
 }
 
@@ -2355,9 +2352,26 @@ private struct DayColumn: View {
     /// 两列的第一节课才对得齐。
     let companionHeader: WidgetDateHeader
 
+    /// 一列最多试着放几门。再多半宽的列也放不下，剩下的写进「后面还有 N 门课」。
+    private static let maxLimit = 8
+
     var body: some View {
-        let window = day.courseWindow(limit: 5, nowMinutes: nowMinutes)
-        VStack(alignment: .leading, spacing: 7) {
+        if day.courseList.isEmpty {
+            column(limit: 0)
+        } else {
+            // 以前写死 5 门，多出来的课会被悄悄截掉。和今日课表一样从多到少试，挑第一个放得下的，
+            // 「后面还有几门」才数得准。
+            ViewThatFits(in: .vertical) {
+                ForEach(Array(stride(from: min(day.courseList.count, Self.maxLimit), through: 1, by: -1)), id: \.self) { limit in
+                    column(limit: limit)
+                }
+            }
+        }
+    }
+
+    private func column(limit: Int) -> some View {
+        let window = day.courseWindow(limit: limit, nowMinutes: nowMinutes)
+        return VStack(alignment: .leading, spacing: 7) {
             ZStack(alignment: .topLeading) {
                 companionHeader.hidden()
                 header
@@ -2374,21 +2388,43 @@ private struct DayColumn: View {
                         message: isToday ? RestState.message() : "没有课程"
                     )
                 }
-            } else if timeline {
-                DayTimeline(courses: window.courses, nowMinutes: nowMinutes, compact: true)
             } else {
-                ForEach(Array(window.courses.enumerated()), id: \.offset) { _, course in
-                    TodayCourseRow(
-                        course: course,
-                        large: false,
-                        timeOnSeparateLine: true,
-                        completed: nowMinutes.map { course.hasEnded(at: $0) } ?? false
-                    )
+                Group {
+                    if timeline {
+                        DayTimeline(courses: window.courses, nowMinutes: nowMinutes, compact: true)
+                    } else {
+                        ForEach(Array(window.courses.enumerated()), id: \.offset) { _, course in
+                            TodayCourseRow(
+                                course: course,
+                                large: false,
+                                timeOnSeparateLine: true,
+                                completed: nowMinutes.map { course.hasEnded(at: $0) } ?? false
+                            )
+                        }
+                    }
+                }
+                if window.remainingCount > 0 {
+                    RemainingCoursesText(count: window.remainingCount)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.top, 3)
                 }
             }
         }
-        // 时间线要往下铺满整列；列表照旧按内容高度贴顶。
+        // 时间线要往下铺满整列；列表照旧按内容高度贴顶。ViewThatFits 量的是理想高度，挑行数不受影响。
+        .fixedSize(horizontal: false, vertical: !timeline && !day.courseList.isEmpty)
         .frame(maxWidth: .infinity, maxHeight: timeline ? .infinity : nil, alignment: .topLeading)
+    }
+}
+
+/// 「后面还有 N 门课」。没显示的都排在最后一行之后（已经上完的才会被省在前面），所以说「后面」。
+private struct RemainingCoursesText: View {
+    let count: Int
+
+    var body: some View {
+        Text("后面还有 \(count) 门课")
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(WidgetPalette.muted)
+            .lineLimit(1)
     }
 }
 
