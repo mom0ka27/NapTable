@@ -74,6 +74,30 @@ struct OnboardingChecks {
         store.eraseEverything()
         store.saveNow()
         precondition(AppStore(fileURL: url).tables.isEmpty)
-        print("PASS: privacy consent, upload gating, payload minimization, dedup/retry, onboarding import gate, fresh launch, empty persistence, explicit creation, last-table deletion, empty backup, restore selection, erase")
+
+        // 读不到（这里用同名目录模拟）：不动原文件、不写盘。
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let unreadable = folder.appendingPathComponent("state.json")
+        try! FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: false)
+        let blocked = AppStore(fileURL: unreadable)
+        precondition(blocked.loadErrorMessage != nil)
+        blocked.addTable(name: "不该写进去")
+        blocked.saveNow()
+        var isDirectory: ObjCBool = false
+        precondition(FileManager.default.fileExists(atPath: unreadable.path, isDirectory: &isDirectory) && isDirectory.boolValue)
+        precondition(try! FileManager.default.contentsOfDirectory(atPath: folder.path) == ["state.json"])
+        try! FileManager.default.removeItem(at: unreadable)
+
+        // 解不开：挪成带时间戳的备份，第二次损坏不会覆盖第一份备份。
+        try! Data("not json".utf8).write(to: unreadable)
+        _ = AppStore(fileURL: unreadable)
+        try! Data("still not json".utf8).write(to: unreadable)
+        let reset = AppStore(fileURL: unreadable)
+        precondition(reset.loadErrorMessage?.contains("corrupt-") == true)
+        let backups = try! FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.contains(".corrupt-") }
+        precondition(backups.count == 2, "\(backups)")
+        print("PASS: privacy consent, upload gating, payload minimization, dedup/retry, onboarding import gate, fresh launch, empty persistence, explicit creation, last-table deletion, empty backup, restore selection, erase, unreadable state kept, timestamped corrupt backups")
     }
 }

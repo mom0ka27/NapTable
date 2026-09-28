@@ -116,8 +116,11 @@ nonisolated enum CourseHTMLParser {
             let remark = remarkIndex < cells.count ? clean(cells[remarkIndex].trimmedText) : ""
             let infoCell = cells[infoIndex]
             // Each meeting is one child element; when the page puts them all in
-            // one text node, fall back to its newlines.
-            var infoTexts = infoCell.children
+            // one text node, fall back to its newlines. A cell that mixes bare text
+            // with inline elements (`周三 第1-2节 <span>1-16周</span> 仙Ⅱ-304`) is one
+            // meeting written inline, so it is read as a whole in document order.
+            let hasLooseText = infoCell.children.contains { $0.isText && !clean($0.text).isEmpty }
+            var infoTexts = hasLooseText ? [] : infoCell.elementChildren
                 .filter { !clean($0.trimmedText).isEmpty }
                 .map(\.trimmedText)
             if infoTexts.isEmpty {
@@ -199,13 +202,18 @@ nonisolated enum MeetingParser {
 
     private static let slotRangePattern = try? NSRegularExpression(pattern: "第?(\\d{1,2})-(\\d{1,2})节")
     private static let slotSinglePattern = try? NSRegularExpression(pattern: "第(\\d{1,2})节")
-    // `1-16周`, `1-16周(单)`, `1-16周单周` and `第1-16周` all appear in real pages.
+    // `1-16周`, `1-16周(单)`, `1-16周（双）`, `1-16周单周` and `第1-16周` all appear
+    // in real pages. Group 3 is the 单/双 qualifier written right after the range.
     private static let weekRangePattern = try? NSRegularExpression(
-        pattern: "^第?(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s*周?(?:\\(?[单双]\\)?周?)?$"
+        pattern: "^第?(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s*周?(?:[(（]?([单双])[)）]?周?)?$"
     )
+    /// A qualifier on its own: `单周`, `(双)`, `（单）`, `单`.
+    private static let parityPattern = try? NSRegularExpression(pattern: "^[(（]?([单双])[)）]?周?$")
     private static let weekSinglePattern = try? NSRegularExpression(pattern: "^第?(\\d{1,2})周$")
     private static let weekFromPattern = try? NSRegularExpression(pattern: "从第?(\\d{1,2})周开始")
-    private static let weekListPattern = try? NSRegularExpression(pattern: "(\\d{1,2})-(\\d{1,2})周|(?<![\\d-])(\\d{1,2})周")
+    private static let weekListPattern = try? NSRegularExpression(
+        pattern: "(\\d{1,2})-(\\d{1,2})周(?:\\s*([(（][单双][)）]|[单双]周))?|(?<![\\d-])(\\d{1,2})周"
+    )
 
     /// Returns `nil` for lines that carry no meeting (a stray header, a note).
     static func parse(_ rawLine: String, defaultWeekStart: Int = 1, defaultWeekEnd: Int = SchoolDefaults.defaultWeekCount) -> Meeting? {
@@ -248,10 +256,11 @@ nonisolated enum MeetingParser {
         } else if let matched = slots.matched {
             classroom = String(line[matched.upperBound...]).trimmingCharacters(in: .whitespaces)
         }
-        classroom = classroom
-            .replacingOccurrences(of: "单周", with: "")
-            .replacingOccurrences(of: "双周", with: "")
-            .trimmingCharacters(in: .whitespaces)
+        // Drop a leading 单周 / (双) qualifier that sat between the weeks and the
+        // room. Only a whole token is removed, so 单片机实验室 keeps its name.
+        var roomTokens = classroom.split(whereSeparator: { $0 == " " || $0 == "\u{3000}" }).map(String.init)
+        while let first = roomTokens.first, parity(of: first) != nil { roomTokens.removeFirst() }
+        classroom = roomTokens.joined(separator: " ")
         return Meeting(
             weekday: weekday,
             startSlot: slots.start,
@@ -315,22 +324,30 @@ nonisolated enum MeetingParser {
             .map(String.init)
 
         var weeks: [Int] = []
-        for token in tokens {
-            for piece in token.split(separator: ",").map(String.init) {
+        for (tokenIndex, token) in tokens.enumerated() {
+            let pieces = token.split(separator: ",").map(String.init)
+            for (pieceIndex, piece) in pieces.enumerated() {
                 // A bare 单周 / 双周 qualifier carries no range of its own; the
                 // range token next to it already applied the qualifier.
-                if piece == "单周" || piece == "双周" || piece == "单" || piece == "双" { continue }
-                // The qualifier can be inside the token ("1-16周单周") or a
-                // separate token on the same line ("1-16周 单周") depending on
-                // the campus page, so fall back to the whole line.
-                let scope = piece.contains("单") || piece.contains("双") ? piece : line
-                let isSingle = scope.contains("单")
-                let isDouble = scope.contains("双")
+                if parity(of: piece) != nil { continue }
+                // The qualifier can be inside the token ("1-16周单周", "1-16周（单）")
+                // or the very next token ("1-16周 单周"). Only that adjacent suffix
+                // counts: a room such as 单片机实验室 or 双创楼, or the (单) of another
+                // range on the same line ("1-8周,10-16周(单)"), must not turn this
+                // range into odd or even weeks.
+                var qualifier: Character?
+                if pieceIndex == pieces.count - 1, tokenIndex + 1 < tokens.count {
+                    qualifier = parity(of: tokens[tokenIndex + 1])
+                }
                 if let regex = weekRangePattern {
                     let range = NSRange(piece.startIndex..<piece.endIndex, in: piece)
                     if let match = regex.firstMatch(in: piece, range: range),
                        let start = intValue(match, 1, in: piece),
                        let end = intValue(match, 2, in: piece) {
+                        let own = Range(match.range(at: 3), in: piece).flatMap { piece[$0].first }
+                        let kind = own ?? qualifier
+                        let isSingle = kind == "单"
+                        let isDouble = kind == "双"
                         if isSingle {
                             weeks += WeekSeries.single(from: start, to: end)
                         } else if isDouble {
@@ -345,6 +362,10 @@ nonisolated enum MeetingParser {
                     let range = NSRange(piece.startIndex..<piece.endIndex, in: piece)
                     if let match = regex.firstMatch(in: piece, range: range),
                        let start = intValue(match, 1, in: piece) {
+                        let rest = Range(match.range, in: piece).map { String(piece[$0.upperBound...]) } ?? ""
+                        let kind = parity(of: rest) ?? qualifier
+                        let isSingle = kind == "单"
+                        let isDouble = kind == "双"
                         if isSingle {
                             weeks += WeekSeries.single(from: start, to: defaultWeekEnd)
                         } else if isDouble {
@@ -366,16 +387,27 @@ nonisolated enum MeetingParser {
         }
 
         if weeks.isEmpty {
-            // Some lines only say "周二 第3-4节 单周 逸B-101".
-            if line.contains("单周") {
+            // Some lines only say "周二 第3-4节 单周 逸B-101". Only a standalone
+            // qualifier token counts, not a room that happens to start with 单/双.
+            let lineParity = tokens.lazy.compactMap { parity(of: $0) }.first
+            if lineParity == "单" {
                 weeks = WeekSeries.single(from: defaultWeekStart, to: defaultWeekEnd)
-            } else if line.contains("双周") {
+            } else if lineParity == "双" {
                 weeks = WeekSeries.double(from: defaultWeekStart, to: defaultWeekEnd)
             } else {
                 weeks = WeekSeries.full(from: defaultWeekStart, to: defaultWeekEnd)
             }
         }
         return Array(Set(weeks)).sorted()
+    }
+
+    /// `单` / `双` when the whole string is a parity qualifier (`单周`, `(双)`, `（单）`).
+    static func parity(of text: String) -> Character? {
+        let value = text.trimmingCharacters(in: .whitespaces)
+        guard let regex = parityPattern,
+              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..<value.endIndex, in: value)),
+              let range = Range(match.range(at: 1), in: value) else { return nil }
+        return value[range].first
     }
 
     /// The 选课 page uses `2-4节 14-18周(双)`, which the 教务 patterns miss.
@@ -387,12 +419,15 @@ nonisolated enum MeetingParser {
         guard let regex = weekListPattern else {
             return parseWeeks(line, defaultWeekStart: defaultWeekStart, defaultWeekEnd: defaultWeekEnd)
         }
-        let isSingle = line.contains("(单)") || line.contains("单周")
-        let isDouble = line.contains("(双)") || line.contains("双周")
         let range = NSRange(line.startIndex..<line.endIndex, in: line)
         var weeks: [Int] = []
         for match in regex.matches(in: line, range: range) {
             if let start = intValue(match, 1, in: line), let end = intValue(match, 2, in: line) {
+                // Same rule as `parseWeeks`: only the qualifier written right after
+                // this range applies to it.
+                let kind = Range(match.range(at: 3), in: line).flatMap { line[$0].first { $0 == "单" || $0 == "双" } }
+                let isSingle = kind == "单"
+                let isDouble = kind == "双"
                 if isSingle {
                     weeks += WeekSeries.single(from: start, to: end)
                 } else if isDouble {
@@ -400,7 +435,7 @@ nonisolated enum MeetingParser {
                 } else {
                     weeks += WeekSeries.full(from: start, to: end)
                 }
-            } else if let single = intValue(match, 3, in: line) {
+            } else if let single = intValue(match, 4, in: line) {
                 weeks.append(single)
             }
         }
@@ -411,7 +446,7 @@ nonisolated enum MeetingParser {
     }
 
     private static let weekTokenPatterns = [
-        try? NSRegularExpression(pattern: "\\d{1,2}\\s*-\\s*\\d{1,2}\\s*周"),
+        try? NSRegularExpression(pattern: "\\d{1,2}\\s*-\\s*\\d{1,2}\\s*周(?:[(（][单双][)）]|[单双]周)?"),
         try? NSRegularExpression(pattern: "从第?\\d{1,2}\\s*周开始"),
         try? NSRegularExpression(pattern: "第?\\d{1,2}\\s*周")
     ]

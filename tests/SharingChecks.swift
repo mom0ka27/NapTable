@@ -128,6 +128,42 @@ struct SharingChecks {
         expected.classroom = "2教201"
         precondition(saved == expected, "Only the edited field changes: colour, course key, import kind, exam and link stay")
         precondition(app.courses.first { $0.id == untouched.id } == untouched)
-        print("PASS: own-share rejection, required remarks, duplicate import, caring selects notifications, legacy settings, switching and cancellation, independent viewing and weeks, read-only protection, removal fallback")
+
+        // 撤销：关注端收到 404 后打上标记，本机副本还在。
+        service.markRevoked("OTHER123")
+        precondition(service.sharedSchedules.first { $0.meta.code == "OTHER123" }?.isRevoked == true)
+        precondition(service.sharedSchedules.first { $0.meta.code == "OTHER123" }?.courses.count == 1)
+        let legacyFollowed = try JSONDecoder().decode(FollowedSchedule.self, from: JSONEncoder().encode(shared))
+        precondition(!legacyFollowed.isRevoked)
+        // 403 时可以只从本机移除凭证。
+        service.forget(ShareCredential(code: "OWN123", token: "test-token", label: "", updatedAt: ""))
+        precondition(!service.myShares.contains { $0.code == "OWN123" })
+
+        // MARK: 恶意分享
+        func row(_ fields: [String: Any]) -> [String: Any] {
+            ["name": "课", "weeks": [1, 2], "week_time": 1, "start_time": 1, "time_count": 1].merging(fields) { $1 }
+        }
+        precondition(CoursePayloadCodec.makeCourse(from: row(["time_count": Int.max])) == nil)
+        precondition(CoursePayloadCodec.makeCourse(from: row(["start_time": 1000])) == nil)
+        precondition(CoursePayloadCodec.makeCourse(from: row(["week_time": 9])) == nil)
+        precondition(CoursePayloadCodec.makeCourse(from: row(["weeks": [99, 1000]])) == nil)
+        precondition(CoursePayloadCodec.makeCourse(from: row(["weeks": [0, 3, 50, 3]]))?.weeks == [3])
+        precondition(CoursePayloadCodec.makeCourse(from: row(["time_count": 32]))?.endTime == 33)
+        let hostile = try CoursePayloadCodec.decode(object: ["name": "x", "courses": [
+            row(["time_count": Int.max]), row(["name": "正常"])
+        ]])
+        precondition(hostile.courses.map(\.name) == ["正常"])
+        // App Group / 存档里已经缓存的坏数据：解码时钳进范围，而不是让后面溢出崩溃。
+        let cached = Data(#"""
+        {"id":1,"tableId":1,"name":"坏","weeks":[1,99,0],"weekTime":12,"startTime":9000,
+         "timeCount":9223372036854775807,"importType":1}
+        """#.utf8)
+        let clamped = try JSONDecoder().decode(Course.self, from: cached)
+        precondition(clamped.timeCount == CourseLimits.maxTimeCount && clamped.startTime == 64)
+        precondition(clamped.weeks == [1] && clamped.weekTime == 0)
+        precondition(Course(tableId: 0, name: "x", weeks: [], weekTime: 1, startTime: Int.max,
+                            timeCount: 5, importType: 1).endTime == Int.max)
+
+        print("PASS: own-share rejection, required remarks, duplicate import, caring selects notifications, legacy settings, switching and cancellation, independent viewing and weeks, read-only protection, removal fallback, editor round trip, revoked shares, hostile payload clamping")
     }
 }

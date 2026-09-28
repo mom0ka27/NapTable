@@ -52,6 +52,9 @@ enum AppearancePreference: String, Codable, CaseIterable, Identifiable {
 
 /// Everything the app persists. One JSON document keeps the timetable, the
 /// settings and the id counters consistent with each other.
+/// 存档约定：这里用的是合成的 `Decodable`，属性上的默认值在解码时不生效，缺键的
+/// 非可选字段会让整份存档解不开（被当作损坏挪成备份）。以后新增字段一律用可选类型，
+/// 像 `unifiedCalendarAdjustments` 那样；`Course` 手写了 `init(from:)`，见 Course.swift。
 struct AppStateFile: Codable {
     var version = 1
     var settings = AppSettings()

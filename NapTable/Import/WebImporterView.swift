@@ -59,7 +59,13 @@ struct WebImporterView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            ZStack {
+                // 网页一直留在视图树里，确认页只是盖在上面。移出去会销毁 WKWebView，
+                // 点「返回」时新建的网页又从登录页开始，登录状态和课表页都丢了。
+                browser
+                    .opacity(parsed == nil ? 1 : 0)
+                    .allowsHitTesting(parsed == nil)
+                    .accessibilityHidden(parsed != nil)
                 if let parsed {
                     ImportedScheduleForm(
                         schedule: parsed, mode: $mode, tableName: $tableName,
@@ -67,8 +73,6 @@ struct WebImporterView: View {
                         conflicts: conflicts, conflictChoice: $conflictChoice,
                         conflictDispositions: $conflictDispositions
                     )
-                } else {
-                    browser
                 }
             }
             .task(id: school.id) {
@@ -94,6 +98,10 @@ struct WebImporterView: View {
                             self.parsed = nil
                             conflictChoice = [:]
                             conflictDispositions = [:]
+                            // 页面还停在课表页上。回到「已加载」让「重新解析」直接重新读取；
+                            // `didStartExtraction` 保持为真，免得页面一有动静就又自动提取。
+                            state = .loaded
+                            statusMessage = "已返回课表页面。需要重新读取时点右上角「重新解析」。"
                         }
                     }
                 }
@@ -126,17 +134,16 @@ struct WebImporterView: View {
 
     /// 同一时段撞在一起的课。下标指向 `parsed.courses`，所以每次重新解析都要
     /// 连同 `conflictChoice` 一起作废。
+    /// 选定一节之后，组里和它不相交的成员会重新分成后续的组接着问。
     private var conflicts: [ImportConflictGroup] {
-        ImportConflictFinder.groups(in: parsed?.courses ?? [])
+        ImportConflictFinder.expandedGroups(in: parsed?.courses ?? [], keeping: conflictChoice)
     }
 
     /// 还没选保留哪一节，或者部分重叠的那几节还没说怎么处理。
     private var hasUnresolvedConflicts: Bool {
-        conflicts.contains { group in
-            guard let kept = conflictChoice[group.id] else { return true }
-            return ImportConflictFinder.membersNeedingDisposition(in: group, keeping: kept)
-                .contains { conflictDispositions[$0.id] == nil }
-        }
+        ImportConflictFinder.hasUnresolvedConflicts(
+            in: parsed?.courses ?? [], keeping: conflictChoice, dispositions: conflictDispositions
+        )
     }
 
     /// 写库之前把没选中的那几节收起来。
@@ -184,8 +191,8 @@ struct WebImporterView: View {
             if state == .importing {
                 ProgressView().controlSize(.small)
             } else {
-                Image(systemName: state == .failed ? "exclamationmark.triangle.fill" : "info.circle")
-                    .foregroundStyle(state == .failed ? .orange : .secondary)
+                Image(systemName: state.isFailure ? "exclamationmark.triangle.fill" : "info.circle")
+                    .foregroundStyle(state.isFailure ? .orange : .secondary)
             }
             Text(statusMessage)
                 .font(.caption)
@@ -206,10 +213,12 @@ struct WebImporterView: View {
 
     /// Re-runs extraction. A page that never finished loading cannot be
     /// extracted from, so it is reloaded from the school's entry point instead
-    /// of leaving the user with a dead button.
+    /// of leaving the user with a dead button. An *extraction* failure keeps the
+    /// page the user navigated to: reloading the entry page there would throw
+    /// them back to the login screen.
     private func retry() {
         didStartExtraction = false
-        if state == .loaded || state == .finished {
+        if state == .loaded || state == .finished || state == .failed {
             state = .loaded
             statusMessage = "正在重新读取…"
             extractToken += 1
@@ -279,14 +288,19 @@ nonisolated enum WebImportState: Equatable {
     case loading
     case loaded
     case importing
+    /// 页面已经加载过，但读取或解析课表失败。重试时在当前页面上重新提取。
     case failed
+    /// 页面本身没能打开。重试时从学校的入口页重新加载。
+    case loadFailed
     case finished
+
+    var isFailure: Bool { self == .failed || self == .loadFailed }
 }
 
 /// Owns the navigation script. Shared by both platform wrappers so the two
 /// `#if` branches only carry the representable boilerplate.
 @MainActor
-final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let school: SchoolConfig
     let state: Binding<WebImportState>
     let didStartExtraction: Binding<Bool>
@@ -301,10 +315,10 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
     private var observation: NSKeyValueObservation?
     private var isExtracting = false
     private var lastPageFacts: String?
-    private let reloadToken: Int
-    private let extractToken: Int
-    private var lastReloadToken = 0
-    private var lastExtractToken = 0
+    /// 从创建时传入的值开始：coordinator 重建时（比如视图被重新创建）如果从 0
+    /// 开始，第一次 `update` 就会误以为有新的重载 / 提取请求。
+    private var lastReloadToken: Int
+    private var lastExtractToken: Int
 
     init(
         school: SchoolConfig,
@@ -321,8 +335,8 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
         self.didStartExtraction = didStartExtraction
         self.statusMessage = statusMessage
         self.progress = progress
-        self.reloadToken = reloadToken
-        self.extractToken = extractToken
+        self.lastReloadToken = reloadToken
+        self.lastExtractToken = extractToken
         self.onExtract = onExtract
     }
 
@@ -371,6 +385,8 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
+        // 页面用 window.open / target=_blank 打开课表时，没有 uiDelegate 就什么都不发生。
+        webView.uiDelegate = coordinator
         webView.allowsBackForwardNavigationGestures = true
         // Some 教务 pages only render the mobile layout for a phone UA.
         webView.customUserAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
@@ -383,7 +399,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
             webView.load(URLRequest(url: url))
         } else {
             coordinator.statusMessage.wrappedValue = "学校配置的登录地址无效"
-            coordinator.state.wrappedValue = .failed
+            coordinator.state.wrappedValue = .loadFailed
         }
         return webView
     }
@@ -438,11 +454,32 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        state.wrappedValue = .failed
+        // 已经打开过的页面上某次跳转失败，页面本身还在，别让重试把人带回入口页。
+        guard webView.url == nil || state.wrappedValue == .loading else {
+            statusMessage.wrappedValue = "无法打开页面：\(error.localizedDescription)"
+            return
+        }
+        state.wrappedValue = .loadFailed
         statusMessage.wrappedValue = "无法打开页面：\(error.localizedDescription)"
     }
 
+    // MARK: WKUIDelegate
+
+    /// 教务页面常用 window.open / target=_blank 打开课表。App 里只有一个网页，
+    /// 所以在当前网页里打开，而不是另起一个窗口。
+    func webView(
+        _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if navigationAction.targetFrame == nil || navigationAction.targetFrame?.isMainFrame == false {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        // 页面里的第三方 iframe 也能调到 messageHandlers，只听主框架的。
+        guard message.frameInfo.isMainFrame else { return }
         if message.name == "NapTableRoute", let url = message.body as? String {
             if state.wrappedValue == .loaded { checkTarget(url) }
             return
@@ -523,6 +560,13 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
     /// tab that loads the real table, so extracting in the same tick would read
     /// a table that is not there yet.
     private func startExtraction() {
+        // 学校脚本只该在教务系统自己的页面上跑。停在登录页或别的站点时直接提示，
+        // 不把脚本（和它读到的内容）交给别人的页面。中大的脚本自己检查来源。
+        if school.serviceSchoolID != "sysu", let problem = hostMismatch() {
+            isExtracting = false
+            onExtract(.failure(ImportError.notReady(problem)))
+            return
+        }
         let pre = school.preExtractJS
         let delay = max(0, school.delayTime)
         Task { @MainActor [weak self] in
@@ -538,6 +582,23 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKScriptMessag
             }
             self.runExtraction()
         }
+    }
+
+    /// 当前页面和学校课表页不在同一个 host 时返回给用户看的说明。
+    private func hostMismatch() -> String? {
+        guard let target = Self.host(of: school.targetURL) else { return nil }
+        let current = webView?.url?.host?.lowercased()
+        guard current != target else { return nil }
+        return "当前页面（\(current ?? "未打开")）不是教务系统的课表页。请先登录，并进入「我的课表」页面，再点右上角「重新解析」。"
+    }
+
+    /// `targetUrl` 可能带 `*default` 这种通配段，`URL(string:)` 不一定认，所以手动取 host。
+    static func host(of pattern: String) -> String? {
+        if let host = URLComponents(string: pattern)?.host, !host.isEmpty { return host.lowercased() }
+        guard let scheme = pattern.range(of: "://") else { return nil }
+        let rest = pattern[scheme.upperBound...]
+        let host = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" && $0 != ":" }
+        return host.isEmpty ? nil : host.lowercased()
     }
 
     private func runExtraction() {

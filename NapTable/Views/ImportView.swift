@@ -229,9 +229,7 @@ struct ImportedScheduleForm: View {
                 } header: {
                     Text("时间冲突 · \(group.title)")
                 } footer: {
-                    Text(conflictChoice[group.id] == nil
-                         ? "请选择这个时段保留哪一节。"
-                         : "没选中的课会被收起来，课表里看不到，之后可以在设置里恢复。")
+                    Text(conflictFooter(group))
                 }
             }
             Section("导入到") {
@@ -280,6 +278,17 @@ struct ImportedScheduleForm: View {
                 mode = .newTable
             }
         }
+    }
+
+    private func conflictFooter(_ group: ImportConflictGroup) -> String {
+        guard let kept = conflictChoice[group.id], group.members.contains(where: { $0.id == kept }) else {
+            return "请选择这个时段保留哪一节。"
+        }
+        let hint = "和它撞在一起的课会被收起来，课表里看不到，之后可以在设置里恢复。"
+        // 连带进组、但和保留这节并不相交的课不会被收起来；它们之间要是还撞，下面接着问。
+        return group.membersUnaffected(by: kept).isEmpty
+            ? hint
+            : hint + "和它不冲突的课保持不变。"
     }
 
     /// 周次只是部分重叠时，整节收起来会连不冲突的周次一起抹掉，所以在这里

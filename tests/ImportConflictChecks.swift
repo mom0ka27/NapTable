@@ -49,6 +49,61 @@ struct ImportConflictChecks {
         let chained = ImportConflictFinder.groups(in: chain)
         precondition(chained.count == 1 && chained[0].members.map(\.id) == [0, 1, 2])
 
+        // 保留 B 时 A、C 都和 B 撞，一起收起来；保留 A 时只有 B 撞 A，
+        // C 和 A 节次不相交，不能被连带收起来。
+        let keepA = ImportConflictFinder.apply(
+            keeping: [0: 0], dispositions: [:], to: chain, groups: chained
+        )
+        precondition(keepA.map(\.isHidden) == [false, true, false])
+
+        // 周二：A 第1节、B 第1-3节、C 第3节。A 撞 B、B 撞 C，A 和 C 不撞。
+        let tuesday = [course("A", day: 2, start: 1, count: 0),
+                       course("B", day: 2, start: 1, count: 2),
+                       course("C", day: 2, start: 3, count: 0)]
+        precondition(!ImportConflictFinder.collide(tuesday[0], tuesday[2]))
+        let tuesdayGroups = ImportConflictFinder.groups(in: tuesday)
+        precondition(tuesdayGroups.count == 1 && tuesdayGroups[0].members.map(\.id) == [0, 1, 2])
+        // 保留 A：只有 B 被收起来，C 照常上课，也没有后续组要问。
+        let expandedA = ImportConflictFinder.expandedGroups(in: tuesday, keeping: [0: 0])
+        precondition(expandedA.count == 1)
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: tuesday, keeping: [0: 0], dispositions: [:]))
+        precondition(ImportConflictFinder.apply(
+            keeping: [0: 0], dispositions: [:], to: tuesday, groups: expandedA
+        ).map(\.isHidden) == [false, true, false])
+        // 保留 C：B 被收起来，A 不受影响。
+        precondition(ImportConflictFinder.apply(
+            keeping: [0: 2], dispositions: [:], to: tuesday,
+            groups: ImportConflictFinder.expandedGroups(in: tuesday, keeping: [0: 2])
+        ).map(\.isHidden) == [false, true, false])
+        // 保留 B：A、C 都撞 B，一起收起来。
+        precondition(ImportConflictFinder.apply(
+            keeping: [0: 1], dispositions: [:], to: tuesday, groups: tuesdayGroups
+        ).map(\.isHidden) == [true, false, true])
+
+        // 连通分量里剩下的课之间还撞：A 第1-2节、D 第1节撞 A，B 第2节撞 A 也撞 E，
+        // E 第2-3节、F 第3节撞 E。保留 D 之后 A 被收起来，B、E、F 要接着再选一次。
+        let web = [course("A", day: 5, start: 1, count: 1),
+                   course("D", day: 5, start: 1, count: 0),
+                   course("B", day: 5, start: 2, count: 0),
+                   course("E", day: 5, start: 2, count: 1),
+                   course("F", day: 5, start: 3, count: 0)]
+        let webTop = ImportConflictFinder.groups(in: web)
+        precondition(webTop.count == 1 && webTop[0].members.count == 5)
+        let afterD = ImportConflictFinder.expandedGroups(in: web, keeping: [0: 1])
+        precondition(afterD.count == 2 && afterD[1].members.map(\.id) == [2, 3, 4])
+        precondition(afterD[1].id != afterD[0].id)
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: web, keeping: [0: 1], dispositions: [:]))
+        let webChoice = [0: 1, afterD[1].id: 3]
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: web, keeping: webChoice, dispositions: [:]))
+        let webResolved = ImportConflictFinder.apply(
+            keeping: webChoice, dispositions: [:], to: web,
+            groups: ImportConflictFinder.expandedGroups(in: web, keeping: webChoice)
+        )
+        precondition(webResolved.map(\.isHidden) == [true, false, true, false, true])
+        // 后续组里残留的旧选择不在组里时，仍然算没选完。
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(
+            in: web, keeping: [0: 1, afterD[1].id: 0], dispositions: [:]))
+
         // 两个互不相干的冲突组，各自独立。
         let two = [高数, 线代, course("物理", day: 6, start: 1), course("化学", day: 6, start: 1)]
         precondition(ImportConflictFinder.groups(in: two).map(\.id) == [0, 2])

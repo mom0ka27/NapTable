@@ -33,6 +33,12 @@ nonisolated struct ImportConflictGroup: Identifiable, Equatable {
     let startSlot: Int
     let endSlot: Int
     let members: [Member]
+    /// 第几轮分组：0 是 `groups(in:)` 直接给的，保留一节之后剩下的成员重新
+    /// 分出来的是 1，依此类推。
+    var level = 0
+    /// 这次导入的课程总数。后续分组的 id 是「组内第一节的下标 + stride × level」，
+    /// 这样它不会和上一轮的组撞 id，`conflictChoice` 可以继续按 id 记。
+    var stride = 0
 
     nonisolated struct Member: Identifiable, Equatable {
         /// `ImportedSchedule.courses` 的下标。课程这时还没有 `Course.id`，
@@ -56,6 +62,29 @@ nonisolated struct ImportConflictGroup: Identifiable, Equatable {
         let day = WeekCalculator.weekdayName(weekday)
         return startSlot == endSlot ? "\(day) 第\(startSlot)节" : "\(day) 第\(startSlot)-\(endSlot)节"
     }
+
+    /// 和 `kept` 真正撞在一起的成员（含 `kept` 自己）。
+    ///
+    /// 组按连通分量划分（A 撞 B、B 撞 C 时三节同组），但 A 和 C 可能节次毫无
+    /// 交集：只处理「和保留那节 collide 为真」的成员，A 和 C 才能留到用户之后
+    /// 自己选，而不是被连带整节收起来。
+    func members(collidingWith kept: Int) -> [Member] {
+        guard let keeper = members.first(where: { $0.id == kept }) else { return [] }
+        return members.filter { $0.id == kept || ImportConflictFinder.collide($0.course, keeper.course) }
+    }
+
+    /// 和保留那节不撞、因此不受它影响的成员。
+    func membersUnaffected(by kept: Int) -> [Member] {
+        members.filter { member in !members(collidingWith: kept).contains { $0.id == member.id } }
+    }
+
+    /// 保留 `kept` 之后，其余成员按「和谁撞」重新分组，让用户接着一组一组选。
+    func remainingGroups(keeping kept: Int) -> [ImportConflictGroup] {
+        guard members.contains(where: { $0.id == kept }) else { return [] }
+        return ImportConflictFinder.components(
+            of: membersUnaffected(by: kept), stride: stride, level: level + 1
+        )
+    }
 }
 
 nonisolated enum ImportConflictFinder {
@@ -72,6 +101,29 @@ nonisolated enum ImportConflictFinder {
     /// 把撞车的行按连通分量分组：A 撞 B、B 撞 C 时三行要一起选，
     /// 否则用户选完 A 之后 B 和 C 仍然叠在一起。
     static func groups(in courses: [Course]) -> [ImportConflictGroup] {
+        guard courses.count > 1 else { return [] }
+        let members = courses.enumerated().map { ImportConflictGroup.Member(id: $0.offset, course: $0.element) }
+        return components(of: members, stride: courses.count, level: 0)
+    }
+
+    /// 顶层分组加上每组选定之后剩下的后续分组，按「父组后面紧跟它的后续组」排列。
+    /// 界面按这个顺序逐组提问，写库时也把它原样交给 `apply`。
+    static func expandedGroups(in courses: [Course], keeping choice: [Int: Int]) -> [ImportConflictGroup] {
+        var result: [ImportConflictGroup] = []
+        func visit(_ group: ImportConflictGroup) {
+            result.append(group)
+            guard let kept = choice[group.id] else { return }
+            group.remainingGroups(keeping: kept).forEach(visit)
+        }
+        groups(in: courses).forEach(visit)
+        return result
+    }
+
+    /// 在给定的成员里按撞车关系求连通分量。
+    static func components(
+        of candidates: [ImportConflictGroup.Member], stride: Int, level: Int
+    ) -> [ImportConflictGroup] {
+        let courses = candidates.map(\.course)
         guard courses.count > 1 else { return [] }
         var adjacency = [Set<Int>](repeating: [], count: courses.count)
         for i in courses.indices {
@@ -94,14 +146,15 @@ nonisolated enum ImportConflictFinder {
                     stack.append(next)
                 }
             }
-            component.sort()
-            let members = component.map { ImportConflictGroup.Member(id: $0, course: courses[$0]) }
+            let members = component.map { candidates[$0] }.sorted { $0.id < $1.id }
             result.append(ImportConflictGroup(
-                id: component[0],
-                weekday: courses[component[0]].weekTime,
+                id: members[0].id + stride * level,
+                weekday: members[0].course.weekTime,
                 startSlot: members.map(\.course.startTime).min() ?? 0,
                 endSlot: members.map(\.course.endTime).max() ?? 0,
-                members: members
+                members: members,
+                level: level,
+                stride: stride
             ))
         }
         return result
@@ -126,14 +179,28 @@ nonisolated enum ImportConflictFinder {
             && !remainingWeeks(member, keeping: kept).isEmpty
     }
 
-    /// 要用户回答处理方式的成员：和保留的那节只有部分周次重叠的。
+    /// 要用户回答处理方式的成员：和保留的那节撞在一起、且只有部分周次重叠的。
     /// 完全被盖住的不用问，整节收起来就是唯一的答案。
     static func membersNeedingDisposition(
         in group: ImportConflictGroup, keeping kept: Int
     ) -> [ImportConflictGroup.Member] {
         guard let keeper = group.members.first(where: { $0.id == kept }) else { return [] }
-        return group.members.filter {
+        return group.members(collidingWith: kept).filter {
             $0.id != kept && partiallyOverlaps($0.course, keeping: keeper.course)
+        }
+    }
+
+    /// 还没做完的选择：任何一组没选保留哪一节，或者有成员缺处理方式。
+    /// 界面用它决定「导入」按钮能不能点。
+    static func hasUnresolvedConflicts(
+        in courses: [Course], keeping choice: [Int: Int],
+        dispositions: [Int: ImportConflictDisposition]
+    ) -> Bool {
+        expandedGroups(in: courses, keeping: choice).contains { group in
+            // 上一轮改了选择之后，后续组里残留的旧选择可能已经不在组里了。
+            guard let kept = choice[group.id], group.members.contains(where: { $0.id == kept }) else { return true }
+            return membersNeedingDisposition(in: group, keeping: kept)
+                .contains { dispositions[$0.id] == nil }
         }
     }
 
@@ -143,6 +210,7 @@ nonisolated enum ImportConflictFinder {
     /// 在「隐藏的课程」里改主意。只让出部分周次的那节会拆成两行——照常上课的
     /// 周次留在明面上，重叠的周次收起来——这样两头都能还原。
     /// 还没做完选择的组原样保留，调用方在选完之前不该放行导入。
+    /// `groups` 应当是 `expandedGroups` 的结果，后续分组里的选择才会生效。
     static func apply(
         keeping choice: [Int: Int],
         dispositions: [Int: ImportConflictDisposition],
@@ -154,7 +222,9 @@ nonisolated enum ImportConflictFinder {
         for group in groups {
             guard let kept = choice[group.id],
                   let keeper = group.members.first(where: { $0.id == kept }) else { continue }
-            for member in group.members where member.id != kept {
+            // 只处理真的和保留那节撞在一起的成员。组里其余成员是被连通分量带进来的，
+            // 它们不受这一节影响，留在原处等用户在后续分组里自己选。
+            for member in group.members(collidingWith: kept) where member.id != kept {
                 guard partiallyOverlaps(member.course, keeping: keeper.course) else {
                     rewrites[member.id] = [hiding(member.course)]
                     continue
