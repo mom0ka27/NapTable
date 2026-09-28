@@ -40,19 +40,27 @@ enum LayoutOption: String, AppEnum {
 
 enum AfterClassOption: String, AppEnum {
     case nextCourseDay
-    /// rawValue 沿用旧的「不显示其他内容」，原来选它的小组件不用重新设置；
-    /// 旧的「显示明日课程」「显示最近的节假日」解不出来，落回默认的下一次课。
+    /// rawValue 沿用旧的「不显示其他内容」，原来选它的小组件不用重新设置。
     case todayOnly = "none"
+    /// 旧版本的「显示明日课程」「显示最近的节假日」。选项里已经去掉了，但已经放好的小组件
+    /// 存的还是这两个值，删掉就解不出来。保留下来，效果和「接着显示下一次课」一样。
+    case tomorrow
+    case holiday
+
+    /// 「编辑小组件」里只列这两个；旧的两个值照样能解码。
+    static var allCases: [AfterClassOption] { [.nextCourseDay, .todayOnly] }
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "今日课程结束后"
     static let caseDisplayRepresentations: [Self: DisplayRepresentation] = [
         .nextCourseDay: "接着显示下一次课",
         .todayOnly: "只看今天",
+        .tomorrow: "接着显示下一次课（明日课程）",
+        .holiday: "接着显示下一次课（节假日）",
     ]
 
     var style: ScheduleWidgetAfterClassStyle {
         switch self {
-        case .nextCourseDay: return .nextCourseDay
+        case .nextCourseDay, .tomorrow, .holiday: return .nextCourseDay
         case .todayOnly: return .todayOnly
         }
     }
@@ -182,8 +190,11 @@ struct TwoDayScheduleWidgetIntent: ScheduleWidgetIntent {
 struct ScheduleIntentTimelineProvider<Configuration: ScheduleWidgetIntent>: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> ScheduleEntry { .placeholder }
 
+    /// 小组件库里的预览用示例课表；桌面上的快照（比如编辑小组件时）用真实课表，和时间线第一条一样。
     func snapshot(for configuration: Configuration, in context: Context) async -> ScheduleEntry {
-        var entry = ScheduleEntry.placeholder
+        var entry = context.isPreview
+            ? ScheduleEntry.placeholder
+            : ScheduleTimeline.make(now: .now).entries.first ?? .placeholder
         entry.configuration = configuration.configuration
         return entry
     }

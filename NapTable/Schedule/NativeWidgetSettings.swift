@@ -175,10 +175,19 @@ final class NativeWidgetSettings: ObservableObject {
             .compactMap { offset in calendar.weeks.first(where: { $0.week == currentWeekData.week + offset }) }
             .flatMap(days(for:))
             .filter { day in day.date.map { knownDates.insert($0).inserted } ?? false }
+        // 今天就写今天。以前找不到会按星期几挑同一周的另一个日期，放寒暑假时
+        // 组件里的「今天」就变成了几周前的那一天，日期栏和课都是错的。现在找不到
+        // 就写一天空日子，让组件自己说「寒假ing / 打开 App 更新课表」。
         let todayDate = WidgetSchedulePayload.dateString(.now)
         let today = days(for: currentWeekData).first(where: { $0.date == todayDate })
-            ?? days(for: currentWeekData).first(where: { $0.day == Self.chinaWeekday })
-            ?? weekDays.first
+            ?? WidgetDay(
+                day: Self.chinaWeekday,
+                label: widgetDayLabel(Self.chinaWeekday),
+                date: todayDate,
+                week: nil,
+                isToday: true,
+                courses: []
+            )
 
         return WidgetSchedulePayload(
             title: semesterLabel,
@@ -190,8 +199,18 @@ final class NativeWidgetSettings: ObservableObject {
             days: weekDays,
             weekDays: weekDays,
             nextWeekDays: nextWeekDays,
-            holidays: ChineseCalendarInfo.publishedHolidays
+            holidays: ChineseCalendarInfo.publishedHolidays,
+            // 学期第 1 周周一和总周数：组件靠它认出寒暑假（今天在学期之外）。
+            termStart: termStart(calendar),
+            termWeeks: calendar.weeks.count
         )
+    }
+
+    /// 第 1 周的周一。日历里没有第 1 周（课表周次不从 1 开始）时退回第一周的周一。
+    private static func termStart(_ calendar: NativeScheduleCalendar) -> String? {
+        let first = calendar.weeks.first(where: { $0.week == 1 }) ?? calendar.weeks.min(by: { $0.week < $1.week })
+        if let monday = first?.monday.trimmedNonEmpty { return monday }
+        return calendar.semesterStart.trimmedNonEmpty
     }
 
     private static func courses(
