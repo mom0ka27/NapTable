@@ -791,9 +791,9 @@ struct NativeScheduleView: View {
 
     private func monthCalendar(_ result: NativeScheduleResult) -> some View {
         NativeScheduleMonthView(
-            monthAnchor: monthAnchor.isEmpty ? (Self.todayDate ?? "") : monthAnchor,
+            monthAnchor: monthAnchor.isEmpty ? (todayDate ?? "") : monthAnchor,
             selectedDate: selectedMonthDate,
-            todayDate: Self.todayDate,
+            todayDate: todayDate,
             dateIndex: monthDateIndex,
             blocks: { day, week in blocks(for: day, week: week, result: result) },
             adjustments: store.calendar?.adjustments ?? [:],
@@ -830,14 +830,14 @@ struct NativeScheduleView: View {
     }
 
     private var monthTitle: String {
-        let anchor = monthAnchor.isEmpty ? (Self.todayDate ?? "") : monthAnchor
+        let anchor = monthAnchor.isEmpty ? (todayDate ?? "") : monthAnchor
         let pieces = anchor.split(separator: "-")
         guard pieces.count >= 2, let year = Int(pieces[0]), let month = Int(pieces[1]) else { return anchor }
         return "\(year) 年 \(month) 月"
     }
 
     private func moveMonth(_ offset: Int) {
-        let anchor = monthAnchor.isEmpty ? (Self.todayDate ?? "") : monthAnchor
+        let anchor = monthAnchor.isEmpty ? (todayDate ?? "") : monthAnchor
         guard let date = ChineseCalendarInfo.date(fromDate: anchor),
               let moved = ChineseCalendarInfo.gregorian.date(byAdding: .month, value: offset, to: date) else {
             return
@@ -881,7 +881,7 @@ struct NativeScheduleView: View {
     }
 
     private func jumpToCurrentMonth() {
-        guard let today = Self.todayDate else { return }
+        guard let today = todayDate else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
             selectedMonthDate = today
             monthAnchor = today
@@ -892,7 +892,7 @@ struct NativeScheduleView: View {
     /// 进入月视图时，先跟随当前浏览到的那一天；它不在学期里就退回今天。
     private func seedMonthSelection(_ result: NativeScheduleResult?, reset: Bool = false) {
         let browsing = result.flatMap { rawDayDate(selectedDay, week: weekNumber(store.selectedWeek), result: $0) }
-        let fallback = browsing ?? Self.todayDate ?? ChineseCalendarInfo.dateString(.now)
+        let fallback = browsing ?? todayDate ?? ChineseCalendarInfo.dateString(.now)
         if reset || selectedMonthDate.isEmpty { selectedMonthDate = fallback }
         if reset || monthAnchor.isEmpty { monthAnchor = selectedMonthDate }
     }
@@ -910,15 +910,15 @@ struct NativeScheduleView: View {
         case .day: return isViewingCurrentDay(result)
         case .week: return isViewingCurrentWeek(result) && isSelectionToday
         case .month:
-            guard let today = Self.todayDate else { return true }
+            guard let today = todayDate else { return true }
             return selectedMonthDate == today && monthAnchor.prefix(7) == today.prefix(7)
         }
     }
 
     private var isSelectionToday: Bool {
-        guard let today = Self.todayDate else { return true }
+        guard let today = todayDate else { return true }
         return selectedMonthDate == today && monthAnchor.prefix(7) == today.prefix(7)
-            && selectedDay == Self.chinaWeekday
+            && selectedDay == chinaWeekday
     }
 
     /// 每周独立判断调休日和周末课程，翻页时不会漏掉相邻周的周末安排。
@@ -1292,7 +1292,7 @@ struct NativeScheduleView: View {
                         NativeScheduleDayColumn(
                             day: day,
                             dateText: nil,
-                            isToday: day == Self.chinaWeekday,
+                            isToday: day == chinaWeekday,
                             adjustment: nil,
                             columnWidth: max(1, (proxy.size.width - Self.slotAxisWidth) / CGFloat(visibleDays.count)),
                             rowHeight: weekGridRowHeight,
@@ -1538,7 +1538,8 @@ struct NativeScheduleView: View {
             result: result,
             week: weekData,
             periods: store.periods,
-            adjustments: calendar.adjustments
+            adjustments: calendar.adjustments,
+            timeZone: store.timeZone
         )
         PlatformSharePresenter.present(text: ics, fileName: fileName)
     }
@@ -1649,14 +1650,14 @@ struct NativeScheduleView: View {
     }
 
     private func jumpToCurrentWeek(_ result: NativeScheduleResult) {
-        if let today = Self.todayDate {
+        if let today = todayDate {
             selectedMonthDate = today
             monthAnchor = today
         }
         pendingMonthDay = nil
         selectedDay = store.calendar?.weeks.first(where: { $0.week == store.calendar?.currentWeek })
-            .flatMap { week in Self.todayDate.flatMap(week.days.firstIndex(of:)).map { $0 + 1 } }
-            ?? Self.chinaWeekday
+            .flatMap { week in todayDate.flatMap(week.days.firstIndex(of:)).map { $0 + 1 } }
+            ?? chinaWeekday
         didInitializeDay = true
         resetPagerSelections()
         guard !isViewingCurrentWeek(result) else { return }
@@ -1664,11 +1665,11 @@ struct NativeScheduleView: View {
               calendar.currentWeek > 0,
               let semester = calendar.currentSemester.nilIfEmpty,
               let week = calendar.weeks.first(where: { $0.week == calendar.currentWeek }),
-              let today = Self.todayDate,
+              let today = todayDate,
               week.days.contains(today) else {
             store.selectedSemester = ""
             store.selectedWeek = ""
-            selectedDay = Self.chinaWeekday
+            selectedDay = chinaWeekday
             didInitializeDay = true
             Task {
                 await store.load(semester: nil, week: nil, force: true)
@@ -1686,7 +1687,7 @@ struct NativeScheduleView: View {
     /// in the same week was open.
     private func jumpToCurrentDay(_ result: NativeScheduleResult) {
         pendingMonthDay = nil
-        if let today = Self.todayDate {
+        if let today = todayDate {
             selectedMonthDate = today
             monthAnchor = today
         }
@@ -1694,8 +1695,8 @@ struct NativeScheduleView: View {
               calendar.currentWeek > 0,
               let semester = calendar.currentSemester.nilIfEmpty,
               let week = calendar.weeks.first(where: { $0.week == calendar.currentWeek }),
-              let today = Self.todayDate else {
-            selectedDay = Self.chinaWeekday
+              let today = todayDate else {
+            selectedDay = chinaWeekday
             didInitializeDay = true
             store.selectedSemester = ""
             store.selectedWeek = ""
@@ -1703,7 +1704,7 @@ struct NativeScheduleView: View {
             return
         }
 
-        let targetDay = week.days.firstIndex(of: today).map { $0 + 1 } ?? Self.chinaWeekday
+        let targetDay = week.days.firstIndex(of: today).map { $0 + 1 } ?? chinaWeekday
         let targetWeek = String(calendar.currentWeek)
         let sameWeek = store.selectedSemester == semester && store.selectedWeek == targetWeek
 
@@ -1740,7 +1741,7 @@ struct NativeScheduleView: View {
               calendar.currentWeek > 0,
               let currentSemester = calendar.currentSemester.nilIfEmpty,
               let week = calendar.weeks.first(where: { $0.week == calendar.currentWeek }),
-              let today = Self.todayDate,
+              let today = todayDate,
               week.days.contains(today) else {
             return false
         }
@@ -1793,7 +1794,7 @@ struct NativeScheduleView: View {
     }
 
     private func dayIsToday(_ day: Int, week: Int?, result: NativeScheduleResult) -> Bool {
-        guard let value = rawDayDate(day, week: week, result: result), let today = Self.todayDate else {
+        guard let value = rawDayDate(day, week: week, result: result), let today = todayDate else {
             return false
         }
         return value == today
@@ -1948,18 +1949,20 @@ struct NativeScheduleView: View {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "zh_CN")
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.timeZone = NativeScheduleStore.fallbackTimeZone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
 
-    private static var todayDate: String? {
-        todayFormatter.string(from: .now)
+    /// Today in the displayed timetable's zone, not the phone's.
+    private var todayDate: String? {
+        if Self.todayFormatter.timeZone != store.timeZone { Self.todayFormatter.timeZone = store.timeZone }
+        return Self.todayFormatter.string(from: .now)
     }
 
-    private static var chinaWeekday: Int {
+    private var chinaWeekday: Int {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        calendar.timeZone = store.timeZone
         let weekday = calendar.component(.weekday, from: .now)
         return weekday == 1 ? 7 : weekday - 1
     }

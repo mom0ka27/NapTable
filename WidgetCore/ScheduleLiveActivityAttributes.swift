@@ -132,7 +132,7 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
                   !name.isEmpty,
                   let start = nextCourseStart,
                   let end = nextCourseEnd,
-                  Self.isSameDay(start, endDate) else { return nil }
+                  isSameDay(start) else { return nil }
             return ContentState(
                 phase: .upcoming,
                 courseName: name,
@@ -163,10 +163,17 @@ nonisolated public struct ScheduleLiveActivityAttributes: ActivityAttributes, Eq
             return interval.upperBound.timeIntervalSince(interval.lowerBound) >= 3600
         }
 
-        private static func isSameDay(_ lhs: Date, _ rhs: Date) -> Bool {
+        /// Whether the next course is on this course's day. The date labels are
+        /// the timetable's own `yyyy-MM-dd`, already in its zone; only a state
+        /// without them falls back to comparing instants in China time.
+        private func isSameDay(_ next: Date) -> Bool {
+            if let today = dateLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !today.isEmpty,
+               let day = nextCourseDateLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !day.isEmpty {
+                return today == day
+            }
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
-            return calendar.isDate(lhs, inSameDayAs: rhs)
+            return calendar.isDate(next, inSameDayAs: endDate)
         }
 
         public init(

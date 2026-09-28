@@ -46,6 +46,9 @@ struct LiveActivityTimeline {
         var result = Result(occurrences: [], conflicts: [], omitted: 0)
         var unassigned: Set<String> = []
         let limit = now.addingTimeInterval(Double(days) * 86400).timeIntervalSince1970
+        // Only these days are placed on the clock; the conflict scan still
+        // walks the whole semester, since choices are made ahead of time.
+        let window = dayRange(from: now, until: Date(timeIntervalSince1970: limit), zone: zone)
         let mine = following ? own.map { ownCourses($0, perPeriod: perPeriod, now: now, limit: limit) } ?? [] : []
         var pieces: [Piece] = []
         for week in calendar.weeks {
@@ -80,7 +83,7 @@ struct LiveActivityTimeline {
                     selected.append((period, source, course))
                 }
                 // Do not schedule partially resolved days; reminder occupancy would be incomplete.
-                if unresolved { continue }
+                if unresolved || !window.contains(day) { continue }
                 var segments: [[(Int, String, NativeScheduleCourse)]] = []
                 for value in selected {
                     if let last = segments.last?.last, last.1 == value.1, last.0 + 1 == value.0 {
@@ -92,16 +95,19 @@ struct LiveActivityTimeline {
                     guard let first = segment.first, let last = segment.last,
                           let firstPeriod = byNumber[first.0], let lastPeriod = byNumber[last.0],
                           let start = instant(day: day, clock: firstPeriod.startTime, zone: zone),
-                          let end = instant(day: day, clock: lastPeriod.endTime, zone: zone), end > start else { result.omitted += 1; continue }
+                          let end = instant(day: day, clock: lastPeriod.endTime, zone: zone), end > start else {
+                        if let source = segment.first?.1 { unassigned.insert(source) }
+                        continue
+                    }
                     let reminder = max(start - Double(tableLead * 60), previousEnd)
                     previousEnd = end
                     guard end > now.timeIntervalSince1970, start < limit else { continue }
-                    guard end - reminder <= 8 * 3600 else { result.omitted += 1; continue }
+                    guard end - reminder <= 8 * 3600 else { unassigned.insert(first.1); continue }
                     let course = first.2
                     func state(from: Double, until: Double, upcoming: Bool) -> ScheduleLiveActivityAttributes.ContentState {
                         .init(phase: upcoming ? .upcoming : .inProgress, courseName: course.name,
                               teacher: course.teacher ?? "", location: course.location ?? "",
-                              periodLabel: "第 \(first.0)–\(last.0) 节", dateLabel: day, weekRangeLabel: course.weeks,
+                              periodLabel: periodLabel(first.0, last.0), dateLabel: day, weekRangeLabel: course.weeks,
                               startDate: Date(timeIntervalSince1970: upcoming ? start : from),
                               endDate: Date(timeIntervalSince1970: until), sourceLabel: snapshot.sourceLabel,
                               adjustmentNote: adjustment?.detail, updatedAt: Date(timeIntervalSince1970: from))
@@ -243,6 +249,22 @@ struct LiveActivityTimeline {
         instant(day: day, clock: clock, zone: zone, formatter: instantFormatter(zone: zone))
     }
 
+    /// 「第 3 节」 for one period, 「第 3–4 节」 for several.
+    nonisolated static func periodLabel(_ first: Int, _ last: Int) -> String {
+        first == last ? "第 \(first) 节" : "第 \(first)–\(last) 节"
+    }
+
+    /// The `yyyy-MM-dd` days in `zone` that `from..<until` touches.
+    private static func dayRange(from: Date, until: Date, zone: TimeZone) -> ClosedRange<String> {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = zone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let lower = formatter.string(from: from), upper = formatter.string(from: until)
+        return lower...max(lower, upper)
+    }
+
     struct CompanionSpan: Equatable {
         var start: Double
         var end: Double
@@ -267,7 +289,7 @@ struct LiveActivityTimeline {
         func upcoming(from: Double) -> ScheduleLiveActivityAttributes.ContentState.Companion {
             let head = spans[0].companion
             return .init(phase: .upcoming, courseName: head.courseName, teacher: head.teacher, location: head.location,
-                         periodLabel: first == last ? "第 \(first) 节" : "第 \(first)–\(last) 节",
+                         periodLabel: LiveActivityTimeline.periodLabel(first, last),
                          startDate: Date(timeIntervalSince1970: start), endDate: Date(timeIntervalSince1970: end), updatedAt: Date(timeIntervalSince1970: from))
         }
         /// The reminder window before class.
@@ -299,9 +321,10 @@ struct LiveActivityTimeline {
         let formatter = instantFormatter(zone: zone)
         let byNumber = Dictionary(own.periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
         let current = now.timeIntervalSince1970
+        let window = dayRange(from: now, until: Date(timeIntervalSince1970: limit), zone: zone)
         var courses: [OwnCourse] = []
         for week in calendar.weeks {
-            for (index, day) in week.days.enumerated() {
+            for (index, day) in week.days.enumerated() where window.contains(day) {
                 let adjustment = calendar.adjustments[day]
                 if adjustment?.suppressesCourses == true { continue }
                 let sourceDay = adjustment?.sourceDay ?? index + 1
@@ -316,7 +339,7 @@ struct LiveActivityTimeline {
                         let source = course.liveActivitySourceID ?? course.nativeId ?? course.id
                         let key = "own:\(source):\(day):\(first):\(last)"
                         guard !courses.contains(where: { $0.key == key }) else { continue }
-                        let label = first == last ? "第 \(first) 节" : "第 \(first)–\(last) 节"
+                        let label = periodLabel(first, last)
                         func span(_ phase: ScheduleLiveActivityAttributes.ContentState.Phase, _ from: Double, _ until: Double,
                                   label: String, start: Double, end: Double) -> CompanionSpan {
                             CompanionSpan(start: from, end: until, companion: .init(

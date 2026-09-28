@@ -65,7 +65,14 @@ public final class Activity<Attributes: ActivityAttributes> {
     public let id = UUID().uuidString
     public let attributes: Attributes
     public private(set) var content: ActivityContent<Attributes.ContentState>
-    public private(set) var activityState: ActivityState = .active
+    public private(set) var activityState: ActivityState = .active {
+        didSet {
+            guard activityState != oldValue else { return }
+            for continuation in stateContinuations { continuation.yield(activityState) }
+            if activityState == .ended || activityState == .dismissed { stateContinuations.forEach { $0.finish() }; stateContinuations = [] }
+        }
+    }
+    private var stateContinuations: [AsyncStream<ActivityState>.Continuation] = []
     /// Test-only record of what `request` asked for; not part of ActivityKit.
     public let pushType: PushType?
     public private(set) var pushToken: Data?
@@ -79,6 +86,19 @@ public final class Activity<Attributes: ActivityAttributes> {
             if let pushToken { continuation.yield(pushToken) }
             if activityState == .ended || activityState == .dismissed { continuation.finish() } else { tokenContinuations.append(continuation) }
         }
+    }
+
+    public var activityStateUpdates: AsyncStream<ActivityState> {
+        AsyncStream { continuation in
+            if activityState == .ended || activityState == .dismissed { continuation.finish() } else { stateContinuations.append(continuation) }
+        }
+    }
+
+    /// Test hook: the reader swiping the activity away on the Lock Screen.
+    public func dismiss() {
+        activityState = .dismissed
+        for continuation in tokenContinuations { continuation.finish() }
+        tokenContinuations = []
     }
 
     public static var activityUpdates: AsyncStream<Activity<Attributes>> {

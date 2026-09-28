@@ -19,6 +19,24 @@ struct NativeLiveActivityChecks {
         precondition(LiveActivityTimeline.build(snapshot, now: now, lead: 30, perPeriod: false).occurrences.map(\.dateKey) == ["2026-09-22"],
                      "Only today and tomorrow are built: the server keeps no more")
         precondition(LiveActivityTimeline.build(snapshot, now: now, lead: 30, perPeriod: false, days: 7).occurrences.map(\.dateKey) == ["2026-09-22", "2026-09-25"])
+        precondition(LiveActivityTimeline.periodLabel(3, 3) == "第 3 节" && LiveActivityTimeline.periodLabel(3, 4) == "第 3–4 节",
+                     "One period is named once, never as a range from itself")
+        let single = LiveActivityTimeline.build(singlePeriod(), now: now, lead: 30, perPeriod: false)
+        precondition(single.occurrences.count == 1 && single.occurrences[0].frames[0].state.periodLabel == "第 2 节",
+                     "A one-period course shows 第 2 节")
+        // A course outside the window is skipped before its clock is read, and
+        // counted once however many weeks it recurs in.
+        let far = LiveActivityTimeline.build(fixture(weeks: Array(1...4), cells: [NativeScheduleCell(day: 6, bigSlot: 1,
+            courses: [NativeScheduleCourse(liveActivitySourceID: "S", name: "同名课程", weeks: "1-4周", weekList: Array(1...4), startSlot: 4, endSlot: 5)])]),
+            now: now, lead: 30, perPeriod: false, days: 2)
+        precondition(far.occurrences.isEmpty && far.omitted == 0, "Days outside the window are not omissions")
+        // Period 6's bell time cannot be read: the course recurs on Tuesday and Wednesday, and is one omission.
+        let base = fixture(weeks: [1], cells: [2, 3].map { NativeScheduleCell(day: $0, bigSlot: 3,
+            courses: [NativeScheduleCourse(liveActivitySourceID: "B", name: "同名课程", weeks: "1周", weekList: [1], startSlot: 6, endSlot: 6)]) })
+        let unreadable = NativeScheduleSnapshot(scheduleScope: "scope", periods: base.periods + [NativeSchedulePeriod(number: 6, startTime: "99:00", endTime: "99:50")],
+                                                data: base.data, calendar: base.calendar, timeZone: "Asia/Taipei")
+        let broken = LiveActivityTimeline.build(unreadable, now: now, lead: 30, perPeriod: false, days: 7)
+        precondition(broken.occurrences.isEmpty && broken.omitted == 1, "One course with an unusable slot counts once, not once per week")
 
         // MARK: Settings and consent
         let controller = NativeLiveActivityController(now: { now }, privacyDefaults: defaults)
@@ -236,13 +254,30 @@ struct NativeLiveActivityChecks {
         precondition(controller.isPreviewActive && live.count == 1 && live[0].attributes.semester == "__preview__",
                      "Preview waits for reservations to retire before requesting a slot")
         let released7 = await controller.reserve([a])
-        precondition(released7.isEmpty && live.count == 1, "No reservation during the preview")
+        precondition(released7 == ["claim-a"] && live.count == 1, "A claim during the preview goes straight back: the server counts it as this phone's until it does")
         controller.endPreview(); await settle()
         precondition(live.isEmpty && !controller.isPreviewActive, "The next sync brings the reservations back")
+        // Swiped away on the Lock Screen: the preview ends without the button.
+        controller.startPreview(); await settle()
+        precondition(controller.isPreviewActive && live.count == 1 && live[0].attributes.semester == "__preview__")
+        live[0].dismiss(); await settle()
+        precondition(!controller.isPreviewActive && live.isEmpty, "A dismissed preview releases the reminders")
         controller.setEnabled(false); await settle()
         controller.foreground(); await settle()
         precondition(live.isEmpty && !controller.isEnabled, "Foreground must never enable the user's switch")
         follower.setEnabled(false); await settle()
+
+        // MARK: Cold start
+        // Relaunched mid-class: the first timetable keeps its running activity
+        // and only another table's activity is retired.
+        let cold = NativeLiveActivityController(now: { now }, privacyDefaults: defaults)
+        cold.setEnabled(true)
+        let running = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: attributes(id: "running"), content: .init(state: first.frames[0].state, staleDate: nil))
+        let foreign = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: attributes(id: "foreign", scope: "other"), content: .init(state: first.frames[0].state, staleDate: nil))
+        cold.accept(snapshot); await settle()
+        precondition(running.activityState == .active, "The first timetable after launch must not end the class being shown")
+        precondition(foreign.activityState == .ended, "Another table's activity is retired by its scope")
+        cold.setEnabled(false); await settle()
         print("Live Activity v2 Swift checks passed")
     }
     @MainActor static var live: [Activity<ScheduleLiveActivityAttributes>] {
@@ -253,13 +288,30 @@ struct NativeLiveActivityChecks {
         NativeScheduleSnapshot(scheduleScope: "own", periods: share.periods, data: NativeScheduleResult(currentSemester: "term", cells: cells),
                                calendar: share.calendar, timeZone: "Asia/Taipei")
     }
-    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false, source: String? = nil, scope: String = "scope") -> NativeScheduleSnapshot {
-        let a = NativeScheduleCourse(liveActivitySourceID: "A", name: name, weeks: "1周", weekList: [1], startSlot: 1, endSlot: conflict ? 3 : 2)
-        let b = NativeScheduleCourse(liveActivitySourceID: "B", name: name, weeks: "1周", weekList: [1], startSlot: 2, endSlot: 2)
-        let periods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "08:50"), NativeSchedulePeriod(number: 2, startTime: "09:00", endTime: "09:50"), NativeSchedulePeriod(number: 3, startTime: "10:00", endTime: "10:50")]
+    static func fixture(name: String = "同名课程", conflict: Bool = false, adjusted: Bool = false, source: String? = nil, scope: String = "scope",
+                        weeks: [Int] = [1], cells: [NativeScheduleCell]? = nil) -> NativeScheduleSnapshot {
+        let a = NativeScheduleCourse(liveActivitySourceID: "A", name: name, weeks: "1周", weekList: weeks, startSlot: 1, endSlot: conflict ? 3 : 2)
+        let b = NativeScheduleCourse(liveActivitySourceID: "B", name: name, weeks: "1周", weekList: weeks, startSlot: 2, endSlot: 2)
+        let periods = [NativeSchedulePeriod(number: 1, startTime: "08:00", endTime: "08:50"), NativeSchedulePeriod(number: 2, startTime: "09:00", endTime: "09:50"),
+                       NativeSchedulePeriod(number: 3, startTime: "10:00", endTime: "10:50"), NativeSchedulePeriod(number: 4, startTime: "11:00", endTime: "11:50"),
+                       NativeSchedulePeriod(number: 5, startTime: "12:00", endTime: "12:50")]
+        let days = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"]
+        let schedule = cells ?? [NativeScheduleCell(day: 2, bigSlot: 1, courses: conflict ? [a, b] : [a]), NativeScheduleCell(day: 5, bigSlot: 1, courses: conflict ? [a, b] : [a])]
         return NativeScheduleSnapshot(scheduleScope: scope, periods: periods,
-            data: NativeScheduleResult(currentSemester: "term", cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: conflict ? [a, b] : [a]), NativeScheduleCell(day: 5, bigSlot: 1, courses: conflict ? [a, b] : [a])]),
-            calendar: NativeScheduleCalendar(weeks: [NativeCalendarWeek(week: 1, days: ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"])], adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]),
+            data: NativeScheduleResult(currentSemester: "term", cells: schedule),
+            calendar: NativeScheduleCalendar(weeks: (1...max(1, weeks.max() ?? 1)).map { week in NativeCalendarWeek(week: week, days: days.map { day -> String in
+                guard let date = WeekCalculator.parseDay(day) else { return day }
+                let formatter = DateFormatter(); formatter.calendar = WeekCalculator.calendar; formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = WeekCalculator.calendar.timeZone; formatter.dateFormat = "yyyy-MM-dd"
+                return formatter.string(from: WeekCalculator.calendar.date(byAdding: .day, value: (week - 1) * 7, to: date) ?? date)
+            }) },
+            adjustments: adjusted ? CalendarAdjustmentResolver.index([CalendarAdjustment(date: "2026-09-22", kind: .off, note: "放假"), CalendarAdjustment(date: "2026-09-23", kind: .swap, source: "2026-09-22", note: "调课")], semesterStartMonday: "2026-09-21") : [:]),
             auth: NativeScheduleAuth(authenticated: true, account: source == nil ? nil : "SHARE1"), sourceLabel: source, schoolID: "school", timeZone: "Asia/Taipei")
+    }
+
+    /// One course of a single period, on the same Tuesday.
+    static func singlePeriod() -> NativeScheduleSnapshot {
+        let course = NativeScheduleCourse(liveActivitySourceID: "P", name: "同名课程", weeks: "1周", weekList: [1], startSlot: 2, endSlot: 2)
+        return fixture(cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [course])])
     }
 }
