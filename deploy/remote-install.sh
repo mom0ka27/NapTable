@@ -43,10 +43,13 @@ step "检查运行环境"
 missing_packages=()
 # Managed CPython includes a modern SQLite without replacing OS libraries.
 python_runtime=/opt/naptable/python/bin/python3.14
-if [[ ! -x $python_runtime ]]; then
-    echo "找不到 ${python_runtime}，请先按 server/README.md 安装 Python 3.14 再部署" >&2
-    exit 1
-fi
+uv=/opt/naptable/tools/uv
+for tool in "$python_runtime" "$uv"; do
+    if [[ ! -x $tool ]]; then
+        echo "找不到 ${tool}，请先按 server/README.md 准备运行环境再部署" >&2
+        exit 1
+    fi
+done
 "$python_runtime" - <<'PYTHON'
 import sqlite3, sys
 assert sys.version_info[:2] == (3, 14), sys.version
@@ -115,7 +118,8 @@ required_files=(
     server/live_activity_v2.py
     server/live_activity_schedule.py
     server/live_activity_timeline.py
-    server/requirements.txt
+    pyproject.toml
+    uv.lock
     server/naptable_server.py
     server/static/admin.html
     server/static/admin.css
@@ -150,8 +154,9 @@ chmod 0755 "$release_path/deploy/backup.py" "$release_path/deploy/reload-nginx-a
 # Keep dependencies tied to the release, while credentials survive releases.
 umask 022
 step "创建虚拟环境并安装 Python 依赖"
-"$python_runtime" -m venv "$release_path/.venv"
-"$release_path/.venv/bin/python" -m pip install --quiet --disable-pip-version-check -r "$release_path/server/requirements.txt"
+# 按 uv.lock 原样安装（--frozen 校验哈希且不改锁文件）；复制而不是硬链接缓存，release 不依赖缓存目录。
+UV_PROJECT_ENVIRONMENT="$release_path/.venv" UV_PYTHON_DOWNLOADS=never \
+    "$uv" sync --quiet --frozen --no-dev --link-mode copy --python "$python_runtime" --directory "$release_path"
 step "校验并备份实时活动令牌加密密钥"
 "$release_path/.venv/bin/python" - "$release_path" <<'PYTHON'
 from pathlib import Path

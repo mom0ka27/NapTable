@@ -4,12 +4,12 @@
 
 ## 本地启动
 
-服务端需要 Python 3.10 以上，HTTP 层是 FastAPI + uvicorn，先安装 `server/requirements.txt`（其中也有 v2 远程实时活动所需的 token 加密依赖）。在项目根目录执行：
+服务端需要 Python 3.14，HTTP 层是 FastAPI + uvicorn。依赖用 [uv](https://docs.astral.sh/uv/) 管理：声明在项目根目录的 `pyproject.toml`，精确版本锁在 `uv.lock`（其中也有 v2 远程实时活动所需的 token 加密依赖）。增删依赖用 `uv add` / `uv remove`，升级用 `uv lock --upgrade-package <名字>`，改完连同 `uv.lock` 一起提交。在项目根目录执行：
 
 ```sh
-python3 -m pip install -r server/requirements.txt
+uv sync
 export NAPTABLE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 server/naptable_server.py --host 127.0.0.1 --port 8787 --db naptable.sqlite3
+uv run server/naptable_server.py --host 127.0.0.1 --port 8787 --db naptable.sqlite3
 ```
 
 `naptable_server.py` 自己启动 uvicorn，只用一个进程：实时活动的排程保存在进程内存里，数据库上的进程锁也会拒绝第二个调度进程，不要改用 `uvicorn --workers` 或多开实例。Ctrl-C 或 SIGTERM 会先停掉后台推送线程再退出。
@@ -60,7 +60,7 @@ ln -s "$(dirname "$(dirname "$runtime")")" /opt/naptable/python
 /opt/naptable/python/bin/python3.14 -c 'import sqlite3, sys; print(sys.version); print(sqlite3.sqlite_version)'
 ```
 
-部署脚本验证 Python/SQLite 版本，服务和数据库备份均使用 release 内的虚拟环境。
+部署脚本验证 Python/SQLite 版本和 uv 是否就位，服务和数据库备份均使用 release 内的虚拟环境。
 
 从开发机一键发布并验证：
 
@@ -68,7 +68,7 @@ ln -s "$(dirname "$(dirname "$runtime")")" /opt/naptable/python
 ./deploy/deploy.sh nap
 ```
 
-脚本先运行全部 Python 服务端测试，再创建版本化 release 和独立虚拟环境，安装加密依赖，配置并备份 token 密钥，在数据库副本上预检迁移，停旧调度并最终备份数据库，然后原子切换 `/opt/naptable/current` 并检查内外网健康接口。v2 版本之间启动失败会恢复上一 release；首次 v1 → v2 迁移失败会停止服务并保留现场，不自动重启可能重新产生旧启动任务的 v1。设置 `NAPTABLE_SKIP_TESTS=1` 可跳过重复测试，`NAPTABLE_DOMAIN` 可覆盖默认域名。
+脚本先运行全部 Python 服务端测试，再创建版本化 release 和独立虚拟环境，用 `uv sync --frozen` 按 `uv.lock` 安装依赖，配置并备份 token 密钥，在数据库副本上预检迁移，停旧调度并最终备份数据库，然后原子切换 `/opt/naptable/current` 并检查内外网健康接口。v2 版本之间启动失败会恢复上一 release；首次 v1 → v2 迁移失败会停止服务并保留现场，不自动重启可能重新产生旧启动任务的 v1。设置 `NAPTABLE_SKIP_TESTS=1` 可跳过重复测试，`NAPTABLE_DOMAIN` 可覆盖默认域名。
 
 部署只从开发机手动执行。`.github/workflows/server-tests.yml` 在 `main` 分支和 PR 的 `server/`、`deploy/` 或 Python 服务端测试发生变化时只运行测试，不部署。
 
@@ -107,7 +107,7 @@ App 保存个人展示内容；服务器只接收课表的时间结构（星期�
 远程 token 使用 Fernet 认证加密：在运行服务的虚拟环境中安装依赖，把独立 Fernet key 保存在 release/数据库目录之外，通过 `NAPTABLE_LA_TOKEN_KEY_PATH` 指定。文件仅供服务账号读取，并独立备份。未配置该密钥时远程 token 注册返回 503，本地预约设备不受此 token 存储要求影响。
 
 ```sh
-python3 -m pip install -r server/requirements.txt
+# 依赖已随部署装进 release 的虚拟环境；手动搭建时先在项目根目录执行 uv sync。
 # 在安全的配置目录中创建一次；不要把生成的密钥输出到日志或提交到仓库。
 python3 -c 'from cryptography.fernet import Fernet; from pathlib import Path; p=Path("/etc/naptable/live-activity-token.key"); p.touch(mode=0o600, exist_ok=False); p.write_bytes(Fernet.generate_key())'
 export NAPTABLE_LA_TOKEN_KEY_PATH=/etc/naptable/live-activity-token.key

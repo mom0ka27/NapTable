@@ -78,11 +78,10 @@ Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-ex
 for script in tests/check-*.sh; do bash "$script" || break; done
 ```
 
-服务端测试需先安装 `server/requirements.txt`（FastAPI、uvicorn 和加密依赖；`deploy/deploy.sh` 发布前也用本机 `python3` 跑这些测试）：
+服务端依赖用 uv 管理（`pyproject.toml` + `uv.lock`，安装：`brew install uv`）。`deploy/deploy.sh` 发布前也用同样的命令跑这些测试：
 
 ```sh
-python3 -m pip install -r server/requirements.txt
-python3 -m unittest discover -s tests -p 'test_*.py'
+uv run --frozen python -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Debug 模拟器可以通过环境变量直接打开指定入口：

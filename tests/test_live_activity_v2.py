@@ -196,7 +196,7 @@ class V2Tests(unittest.TestCase):
         try:
             from cryptography.fernet import Fernet
         except ImportError:
-            self.skipTest('install server/requirements.txt for encryption integration')
+            self.skipTest('run uv sync for encryption integration')
         with tempfile.NamedTemporaryFile() as file:
             file.write(Fernet.generate_key()); file.flush()
             vault = TokenVault(file.name)

@@ -27,3 +27,6 @@ AuthKey_*.p8
 
 # Claude Code local state and worktrees
 .claude/
+
+# uv virtual environment
+.venv/

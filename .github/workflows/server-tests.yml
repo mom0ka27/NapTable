@@ -5,12 +5,16 @@ on:
     branches: [main]
     paths:
       - "server/**"
+      - "pyproject.toml"
+      - "uv.lock"
       - "deploy/**"
       - "tests/**"
       - ".github/workflows/server-tests.yml"
   pull_request:
     paths:
       - "server/**"
+      - "pyproject.toml"
+      - "uv.lock"
       - "deploy/**"
       - "tests/**"
       - ".github/workflows/server-tests.yml"
@@ -25,12 +29,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
+      - uses: astral-sh/setup-uv@v6
 
       - name: Install server dependencies
-        run: python3 -m pip install -r server/requirements.txt
+        run: uv sync --frozen
 
       - name: Run server tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
+        run: uv run --frozen python -m unittest discover -s tests -p 'test_*.py'

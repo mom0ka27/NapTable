@@ -21,6 +21,8 @@ if [[ ! $domain =~ ^[A-Za-z0-9.-]+$ ]]; then
     exit 2
 fi
 
+command -v uv >/dev/null || fail "找不到 uv，请先安装：brew install uv"
+
 revision=$(git -C "$root_dir" rev-parse --short HEAD 2>/dev/null || printf 'workspace')
 dirty=false
 if ! git -C "$root_dir" diff --quiet --ignore-submodules HEAD 2>/dev/null || \
@@ -40,7 +42,7 @@ fi
 
 if [[ ${NAPTABLE_SKIP_TESTS:-0} != 1 ]]; then
     step "[1/5] 运行本地服务端测试"
-    (cd "$root_dir" && python3 -m unittest discover -s tests -p 'test_*.py') \
+    (cd "$root_dir" && uv run --frozen python -m unittest discover -s tests -p 'test_*.py') \
         || fail "本地测试未通过，已中止，服务器没有任何改动。"
 else
     step "[1/5] 已跳过本地测试（NAPTABLE_SKIP_TESTS=1）"
@@ -56,9 +58,8 @@ trap cleanup EXIT
 
 step "[2/5] 打包发布文件"
 mkdir -p "$staging_dir/bundle/server" "$staging_dir/bundle/deploy"
-cp "$root_dir"/server/*.py \
-   "$root_dir/server/requirements.txt" \
-   "$staging_dir/bundle/server/"
+cp "$root_dir"/server/*.py "$staging_dir/bundle/server/"
+cp "$root_dir/pyproject.toml" "$root_dir/uv.lock" "$staging_dir/bundle/"
 cp -R "$root_dir/server/static" "$staging_dir/bundle/server/static"
 cp "$root_dir/deploy/backup.py" \
    "$root_dir/deploy/naptable.service" \

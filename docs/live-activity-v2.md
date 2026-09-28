@@ -62,6 +62,6 @@ bash tests/check-live-activity.sh
 bash tests/check-live-activity-service.sh
 ```
 
-加密集成检查需要安装 `server/requirements.txt`，缺少依赖时该项跳过。另需执行真实 Xcode SDK 构建。
+加密集成检查需要先 `uv sync` 安装依赖，缺少依赖时该项跳过。另需执行真实 Xcode SDK 构建。
 
 仍需真机验收：用户划掉 App 后本地预约开始时 App 是否仍被拉起、低电量模式、远程启动后拿到令牌的耗时、共享课表更新后不打开 App 也按新课表提醒；以及锁屏、后台、断网恢复和容量压测。APNs 200 只代表接受。
