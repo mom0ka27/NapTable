@@ -1,6 +1,9 @@
 import Combine
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum ScheduleViewMode: String, CaseIterable, Identifiable {
     case week
@@ -42,6 +45,10 @@ final class AppStore: ObservableObject {
     private let fileURL: URL?
     private var saveTask: Task<Void, Never>?
     private var didLoad = false
+    /// 读取失败（不是解码失败）时禁止写盘：这时磁盘上的文件是好的，只是这一轮
+    /// 读不到（比如后台启动时数据保护还没解锁），用空状态覆盖它会把课表清掉。
+    /// 下一次成功读到内容就恢复保存。
+    private var saveBlocked = false
 
     // MARK: Init
 
@@ -59,7 +66,48 @@ final class AppStore: ObservableObject {
         self.unifiedCalendarAdjustments = state.state.unifiedCalendarAdjustments ?? []
         self.loadErrorMessage = state.error
         self.displayWeek = 1
+        saveBlocked = state.saveBlocked
         didLoad = true
+        normalize()
+        displayWeek = liveWeek > 0 ? liveWeek : 1
+        #if canImport(UIKit)
+        if saveBlocked {
+            // 解锁之后或回到前台时再读一次，读到了就换上真正的存档。
+            for name in [UIApplication.protectedDataDidBecomeAvailableNotification,
+                         UIApplication.didBecomeActiveNotification] {
+                retryObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: nil, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.retryLoadIfBlocked() }
+                })
+            }
+        }
+        #endif
+    }
+
+    private var retryObservers: [NSObjectProtocol] = []
+
+    /// 上次读取失败时再读一遍存档。读取仍然失败就继续空状态运行、不写盘；
+    /// 读到了（或文件解不开、已经挪成备份）就换上结果并恢复保存。这期间在内存里
+    /// 做的改动会被丢弃——它们是在看不到真实课表的情况下做的。
+    func retryLoadIfBlocked() {
+        guard saveBlocked else { return }
+        let state = AppStore.readState(from: fileURL)
+        guard !state.saveBlocked else { return }
+        saveTask?.cancel()
+        settings = state.state.settings
+        tables = state.state.tables
+        courses = state.state.courses
+        selectedTableId = state.state.selectedTableId
+        nextCourseId = state.state.nextCourseId
+        nextTableId = state.state.nextTableId
+        nextCourseKey = state.state.nextCourseKey
+        didSeedSample = state.state.didSeedSample
+        unifiedCalendarAdjustments = state.state.unifiedCalendarAdjustments ?? []
+        loadErrorMessage = state.error
+        saveBlocked = false
+        retryObservers.forEach(NotificationCenter.default.removeObserver)
+        retryObservers = []
         normalize()
         displayWeek = liveWeek > 0 ? liveWeek : 1
     }
@@ -74,22 +122,47 @@ final class AppStore: ObservableObject {
         return directory.appendingPathComponent("naptable-state.json", isDirectory: false)
     }
 
-    private static func readState(from url: URL?) -> (state: AppStateFile, error: String?) {
+    private static func readState(from url: URL?) -> (state: AppStateFile, error: String?, saveBlocked: Bool) {
         guard let url, FileManager.default.fileExists(atPath: url.path) else {
-            return (AppStateFile(), nil)
+            return (AppStateFile(), nil, false)
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            // 读不到文件（数据保护没解锁、磁盘暂时不可用…）不代表文件坏了。这时候
+            // 不动它、以空状态运行，等下一次成功读取；期间禁止写盘。
+            return (AppStateFile(), "本地数据暂时无法读取：\(error.localizedDescription)", true)
         }
         do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            return (try decoder.decode(AppStateFile.self, from: data), nil)
+            return (try JSONDecoder().decode(AppStateFile.self, from: data), nil, false)
         } catch {
             // A broken file must not wipe the app; start clean but keep the
-            // original around so a user can still recover it by hand.
-            let backup = url.appendingPathExtension("corrupt")
-            try? FileManager.default.removeItem(at: backup)
-            try? FileManager.default.moveItem(at: url, to: backup)
-            return (AppStateFile(), "本地数据无法读取，已重置（原文件备份为 \(backup.lastPathComponent)）")
+            // original around so a user can still recover it by hand. 备份名带时间
+            // 戳：解不开的文件往往不止一次，覆盖掉上一份就等于把恢复的退路丢了。
+            let stamp = Self.backupStamp()
+            var backup = url.appendingPathExtension("corrupt-\(stamp)")
+            var suffix = 2
+            while FileManager.default.fileExists(atPath: backup.path) {
+                backup = url.appendingPathExtension("corrupt-\(stamp)-\(suffix)")
+                suffix += 1
+            }
+            do {
+                try FileManager.default.moveItem(at: url, to: backup)
+            } catch {
+                // 挪不走就别覆盖它：以空状态运行但不写盘，原文件留给用户手动恢复。
+                return (AppStateFile(), "本地数据无法读取，且无法备份原文件：\(error.localizedDescription)", true)
+            }
+            return (AppStateFile(), "本地数据无法读取，已重置（原文件备份为 \(backup.lastPathComponent)）", false)
         }
+    }
+
+    private static func backupStamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
     }
 
     // MARK: Derived data
@@ -745,7 +818,7 @@ final class AppStore: ObservableObject {
     }
 
     func saveNow() {
-        guard didLoad, let fileURL else { return }
+        guard didLoad, let fileURL, !saveBlocked else { return }
         var state = AppStateFile()
         state.settings = settings
         state.tables = tables
