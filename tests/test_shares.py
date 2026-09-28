@@ -43,6 +43,24 @@ class CourseValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_courses([{"name": "课", "info": "x" * 1000} for _ in range(400)])
 
+    def test_slots_and_weeks_stay_in_the_range_the_app_decodes(self):
+        # time_count counts the periods *after* the first: 0 is a one-period
+        # class. week_time/start_time 0 mark a free-time row; a free-time row's
+        # negative count is clamped by the client, so it is kept.
+        for course in ({"week_time": 7, "start_time": 64, "time_count": 31, "weeks": [1, 40]},
+                       {"week_time": 1, "start_time": 1, "time_count": 0, "weeks": "[1,3,40]"},
+                       {"weekTime": 0, "startTime": 0, "timeCount": -1, "weeks": []},
+                       {"week_time": "2", "start_time": " 3 ", "weeks": ["4"]},
+                       {"week_time": None, "weeks": None}):
+            with self.subTest(course=course):
+                normalize_courses([dict(course, name="课")])
+        for course in ({"start_time": 65}, {"start_time": -1}, {"time_count": 32}, {"week_time": 8}, {"weekTime": -1},
+                       {"weeks": [41]}, {"weeks": [0]}, {"weeks": "[1,41]"}, {"weeks": "第0周"}, {"weeks": {"1": 1}},
+                       {"weeks": [1.5]}, {"start_time": 1.0}, {"start_time": True}, {"time_count": "two"},
+                       {"week_time": 2 ** 63}, {"start_time": "9" * 20}, {"weeks": list(range(1, 41)) * 11}):
+            with self.subTest(course=course), self.assertRaises(ValueError):
+                normalize_courses([dict(course, name="课")])
+
     def test_keeps_unknown_fields_verbatim(self):
         rows, _ = normalize_courses([{"name": "数学", "week_time": 3, "custom": {"a": 1}}])
         self.assertEqual(rows[0]["custom"], {"a": 1})
@@ -113,6 +131,14 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
             "owner": "张三", "schoolID": "nju", "termID": "2026-fall-template",
             "courses": courses, **extra,
         }, {"X-Write-Token": previous["writeToken"]}, expect=expect)
+
+    def test_an_out_of_range_course_is_refused_with_400(self):
+        refused = self.req("POST", "/v1/shares", {"owner": "张三", "schoolID": "nju", "termID": "2026-fall-template",
+                                                  "courses": [{"name": "课", "week_time": 1, "start_time": 99}]}, expect=400)
+        self.assertIn("start_time", refused["error"])
+        created = self.create()
+        self.req("PUT", f"/v1/shares/{created['id']}", {"schoolID": "nju", "termID": "2026-fall-template",
+                 "courses": [{"name": "课", "weeks": [50]}]}, {"X-Write-Token": created["writeToken"]}, expect=400)
 
     def test_replacement_revokes_old_code_and_meta(self):
         old = self.create()
