@@ -31,6 +31,10 @@ final class LiveActivityPushService: ObservableObject {
     private static let legacySecretKey = "naptable.liveActivity.deviceSecret"
     private static let revokeKey = "naptable.liveActivity.pendingRevocation"
     private static let registrationKey = "naptable.liveActivity.v2.registered"
+    /// SHA-256 of the push-to-start token the server last accepted ("" for
+    /// none), so a cold start does not register again with the same token.
+    /// Cleared with the registration whenever the device is forgotten.
+    private static let registeredTokenKey = "naptable.liveActivity.v2.registeredTokenDigest"
     /// The timetable's revision and the digest of the body it names.
     private static let revisionKey = "naptable.liveActivity.v2.timetableRevision"
     private static let digestKey = "naptable.liveActivity.v2.timetableDigest"
@@ -67,7 +71,6 @@ final class LiveActivityPushService: ObservableObject {
     private var dirty = false
     private var generation = 0
     private var token: String?
-    private var uploadedToken: String?
     /// The timetable digest the server accepted in this process: uploaded once per launch at least.
     private var uploadedDigest: String?
     private var controller: NativeLiveActivityController { owner }
@@ -197,7 +200,15 @@ final class LiveActivityPushService: ObservableObject {
             try await forget()
             if !isEnabled { status = .off; return }
         }
-        guard #available(iOS 18.0, *), let snapshot = controller.currentScheduleMetadata, let scope = snapshot.scheduleScope else { return }
+        guard #available(iOS 18.0, *) else { return }
+        guard let snapshot = controller.currentScheduleMetadata, let scope = snapshot.scheduleScope else {
+            // Launched in the background by a remote start, before any timetable
+            // is shown: the new activity's token still has to reach the server.
+            if let device = deviceID, defaults.bool(forKey: Self.registrationKey), secret(device) != nil {
+                await synchronizeActivities(device: device)
+            }
+            return
+        }
         guard let timetable = controller.timetable() else {
             status = .failed("课表缺少学期信息，无法安排提醒。")
             controller.setServiceFailure("课表缺少学期信息，无法安排提醒。")
@@ -210,7 +221,7 @@ final class LiveActivityPushService: ObservableObject {
             // A lost first registration response must remain recoverable.
             try saveSecret(UUID().uuidString + UUID().uuidString, id: device)
         }
-        if !defaults.bool(forKey: Self.registrationKey) || token != uploadedToken {
+        if !defaults.bool(forKey: Self.registrationKey) || Self.digest(token) != defaults.string(forKey: Self.registeredTokenKey) {
             let registrationToken = token
             var body: [String: Any] = ["deviceID": device, "installationId": device, "environment": Self.environment, "bundleID": Bundle.main.bundleIdentifier ?? ""]
             if let registrationToken { body["startToken"] = registrationToken }
@@ -218,7 +229,7 @@ final class LiveActivityPushService: ObservableObject {
             // Always retain late registration credentials, even after disable/scope change.
             if let secret = response["secret"] as? String { try saveSecret(secret, id: device) }
             defaults.set(true, forKey: Self.registrationKey)
-            uploadedToken = registrationToken
+            defaults.set(Self.digest(registrationToken), forKey: Self.registeredTokenKey)
             guard current(captured, scope: scope) else { dirty = true; return }
         }
         let pending = try await upload(timetable, device: device)
@@ -230,6 +241,12 @@ final class LiveActivityPushService: ObservableObject {
         await synchronizeActivities(device: device)
         guard current(captured, scope: scope) else { dirty = true; return }
         status = token == nil ? .waitingForToken : .ready(pending: pending ?? 0, nextFireAt: nil)
+        controller.clearServiceFailure()
+    }
+    /// What is kept of a registered token: its digest, never the token.
+    private static func digest(_ token: String?) -> String {
+        guard let token else { return "" }
+        return SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     /// PUTs the timetable when it changed, or once per launch. A new body gets
     /// the next revision, saved before the request, so a retry after a lost
@@ -258,7 +275,8 @@ final class LiveActivityPushService: ObservableObject {
     /// reservation slots, reserves them, and gives back what could not be reserved.
     @available(iOS 26.0, *)
     private func claim(device: String) async throws {
-        let slots = max(0, NativeLiveActivityController.reservationSlots - controller.reservationCount)
+        // A preview holds the slots: claim none, and `reserve` gives back what the server still counts as reserved here.
+        let slots = controller.isPreviewActive ? 0 : max(0, NativeLiveActivityController.reservationSlots - controller.reservationCount)
         let response = try await request("/devices/\(device)/claims", method: "POST", body: ["slots": slots])
         let claims = try JSONDecoder().decode([LiveActivityClaim].self, from: JSONSerialization.data(withJSONObject: response["claims"] as? [Any] ?? []))
         for id in await controller.reserve(claims) {
@@ -271,6 +289,8 @@ final class LiveActivityPushService: ObservableObject {
     /// DELETE the ones that are gone. A failure retries with the rest of the service.
     private func synchronizeActivities(device: String) async {
         var uploaded = group.dictionary(forKey: Self.activityLedgerKey) as? [String: String] ?? [:]
+        // Without a known scope nothing can be told live: withdraw nothing.
+        guard controller.tokenScope != nil else { return }
         let (registrations, live) = controller.tokenRegistrations()
         guard !registrations.isEmpty || !uploaded.isEmpty else { return }
         do {
@@ -296,9 +316,8 @@ final class LiveActivityPushService: ObservableObject {
             let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.keychainService, kSecAttrAccount as String: device]
             if let credentials { credentials.remove(device) } else { SecItemDelete(query as CFDictionary) }
         }
-        for key in [Self.deviceKey, Self.legacySecretKey, Self.registrationKey, Self.revokeKey, Self.revisionKey, Self.digestKey] { defaults.removeObject(forKey: key) }
+        for key in [Self.deviceKey, Self.legacySecretKey, Self.registrationKey, Self.registeredTokenKey, Self.revokeKey, Self.revisionKey, Self.digestKey] { defaults.removeObject(forKey: key) }
         group.removeObject(forKey: Self.activityLedgerKey)
-        uploadedToken = nil
         uploadedDigest = nil
     }
     private func request(_ path: String, method: String, body: [String: Any]? = nil, legacy: Bool = false) async throws -> [String: Any] {
@@ -321,6 +340,12 @@ final class LiveActivityPushService: ObservableObject {
         if let transport { (data, response) = try await transport(request) }
         else { (data, response) = try await URLSession.shared.data(for: request) }
         guard let http = response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }
+        if http.statusCode == 403, method != "DELETE", !path.hasSuffix("/devices") {
+            // The server no longer knows this device (its data was reset): the
+            // next pass registers again with the same secret and re-uploads.
+            defaults.removeObject(forKey: Self.registeredTokenKey)
+            uploadedDigest = nil
+        }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         return (http.statusCode, value)
     }

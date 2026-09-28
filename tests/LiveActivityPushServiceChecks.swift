@@ -107,8 +107,7 @@ enum ScheduleServiceError: LocalizedError {
         var claims: [[String: Any]] = []
         var shareGone = false
         var unknownActivity = false
-        let service = LiveActivityPushService(controller: controller, defaults: defaults,
-            credentials: .init(read: { keys[$0] }, write: { keys[$0] = $1 }, remove: { keys[$0] = nil }), baseURL: URL(string: "https://example.invalid")) { request in
+        let transport: (URLRequest) async throws -> (Data, HTTPURLResponse) = { request in
                 requests.append(request)
                 let path = request.url!.path
                 if path.hasSuffix("/devices") { return response(request, ["deviceID": "x"]) }
@@ -128,6 +127,11 @@ enum ScheduleServiceError: LocalizedError {
                 }
                 fatalError("unexpected request \(request.httpMethod!) \(path)")
             }
+        func makeService(_ controller: NativeLiveActivityController) -> LiveActivityPushService {
+            LiveActivityPushService(controller: controller, defaults: defaults, credentials: .init(read: { keys[$0] }, write: { keys[$0] = $1 }, remove: { keys[$0] = nil }),
+                                    baseURL: URL(string: "https://example.invalid"), transport: transport)
+        }
+        let service = makeService(controller)
         func calls(_ suffix: String, _ method: String? = nil) -> [URLRequest] {
             requests.filter { $0.url!.path.hasSuffix(suffix) && (method == nil || $0.httpMethod == method) }
         }
@@ -157,6 +161,17 @@ enum ScheduleServiceError: LocalizedError {
         for _ in 0..<2 { await settle() }
         precondition(calls("/timetable").count == 1, "An unchanged timetable is not uploaded again in this launch")
         precondition(body(calls("/claims").last!)["slots"] as? Int == NativeLiveActivityController.reservationSlots - 1)
+        // Previewing holds the slots: nothing is claimed, and what the server still counts as here goes back.
+        controller.startPreview()
+        for _ in 0..<2 { await settle() }
+        let releasedBefore = containing("/claims/", "DELETE").count
+        await service.refreshStatus()
+        precondition(body(calls("/claims").last!)["slots"] as? Int == 0, "A preview claims no slots")
+        precondition(containing("/claims/", "DELETE").count == releasedBefore + 1 && containing("/claims/", "DELETE").last!.url!.lastPathComponent == "first",
+                     "The reminder the preview displaced goes back to the server")
+        controller.endPreview()
+        for _ in 0..<2 { await settle() }
+        precondition(pending("own").count == 1 && pending("own")[0].attributes.occurrenceId == "first", "Ending the preview reserves it again")
         // A setting changes: the next revision.
         controller.setLeadMinutes(15)
         for _ in 0..<2 { await settle() }
@@ -206,6 +221,11 @@ enum ScheduleServiceError: LocalizedError {
         controller.accept(share, own: own)
         for _ in 0..<3 { await settle() }
         if case .failed(let reason) = service.status { precondition(reason.contains("失效"), reason) } else { preconditionFailure("A share that is gone is reported") }
+        // The registered token survives a relaunch: an unchanged one is not registered again.
+        let registrations = calls("/devices", "POST").count
+        await makeService(controller).refreshStatus()
+        precondition(calls("/devices", "POST").count == registrations, "A cold start with the same token does not register the device again")
+        precondition(defaults.string(forKey: "naptable.liveActivity.v2.registeredTokenDigest")?.isEmpty == true, "Only a digest is kept, empty without a token")
         controller.setEnabled(false)
         for _ in 0..<2 { await settle() }
     }

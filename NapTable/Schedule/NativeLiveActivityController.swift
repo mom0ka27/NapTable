@@ -65,6 +65,12 @@ final class NativeLiveActivityController: ObservableObject {
     private var activityTokens: [String: String] = [:]
     private var tokenObservers: [String: Task<Void, Never>] = [:]
     private var announcedTokens: [String] = []
+    /// The push service's last failure, kept apart from `status` so a local
+    /// reconcile cannot paper over it; cleared by the next successful sync.
+    private(set) var serviceFailure: String?
+    /// Ends the preview state when the preview activity goes away on its own
+    /// (it runs out, or is swiped away on the Lock Screen).
+    private var previewObserver: Task<Void, Never>?
 
     init(now: @escaping () -> Date = { .now }, privacyDefaults: UserDefaults = .standard) {
         self.privacyDefaults = privacyDefaults
@@ -119,7 +125,9 @@ final class NativeLiveActivityController: ObservableObject {
     func accept(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil) {
         guard !snapshot.cancelled else { return }
         // Activities of another table end; the server plans the new one once it is uploaded.
-        if currentScheduleMetadata?.scheduleScope != snapshot.scheduleScope { end() }
+        // On a cold start nothing was shown yet: the running activities stay, and
+        // reconcile retires those of any other table by their scope.
+        if let old = currentScheduleMetadata?.scheduleScope, old != snapshot.scheduleScope { end() }
         ownScheduleMetadata = snapshot.sourceLabel == nil ? nil : own
         currentScheduleMetadata = snapshot
         rebuild()
@@ -145,16 +153,28 @@ final class NativeLiveActivityController: ObservableObject {
             await self.reconcile(generation: generation)
         }
     }
-    func setServiceFailure(_ reason: String) { status = .unavailable(reason) }
+    func setServiceFailure(_ reason: String) { serviceFailure = reason; status = .unavailable(reason) }
+    /// A sync went through: the local state shows again.
+    func clearServiceFailure() {
+        guard serviceFailure != nil else { return }
+        serviceFailure = nil
+        guard isEnabled, !isPreviewActive, display != nil else { return }
+        let generation = epoch
+        Task { [weak self] in await self?.reconcile(generation: generation) }
+    }
+    /// The scope token-mode activities are matched against. A push-to-start
+    /// can launch the app in the background before any timetable is accepted:
+    /// the last saved display snapshot still names it.
+    var tokenScope: String? { display?.scope ?? LiveActivityDisplaySnapshot.load()?.scope }
     /// Token-mode activities still running and their tokens. `live` also names
     /// those whose token this process has not received yet, so a cold start
     /// does not mistake them for gone.
     func tokenRegistrations() -> (registrations: [LiveActivityTokenRegistration], live: Set<String>) {
-        guard let display else { return ([], []) }
+        guard let scope = tokenScope else { return ([], []) }
         var registrations: [LiveActivityTokenRegistration] = []
         var live: Set<String> = []
         for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.attributes.pushMode == "token" &&
-            activity.activityState != .ended && activity.activityState != .dismissed && activity.attributes.scheduleScope == display.scope {
+            activity.activityState != .ended && activity.activityState != .dismissed && activity.attributes.scheduleScope == scope {
             guard let id = activity.attributes.occurrenceId, (activity.attributes.reservationEnd ?? .distantPast) > now(), !live.contains(id) else { continue }
             live.insert(id)
             if let token = activityTokens[activity.id] { registrations.append(.init(occurrenceId: id, token: token)) }
@@ -242,6 +262,7 @@ final class NativeLiveActivityController: ObservableObject {
         }
         // Without a push at the end (offline), the next wakeup still retires it.
         if let end = running.compactMap(\.attributes.reservationEnd).min() { scheduleBackgroundWakeup?(end) }
+        if let serviceFailure { status = .unavailable(serviceFailure); return }
         if case .limited = status { return }
         coverage = "已开启自动提醒"
         status = running.isEmpty ? .waiting : .active
@@ -249,10 +270,17 @@ final class NativeLiveActivityController: ObservableObject {
     /// Reserves the reminders the server handed to the phone and returns the
     /// ones to give back: those it could not reserve. A reservation the server
     /// no longer holds, or holds with other times, is withdrawn first.
+    ///
+    /// The server counts every claim as reserved on the phone until it comes
+    /// back, so a claim this pass cannot act on (switched off, previewing, or
+    /// superseded while waiting) is returned rather than dropped.
     @available(iOS 26.0, *)
     func reserve(_ claims: [LiveActivityClaim]) async -> [String] {
-        guard let display, isEnabled, !isPreviewActive else { return [] }
+        let all = claims.map(\.occurrenceId)
+        guard let display, isEnabled, !isPreviewActive else { return all }
+        let generation = epoch
         await retirementTask?.value
+        guard valid(generation) else { return unreserved(claims) }
         let current = now().timeIntervalSince1970
         let semester = currentScheduleMetadata?.data?.currentSemester ?? ""
         let wanted = Dictionary(claims.map { ($0.occurrenceId, $0.attributes(semester: semester)) }, uniquingKeysWith: { first, _ in first })
@@ -260,10 +288,15 @@ final class NativeLiveActivityController: ObservableObject {
             guard let id = activity.attributes.occurrenceId, wanted[id] != activity.attributes else { continue }
             await activity.end(nil, dismissalPolicy: .immediate)
         }
+        guard valid(generation) else { return unreserved(claims) }
         var release: [String] = []
         var quotaReached = false
         var failure: String?
-        for claim in claims.sorted(by: { $0.reminder < $1.reminder }) {
+        for (index, claim) in claims.sorted(by: { $0.reminder < $1.reminder }).enumerated() {
+            guard valid(generation) else {
+                release += unreserved(Array(claims.sorted(by: { $0.reminder < $1.reminder })[index...]))
+                break
+            }
             let attributes = claim.attributes(semester: semester)
             if courseActivities.contains(where: { $0.attributes.occurrenceId == claim.occurrenceId }) { continue }
             // Already started (or dismissed): nothing left to reserve.
@@ -295,6 +328,13 @@ final class NativeLiveActivityController: ObservableObject {
         } else if case .limited = status { status = .waiting }
         return release
     }
+    /// The claims to give back once this pass is superseded. Switched off or
+    /// previewing, `end()` retires every activity, so all of them; after a mere
+    /// rebuild those already reserved stay (the server would start them twice).
+    private func unreserved(_ claims: [LiveActivityClaim]) -> [String] {
+        guard isEnabled, !isPreviewActive else { return claims.map(\.occurrenceId) }
+        return claims.map(\.occurrenceId).filter { id in !courseActivities.contains { $0.attributes.occurrenceId == id } }
+    }
     private static func isCapacityError(_ error: Error) -> Bool {
         guard let error = error as? ActivityAuthorizationError else { return false }
         return error == .targetMaximumExceeded || error == .globalMaximumExceeded
@@ -303,6 +343,8 @@ final class NativeLiveActivityController: ObservableObject {
         epoch += 1
         task?.cancel()
         isPreviewActive = false
+        previewObserver?.cancel()
+        previewObserver = nil
         let activities = Activity<ScheduleLiveActivityAttributes>.activities
         let tokens = activities.contains { $0.attributes.pushMode == "token" }
         retirementTask = Task { [weak self] in
@@ -323,8 +365,9 @@ final class NativeLiveActivityController: ObservableObject {
             await self.retirementTask?.value
             guard self.epoch == generation, self.isPreviewActive, self.isEnabled, !Task.isCancelled else { return }
             do {
-                _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: .init(semester: "__preview__", dateKey: "preview"), content: ActivityContent(state: state, staleDate: state.endDate), pushType: nil)
+                let preview = try Activity<ScheduleLiveActivityAttributes>.request(attributes: .init(semester: "__preview__", dateKey: "preview"), content: ActivityContent(state: state, staleDate: state.endDate), pushType: nil)
                 self.status = .active
+                self.observePreview(preview, generation: generation)
             } catch {
                 self.isPreviewActive = false
                 self.status = Self.isCapacityError(error)
@@ -335,6 +378,19 @@ final class NativeLiveActivityController: ObservableObject {
     }
     /// The reservations the preview displaced come back with the next sync.
     func endPreview() { end(); rebuild() }
+    /// Swiped away or ended by the system: the reminders come back as if
+    /// 「结束预览」 had been tapped.
+    private func observePreview(_ activity: Activity<ScheduleLiveActivityAttributes>, generation: Int) {
+        previewObserver?.cancel()
+        previewObserver = Task { [weak self] in
+            for await state in activity.activityStateUpdates where state == .ended || state == .dismissed {
+                guard let self, self.epoch == generation, self.isPreviewActive else { return }
+                self.previewObserver = nil
+                self.endPreview()
+                return
+            }
+        }
+    }
     func reconcileInBackground() async {
         guard !isPreviewActive else { return }
         let current = now()
@@ -347,6 +403,9 @@ final class NativeLiveActivityController: ObservableObject {
                 await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, in: stored)))
             }
         }
+        // The system runs a refresh once: ask again for the next activity to retire.
+        let remaining = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
+        if let next = remaining.compactMap(\.attributes.reservationEnd).filter({ $0 > current }).min() { scheduleBackgroundWakeup?(next) }
     }
 }
 
