@@ -40,6 +40,8 @@ struct WebImporterView: View {
     @State private var conflictChoice: [Int: Int] = [:]
     /// 只有部分周次重叠的那几节怎么处理：`parsed.courses` 下标 -> 处理方式。
     @State private var conflictDispositions: [Int: ImportConflictDisposition] = [:]
+    /// 页面上的学期和当前学期对不上时，点「导入」先问一次。
+    @State private var confirmingTermMismatch = false
 
     /// `initialMode` is the destination chosen on the import hub. Without it the
     /// sheet always started on `.replaceCurrent`, which made the hub's
@@ -85,6 +87,11 @@ struct WebImporterView: View {
                     Text("未读取到课程，请返回并确认学期或更换导入入口。首次使用需导入有课程的课表。")
                         .font(.callout).foregroundStyle(.secondary)
                         .padding().frame(maxWidth: .infinity).background(.regularMaterial)
+                } else if let mismatch = parsed?.termMismatch {
+                    Label("\(mismatch)。如果这不是本学期的课表，请返回，在教务系统里切换到本学期后重新解析。",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange)
+                        .padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
                 }
             }
             .navigationTitle(parsed == nil ? school.pageTitle : "确认导入")
@@ -92,27 +99,33 @@ struct WebImporterView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(parsed == nil ? "取消" : "返回") {
-                        if parsed == nil {
-                            dismiss()
-                        } else {
-                            self.parsed = nil
-                            conflictChoice = [:]
-                            conflictDispositions = [:]
-                            // 页面还停在课表页上。回到「已加载」让「重新解析」直接重新读取；
-                            // `didStartExtraction` 保持为真，免得页面一有动静就又自动提取。
-                            state = .loaded
-                            statusMessage = "已返回课表页面。需要重新读取时点右上角「重新解析」。"
-                        }
+                        if parsed == nil { dismiss() } else { backToPage() }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if let parsed {
                         Button("导入") {
+                            if parsed.termMismatch != nil { confirmingTermMismatch = true; return }
                             onFinish(resolved(parsed), mode)
                             dismiss()
                         }
                         // 冲突没选完就导入，等于替用户随便留一节，所以先拦住。
                         .disabled((requiresCourses && parsed.courses.isEmpty) || hasUnresolvedConflicts || nameTaken)
+                        // 挂在「导入」按钮上：iOS 26 起确认框从触发它的视图旁边弹出。
+                        .confirmationDialog(
+                            "学期和当前学期不一致",
+                            isPresented: $confirmingTermMismatch,
+                            titleVisibility: .visible
+                        ) {
+                            Button("仍然导入") {
+                                onFinish(resolved(parsed), mode)
+                                dismiss()
+                            }
+                            Button("返回切换学期") { backToPage() }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text("\(parsed.termMismatch ?? "")。仍然导入的话，这些课会按当前学期的开学日期和作息排列。")
+                        }
                     } else {
                         Button("重新解析") { retry() }
                             .disabled(state == .importing)
@@ -147,6 +160,16 @@ struct WebImporterView: View {
     }
 
     /// 写库之前把没选中的那几节收起来。
+    /// 从确认页回到网页。页面还停在课表页上：回到「已加载」让「重新解析」直接重新读取；
+    /// `didStartExtraction` 保持为真，免得页面一有动静就又自动提取。
+    private func backToPage() {
+        parsed = nil
+        conflictChoice = [:]
+        conflictDispositions = [:]
+        state = .loaded
+        statusMessage = "已返回课表页面。需要重新读取时点右上角「重新解析」。"
+    }
+
     private func resolved(_ schedule: ImportedSchedule) -> ImportedSchedule {
         var value = schedule
         value.name = effectiveName

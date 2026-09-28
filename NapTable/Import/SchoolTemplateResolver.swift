@@ -11,6 +11,7 @@ enum SchoolTemplateResolver {
         guard let school = schools.first(where: { $0.id == schoolID }) else {
             throw ScheduleServiceError.server("服务端尚未配置学校 \(schoolID)")
         }
+        var mismatch: String?
         var candidates = school.terms.filter {
             WeekCalculator.parseDay($0.semesterStartMonday) != nil && !$0.periods.isEmpty
         }
@@ -25,6 +26,9 @@ enum SchoolTemplateResolver {
             candidates = matched
         } else if let currentTermID = school.currentTermID {
             candidates = candidates.filter { $0.id == currentTermID }
+            // 页面写了学年学期却对不上任何已配置的学期：多半是教务系统还停在上学期。
+            // 照样套用当前学期，但让用户在导入前确认。
+            if academicTerm(in: schedule.name) != nil { mismatch = schedule.name }
         } else if academicTerm(in: schedule.name) != nil {
             // 页面写了学年学期却一个都对不上、服务端也没标当前学期：不拿今天去猜。
             candidates = []
@@ -60,6 +64,9 @@ enum SchoolTemplateResolver {
         result.semesterStartMonday = term.semesterStartMonday
         result.classTimeList = term.classTimes
         result.calendarAdjustments = term.calendarAdjustments
+        result.termMismatch = mismatch.map {
+            "页面显示的是「\($0.trimmingCharacters(in: .whitespacesAndNewlines))」，和当前学期（\(semesterName(startMonday: term.semesterStartMonday, hint: ""))）不一致"
+        }
         return result
     }
 

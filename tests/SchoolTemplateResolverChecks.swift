@@ -34,19 +34,22 @@ struct SchoolTemplateResolverChecks {
             to: ImportedSchedule(name: "我的课表", courses: []),
             schoolID: "nju", schools: currentSchools, now: WeekCalculator.parseDay("2026-09-16")!
         )
-        precondition(serverCurrent.termID == "2027-spring")
+        precondition(serverCurrent.termID == "2027-spring" && serverCurrent.termMismatch == nil,
+                     "A page without a term name uses the current term silently")
         // 页面上写明了学年学期、并且能对上某个学期时，它比服务端的当前学期优先。
         let pageWins = try SchoolTemplateResolver.applying(
             to: ImportedSchedule(name: "2026-2027学年 第1学期", courses: []),
             schoolID: "nju", schools: currentSchools, now: WeekCalculator.parseDay("2026-09-16")!
         )
-        precondition(pageWins.termID == "2026-fall")
-        // 对不上任何学期时退回服务端的当前学期。
+        precondition(pageWins.termID == "2026-fall" && pageWins.termMismatch == nil)
+        // 对不上任何学期时退回服务端的当前学期，但要标出来让用户确认。
         let fallback = try SchoolTemplateResolver.applying(
             to: ImportedSchedule(name: "2025-2026学年 第1学期", courses: []),
             schoolID: "nju", schools: currentSchools, now: WeekCalculator.parseDay("2026-09-16")!
         )
         precondition(fallback.termID == "2027-spring")
+        precondition(fallback.termMismatch == "页面显示的是「2025-2026学年 第1学期」，和当前学期（2027 春）不一致",
+                     fallback.termMismatch ?? "nil")
         do { _ = try resolve("2025-2026学年 第1学期"); fatalError("Historical term must not use current template") }
         catch is ScheduleServiceError {}
         do { _ = try resolve("我的课表", "other"); fatalError("Must not substitute NJU for another school") }

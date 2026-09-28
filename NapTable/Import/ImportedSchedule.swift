@@ -20,6 +20,9 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
     var configurationFrozen: Bool
     /// 学期的调休安排，跟着学期配置一起进课表。
     var calendarAdjustments: [CalendarAdjustment]?
+    /// 页面上写的学年学期在服务端没有配置、只好套用当前学期时，说明两者对不上。
+    /// 确认导入前要让用户再确认一次，免得把上学期的课当成本学期导进来。
+    var termMismatch: String? = nil
 
     init(
         name: String,
@@ -55,6 +58,7 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
             && lhs.schoolID == rhs.schoolID && lhs.termID == rhs.termID && lhs.termVersion == rhs.termVersion && lhs.termWeekCount == rhs.termWeekCount && lhs.termTimezone == rhs.termTimezone
             && lhs.configurationFrozen == rhs.configurationFrozen
             && lhs.calendarAdjustments == rhs.calendarAdjustments
+            && lhs.termMismatch == rhs.termMismatch
     }
 }
 
