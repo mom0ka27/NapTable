@@ -2,30 +2,34 @@ import SwiftUI
 
 struct PrivacyDocumentView: View {
     let liveActivities: Bool
+    /// The account document instead of either consent.
+    var account = false
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
     private var paragraphs: [String] {
-        (liveActivities ? PrivacyPolicy.liveText : PrivacyPolicy.basicText).components(separatedBy: "\n\n")
+        (account ? PrivacyPolicy.accountText : liveActivities ? PrivacyPolicy.liveText : PrivacyPolicy.basicText).components(separatedBy: "\n\n")
     }
     private var headings: [String] {
-        liveActivities ? ["由你决定是否开启", "需要哪些信息", "不同系统如何处理", "如何撤回许可"] : ["我们收集哪些信息", "这些数据用于什么", "何时上报与保存多久", "你的选择与账号安全"]
+        if account { return ["什么时候需要账户", "保存哪些信息", "这些信息用于什么", "退出与删除"] }
+        return liveActivities ? ["由你决定是否开启", "需要哪些信息", "不同系统如何处理", "如何撤回许可"] : ["我们收集哪些信息", "这些数据用于什么", "何时上报与保存多久", "你的选择与账号安全"]
     }
+    private var title: String { account ? PrivacyPolicy.accountTitle : liveActivities ? PrivacyPolicy.liveTitle : PrivacyPolicy.basicTitle }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 13) {
-                    Image(systemName: liveActivities ? "bell.badge" : "hand.raised")
+                    Image(systemName: account ? "person.crop.circle" : liveActivities ? "bell.badge" : "hand.raised")
                         .font(.system(size: 23, weight: .medium))
                         .foregroundStyle(colors.accent)
                         .frame(width: 55, height: 55)
                         .background(colors.soft, in: RoundedRectangle(cornerRadius: 18))
                         .accessibilityHidden(true)
-                    Text(liveActivities ? PrivacyPolicy.liveTitle : PrivacyPolicy.basicTitle)
+                    Text(title)
                         .font(.title2.weight(.bold)).foregroundStyle(colors.ink)
                     HStack(spacing: 8) {
-                        Text(liveActivities ? "可选许可" : "开始使用前需同意")
+                        Text(account ? "登录时同意" : liveActivities ? "可选许可" : "开始使用前需同意")
                             .foregroundStyle(colors.accent)
-                        Text("·  版本 1  ·  2026.09.23").foregroundStyle(colors.secondary)
+                        Text(account ? "·  2026.09.28" : "·  版本 1  ·  2026.09.23").foregroundStyle(colors.secondary)
                     }
                     .font(.caption2)
                 }
@@ -51,7 +55,7 @@ struct PrivacyDocumentView: View {
             .frame(maxWidth: .infinity)
         }
         .background(colors.background.ignoresSafeArea())
-        .navigationTitle(liveActivities ? "实时通知许可" : "隐私协议")
+        .navigationTitle(account ? "账户说明" : liveActivities ? "实时通知许可" : "隐私协议")
         .appInlineNavigationTitle()
         #if os(iOS)
         .toolbar(.visible, for: .navigationBar)

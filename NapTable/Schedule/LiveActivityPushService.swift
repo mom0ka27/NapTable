@@ -45,6 +45,9 @@ final class LiveActivityPushService: ObservableObject {
     private static let activityLedgerKey = "naptable.liveActivity.v2.activityTokens"
     private static let keychainService = "naptable.liveActivity.device"
     @Published private(set) var status: Status = .off
+    /// Called with the device ID and secret after every sync that reached
+    /// the server: the account joins the device to itself (`AccountService`).
+    var deviceSynced: ((String, String) async -> Void)?
     struct CredentialStore {
         var read: (String) -> String?
         var write: (String, String) throws -> Void
@@ -232,6 +235,7 @@ final class LiveActivityPushService: ObservableObject {
             defaults.set(Self.digest(registrationToken), forKey: Self.registeredTokenKey)
             guard current(captured, scope: scope) else { dirty = true; return }
         }
+        if let deviceSynced, let secret = secret(device) { await deviceSynced(device, secret) }
         let pending = try await upload(timetable, device: device)
         guard current(captured, scope: scope) else { dirty = true; return }
         if #available(iOS 26.0, *) {
@@ -270,6 +274,7 @@ final class LiveActivityPushService: ObservableObject {
         guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
         uploadedDigest = digest
         acceptChannels(response)
+        if let entitled = response["entitled"] as? Bool { controller.reminderAllowed = entitled }
         return response["pendingCount"] as? Int
     }
     /// The school's channels the server names for the table just synced; none in token mode.
@@ -285,6 +290,7 @@ final class LiveActivityPushService: ObservableObject {
         let slots = controller.isPreviewActive ? 0 : max(0, NativeLiveActivityController.reservationSlots - controller.reservationCount)
         let response = try await request("/devices/\(device)/claims", method: "POST", body: ["slots": slots])
         acceptChannels(response)
+        if let entitled = response["entitled"] as? Bool { controller.reminderAllowed = entitled }
         let claims = try JSONDecoder().decode([LiveActivityClaim].self, from: JSONSerialization.data(withJSONObject: response["claims"] as? [Any] ?? []))
         for id in await controller.reserve(claims) {
             // Best effort: one not given back is still reserved nowhere, so retry it next pass.

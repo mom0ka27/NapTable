@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// The Settings tab.
 ///
-/// Four groups, a few rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
+/// The account on top, then four groups, a few rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
 /// Every row says what it currently is, so the common case — "did I already
 /// set that?" — is answered without opening it.
 ///
@@ -31,6 +31,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                AccountSettingsSection()
                 appearanceGroup
                 NativeDeviceSettingsContent(
                     scheduleStore: scheduleStore,

@@ -102,7 +102,9 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         return myShares.last(where: { $0.tableID == table.id })?.fingerprint != fingerprint
     }
 
-    func share(courses: [Course], table: CourseTable, owner: String = "我") async throws -> SharedScheduleEnvelope {
+    /// Signed in, the share names the account's nickname and carries its avatar to readers.
+    func share(courses: [Course], table: CourseTable, owner: String? = nil) async throws -> SharedScheduleEnvelope {
+        let owner = owner ?? AccountService.shared.account?.name.trimmedNonEmpty ?? "我"
         guard !generatingShare else { throw ScheduleServiceError.server("正在生成分享码，请稍候") }
         generatingShare = true
         defer { generatingShare = false }
@@ -135,7 +137,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         let body: [String: Any] = ["owner": owner, "schoolID": schoolID, "termID": termID, "courses": rows,
             "previousShares": obsolete.filter { $0.code != previous?.code }.map { ["code": $0.code, "token": $0.token] }]
         let path = previous.map { "/v1/shares/\($0.code)/replace" } ?? "/v1/shares"
-        let headers = previous.map { ["X-Write-Token": $0.token] } ?? [:]
+        let headers = (previous.map { ["X-Write-Token": $0.token] } ?? [:]).merging(AccountService.shared.authorizationHeader) { old, _ in old }
         let data: Data
         do { data = try await request(path: path, method: "POST", body: body, headers: headers) }
         catch ScheduleServiceError.server(let reason) where reason == "课表没有变更，请继续使用现有分享码" {

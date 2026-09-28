@@ -491,7 +491,9 @@ struct GlobalThemeSettingsSection: View {
 @available(iOS 16.1, *)
 struct LiveActivitySettingsScreen: View {
     @ObservedObject private var consent = PrivacyConsent.shared
+    @ObservedObject private var account = AccountService.shared
     @State private var showPrivacyConsent = false
+    @State private var showSignIn = false
     @ObservedObject private var controller = NativeLiveActivityController.shared
     @State private var enabled: Bool
     @State private var perPeriod: Bool
@@ -515,15 +517,26 @@ struct LiveActivitySettingsScreen: View {
                 Toggle("显示实时活动", isOn: Binding(
                     get: { enabled },
                     set: { value in
+                        // Signing in also gives the consent, so it comes first.
+                        if value && !account.isSignedIn { showSignIn = true; return }
                         if value && !consent.liveAccepted { showPrivacyConsent = true; return }
                         enabled = value
                         NativeLiveActivityController.shared.setEnabled(value)
                     }
                 ))
+                if let summary = account.account {
+                    NavigationLink { AccountView() } label: {
+                        LabeledContent("使用日与订阅", value: summary.entitlement.summary)
+                    }
+                } else {
+                    Button("通过 Apple 登录") { showSignIn = true }
+                }
             } header: {
                 Text("总开关")
             } footer: {
-                Text("在锁屏与灵动岛上显示上课、下课倒计时。")
+                Text(account.isSignedIn
+                     ? "在锁屏与灵动岛上显示上课、下课倒计时。当天真正收到提醒才计 1 个使用日。"
+                     : "在锁屏与灵动岛上显示上课、下课倒计时。需要登录，新用户免费 30 个使用日。")
             }
 
             Section {
@@ -647,6 +660,13 @@ struct LiveActivitySettingsScreen: View {
         .onChange(of: consent.liveAccepted) { _, _ in enabled = controller.isEnabled }
         .sheet(isPresented: $showPrivacyConsent) {
             LiveActivityConsentView {
+                controller.setEnabled(true)
+                enabled = controller.isEnabled
+            }
+        }
+        .sheet(isPresented: $showSignIn) {
+            LiveActivitySignInSheet {
+                consent.setLiveConsent(true)
                 controller.setEnabled(true)
                 enabled = controller.isEnabled
             }

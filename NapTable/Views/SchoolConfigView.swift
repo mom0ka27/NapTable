@@ -83,9 +83,11 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                 ForEach(service.sharedSchedules, id: \.meta.code) { schedule in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
+                            AccountAvatarView(url: schedule.meta.ownerAvatarURL, name: schedule.meta.ownerName ?? schedule.name, size: 40)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(schedule.name).font(.headline)
-                                Text("\(schedule.meta.schoolName) · \(schedule.courses.count) 门课程")
+                                Text([schedule.meta.ownerName.map { "来自 \($0)" }, "\(schedule.meta.schoolName) · \(schedule.courses.count) 门课程"]
+                                    .compactMap { $0 }.joined(separator: " · "))
                                     .font(.caption).foregroundStyle(.secondary)
                                 if schedule.isRevoked {
                                     Label("分享已撤销，不会再更新", systemImage: "exclamationmark.triangle.fill")
@@ -464,8 +466,15 @@ private struct SharedScheduleImportView: View {
             Form {
                 if let preview {
                     Section("课表预览") {
-                        Label(preview.name, systemImage: "calendar")
-                            .font(.headline)
+                        HStack(spacing: 12) {
+                            AccountAvatarView(url: preview.meta.ownerAvatarURL, name: preview.meta.ownerName ?? preview.name, size: 44)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preview.name).font(.headline)
+                                if let owner = preview.meta.ownerName {
+                                    Text("来自 \(owner)").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                         LabeledContent("学校", value: preview.meta.schoolName)
                         LabeledContent("课程", value: "\(preview.courses.count) 门")
                     }

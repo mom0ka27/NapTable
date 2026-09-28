@@ -54,12 +54,26 @@ struct OnboardingView: View {
     @Environment(\.colorScheme) private var scheme
     @ObservedObject private var consent = PrivacyConsent.shared
     @StateObject private var scheduleStore = NativeScheduleStore()
+    @ObservedObject private var account = AccountService.shared
     @State private var basicChecked = false
-    @State private var liveChecked = false
     @State private var showImport = false
     @State private var initialSchool: String?
     @State private var reviewingPrivacy = false
-    private var isImportStep: Bool { consent.basicAccepted && !reviewingPrivacy }
+    /// The Live Activity page was dealt with: signed in, or skipped.
+    @AppStorage("naptable.onboarding.liveStepDone") private var liveStepDone = false
+    private enum Step { case privacy, live, importing }
+    private var step: Step {
+        if !consent.basicAccepted || reviewingPrivacy { return .privacy }
+        return Self.offersLiveActivities && !liveStepDone ? .live : .importing
+    }
+    private var isImportStep: Bool { step == .importing }
+    /// Reminders need iOS 18; before that there is only the preview, and nothing to sign in for.
+    private static var offersLiveActivities: Bool {
+        #if os(iOS)
+        if #available(iOS 18.0, *) { return true }
+        #endif
+        return false
+    }
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
 
     var body: some View {
@@ -68,8 +82,11 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     brandHeader
                     progress
-                    welcome
-                    if isImportStep { importStep } else { privacyStep }
+                    switch step {
+                    case .privacy: welcome; privacyStep
+                    case .live: LiveActivitySignInContent()
+                    case .importing: welcome; importStep
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 12)
@@ -107,16 +124,40 @@ struct OnboardingView: View {
             Text("你以为课表").font(.system(.headline, design: .rounded).weight(.bold))
                 .foregroundStyle(colors.ink)
             Spacer()
+            if step == .live {
+                Button("跳过") { finishLiveStep() }
+                    .font(.subheadline.weight(.medium)).foregroundStyle(colors.accent)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityHint("不开启实时活动，之后可在设置中登录")
+            }
         }
     }
 
+    /// Past the Live Activity page. Someone who already has courses (an
+    /// upgrade) is done with onboarding here; everyone else goes on to import.
+    private func finishLiveStep() {
+        liveStepDone = true
+        if !store.courses.isEmpty { store.saveNow(); consent.completeOnboarding(hasImportedCourses: true) }
+    }
+
+    private func signedIn() {
+        consent.setLiveConsent(true)
+        #if os(iOS)
+        NativeLiveActivityController.shared.setEnabled(true)
+        #endif
+        finishLiveStep()
+    }
+
     private var progress: some View {
-        HStack(spacing: 12) {
-            progressItem("01", title: "隐私许可", complete: isImportStep, active: !isImportStep)
-            progressItem("02", title: "导入课表", complete: false, active: isImportStep)
+        let titles = Self.offersLiveActivities ? ["隐私许可", "实时活动", "导入课表"] : ["隐私许可", "导入课表"]
+        let current = step == .privacy ? 0 : step == .live ? 1 : titles.count - 1
+        return HStack(spacing: 12) {
+            ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
+                progressItem(String(format: "%02d", index + 1), title: title, complete: index < current, active: index == current)
+            }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isImportStep ? "第 2 步，共 2 步，导入课表" : "第 1 步，共 2 步，隐私许可")
+        .accessibilityLabel("第 \(current + 1) 步，共 \(titles.count) 步，\(titles[current])")
     }
 
     private func progressItem(_ number: String, title: String, complete: Bool, active: Bool) -> some View {
@@ -154,11 +195,6 @@ struct OnboardingView: View {
                 title: "基础隐私协议",
                 summary: "上传学校标识、系统版本、设备型号、App 版本与随机安装标识，用于使用统计与兼容性改进。",
                 symbol: "chart.bar.xaxis", optional: false, accepted: $basicChecked
-            )
-            OnboardingPermissionCard(
-                title: "实时通知许可",
-                summary: "允许上传推送所需的设备和部分课表时间信息。暂不同意也能查看课表，之后开启通知时再授权。",
-                symbol: "bell.badge", optional: true, accepted: $liveChecked
             )
             Label("基础统计不包含课程内容或学校账号密码", systemImage: "lock.shield")
                 .font(.caption2).foregroundStyle(colors.secondary)
@@ -215,7 +251,6 @@ struct OnboardingView: View {
             .foregroundStyle(colors.secondary)
             Button {
                 basicChecked = consent.basicAccepted
-                liveChecked = consent.liveAccepted
                 reviewingPrivacy = true
             } label: {
                 HStack(spacing: 5) {
@@ -273,7 +308,31 @@ struct OnboardingView: View {
         }
     }
 
-    private var bottomAction: some View {
+    @ViewBuilder private var bottomAction: some View {
+        if step == .live { liveAction } else { primaryAction }
+    }
+
+    private var liveAction: some View {
+        VStack(spacing: 10) {
+            if account.isSignedIn {
+                Button { signedIn() } label: {
+                    HStack { Spacer(); Text("开启实时活动"); Spacer(); Image(systemName: "arrow.right").font(.subheadline.weight(.semibold)) }
+                        .padding(.horizontal, 20)
+                }
+                .buttonStyle(OnboardingPrimaryButtonStyle())
+            } else {
+                AccountSignInButton { signedIn() }
+            }
+            AccountConsentNote()
+        }
+        .padding(.horizontal, 24).padding(.top, 15).padding(.bottom, 10)
+        .frame(maxWidth: 570)
+        .frame(maxWidth: .infinity)
+        .background(colors.background)
+        .overlay(alignment: .top) { colors.line.frame(height: 0.5) }
+    }
+
+    private var primaryAction: some View {
         VStack(spacing: 10) {
             Button {
                 if isImportStep {
@@ -286,13 +345,11 @@ struct OnboardingView: View {
                         consent.completeOnboarding(hasImportedCourses: true)
                     }
                 } else {
-                    consent.acceptBasic(liveActivities: liveChecked)
+                    // The Live Activity consent is given on its own page, by signing in.
+                    consent.acceptBasic(liveActivities: consent.liveAccepted)
                     reviewingPrivacy = false
-                    #if os(iOS)
-                    NativeLiveActivityController.shared.setEnabled(liveChecked)
-                    #endif
                     // Existing users retain their imported courses during the upgrade.
-                    if !store.courses.isEmpty { consent.completeOnboarding(hasImportedCourses: true) }
+                    if !store.courses.isEmpty, step == .importing { consent.completeOnboarding(hasImportedCourses: true) }
                 }
             } label: {
                 HStack {
@@ -305,7 +362,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
             .disabled(!isImportStep && !basicChecked)
-            Text(isImportStep ? "导入或添加课程后，即可进入主界面" : "基础协议为必选，实时通知可稍后决定")
+            Text(isImportStep ? "导入或添加课程后，即可进入主界面" : "基础协议为必选；实时通知在下一步决定")
                 .font(.caption2).foregroundStyle(colors.secondary)
                 .multilineTextAlignment(.center)
         }

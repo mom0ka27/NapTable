@@ -38,13 +38,19 @@ nonisolated struct ShareMeta: Codable, Equatable {
     /// 只在 `/meta` 里有，用来发现调休表变了而课程没变。
     var adjustmentCount: Int?
     var updatedAt: String
+    /// 发布者账户的头像路径；匿名发布或没有头像时为空，旧服务端也没有这个键。
+    var ownerAvatar: String? = nil
+
+    /// 发布者的昵称：旧版本分享一律写的是「我」，那就不算昵称。
+    var ownerName: String? { owner.trimmedNonEmpty.flatMap { $0 == "我" || $0 == "匿名" ? nil : $0 } }
+    var ownerAvatarURL: URL? { ownerAvatar.flatMap(AccountService.url) }
 
     private enum CodingKeys: String, CodingKey {
         case scheduleScope, timeZone
         case code = "id", owner, schoolID, schoolName, name, termID, termVersion, courseCount
         case semesterStartMonday = "semester_start_monday"
         case weekCount = "term_week_count"
-        case adjustmentCount, updatedAt
+        case adjustmentCount, updatedAt, ownerAvatar
     }
 }
 
@@ -295,7 +301,11 @@ extension ScheduleSharingService {
         // `updatedAt` is bumped by every server-side write, and the full share
         // document carries no `adjustmentCount`, so comparing whole metas
         // would re-download on every poll.
-        guard meta.updatedAt != cached.meta.updatedAt || meta.scheduleScope != cached.meta.scheduleScope || meta.timeZone != cached.meta.timeZone else { return }
+        guard meta.updatedAt != cached.meta.updatedAt || meta.scheduleScope != cached.meta.scheduleScope || meta.timeZone != cached.meta.timeZone else {
+            // A new avatar changes no timetable: take it without downloading again.
+            if meta.ownerAvatar != cached.meta.ownerAvatar { updateOwnerAvatar(code, meta.ownerAvatar) }
+            return
+        }
         if var refreshed = try? await fetchFollowed(code), followedCode == code {
             refreshed.remark = cached.remark
             try? saveShared(refreshed, remark: cached.name)
@@ -303,15 +313,31 @@ extension ScheduleSharingService {
     }
 
     /// 没有设为关心的共享课表不会被 `refreshFollowed` 轮询，打开列表时顺带问一下
-    /// 它们还在不在。只看 404，其他错误（离线等）不改状态。
+    /// 它们还在不在，顺便更新发布者的头像。只看 404，其他错误（离线等）不改状态。
     func refreshSharedStatus() async {
         for schedule in sharedSchedules where !schedule.isRevoked && schedule.meta.code != followedCode {
             do {
-                _ = try await request(path: "/v1/shares/\(schedule.meta.code)/meta", method: "GET")
+                let data = try await request(path: "/v1/shares/\(schedule.meta.code)/meta", method: "GET")
+                if let meta = try? JSONDecoder().decode(ShareMeta.self, from: data), meta.ownerAvatar != schedule.meta.ownerAvatar {
+                    updateOwnerAvatar(schedule.meta.code, meta.ownerAvatar)
+                }
             } catch ScheduleServiceError.server(let reason) where reason == "share not found" {
                 markRevoked(schedule.meta.code)
             } catch {}
         }
+    }
+
+    private func updateOwnerAvatar(_ code: String, _ avatar: String?) {
+        var list = sharedSchedules
+        if let index = list.firstIndex(where: { $0.meta.code == code }) {
+            list[index].meta.ownerAvatar = avatar
+            if let data = try? JSONEncoder().encode(list) { UserDefaults.standard.set(data, forKey: Self.importedKey) }
+        }
+        if followedCode == code, var followed = followedSchedule {
+            followed.meta.ownerAvatar = avatar
+            persist(followed, notify: false)
+        }
+        objectWillChange.send()
     }
 
     /// 分享被撤销：保留本机副本，只打上标记，让列表能告诉用户它不会再更新了。

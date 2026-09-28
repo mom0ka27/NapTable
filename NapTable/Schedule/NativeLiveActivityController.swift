@@ -51,6 +51,13 @@ final class NativeLiveActivityController: ObservableObject {
     /// A token-mode activity got a token, rotated it or went away: the push
     /// service reconciles the server's registrations.
     var activityTokensDidChange: (() -> Void)?
+    /// Whether the server lets this device have reminders today, as the last
+    /// sync or account refresh said. False only once charging started and the
+    /// device is signed out or out of usage days: the app then starts no
+    /// activity of its own on entry either.
+    var reminderAllowed = true {
+        didSet { if oldValue != reminderAllowed { rebuild() } }
+    }
     /// The displayed timetable: the reader's own, or a followed share.
     private(set) var currentScheduleMetadata: NativeScheduleSnapshot?
     /// The reader's own timetable while `currentScheduleMetadata` is a followed share.
@@ -342,6 +349,11 @@ final class NativeLiveActivityController: ObservableObject {
         observeTokenActivities()
         defer { announceTokens() }
         guard valid(generation) else { return }
+        guard reminderAllowed else {
+            coverage = "需要登录或订阅"
+            status = .unavailable("实时活动需要登录；使用日用完后需要订阅。")
+            return
+        }
         if isForeground {
             let instant = now()
             for occurrence in display.occurrences where occurrence.reminder <= instant.timeIntervalSince1970 && instant.timeIntervalSince1970 < occurrence.end {
