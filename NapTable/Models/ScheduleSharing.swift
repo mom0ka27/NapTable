@@ -194,9 +194,13 @@ extension ScheduleSharingService {
         return result
     }
 
+    /// Delete the share from the server. A share the server no longer has is
+    /// already gone, so its credential is dropped as well.
     func revoke(_ credential: ShareCredential) async throws {
-        _ = try await request(path: "/v1/shares/\(credential.code)", method: "DELETE",
-                              headers: ["X-Write-Token": credential.token])
+        do {
+            _ = try await request(path: "/v1/shares/\(credential.code)", method: "DELETE",
+                                  headers: ["X-Write-Token": credential.token])
+        } catch ScheduleServiceError.server(let reason) where reason == "share not found" {}
         store(myShares.filter { $0.code != credential.code })
     }
 

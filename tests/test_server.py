@@ -25,8 +25,26 @@ class ServerTests(unittest.TestCase):
         self.req('PUT','/v1/shares/'+code,{'schoolID':'nju','termID':'2026-fall-template','courses':[{'name':'物理'}]}, {'X-Write-Token':token})
         fetched=self.req('GET','/v1/shares/'+code)
         self.assertEqual(fetched['courses'][0]['name'],'物理'); self.assertEqual(fetched['semester_start_monday'],'2026-09-14'); self.assertEqual(fetched['class_time_list'][0]['start'],'08:00')
+        with self.assertRaises(HTTPError) as caught: self.req('DELETE','/v1/shares/'+code,headers={'X-Write-Token':'wrong'})
+        self.assertEqual(caught.exception.code, 403)
         self.req('DELETE','/v1/shares/'+code,headers={'X-Write-Token':token})
         with self.assertRaises(Exception): self.req('GET','/v1/shares/'+code)
+        self.assertIsNone(Handler.store.db.execute('SELECT 1 FROM shares WHERE code=?',(code,)).fetchone())
+        with self.assertRaises(HTTPError) as caught: self.req('DELETE','/v1/shares/'+code,headers={'X-Write-Token':token})
+        self.assertEqual(caught.exception.code, 404)
+    def test_replacing_a_share_deletes_the_old_code(self):
+        payload={'owner':'A','schoolID':'nju','termID':'2026-fall-template','courses':[{'name':'数学'}]}
+        old=self.req('POST','/v1/shares',payload); extra=self.req('POST','/v1/shares',payload)
+        new=self.req('POST','/v1/shares/'+old['id']+'/replace',{**payload,'courses':[{'name':'物理'}],
+            'previousShares':[{'code':extra['id'],'token':extra['writeToken']}]},{'X-Write-Token':old['writeToken']})
+        codes={row[0] for row in Handler.store.db.execute('SELECT code FROM shares')}
+        self.assertEqual(codes, {new['id']})
+    def test_startup_purges_shares_flagged_by_older_servers(self):
+        created=self.req('POST','/v1/shares',{'owner':'A','schoolID':'nju','termID':'2026-fall-template','courses':[]})
+        Handler.store.db.execute('UPDATE shares SET revoked=1'); Handler.store.db.commit()
+        reopened=Store(self.db.name)
+        try: self.assertIsNone(reopened.db.execute('SELECT 1 FROM shares WHERE code=?',(created['id'],)).fetchone())
+        finally: reopened.close()
     def test_school_persists(self):
         school=self.req('GET','/v1/schools')['schools'][0]
         self.assertEqual(school['id'],'nju'); self.assertTrue(school['periods'])
@@ -114,12 +132,19 @@ class ServerTests(unittest.TestCase):
         created=self.req('POST','/v1/shares',{'schoolID':'nju','termID':'2026-fall-template','courses':[]})
         with self.assertRaises(Exception): self.req('PUT','/v1/shares/'+created['id'],{'courses':[{'name':'x'}]},{'X-Write-Token':'wrong'})
     def test_admin_web_routes_are_served(self):
-        self.assertEqual(self.req('GET','/'), {'name':'NapTable Server','admin':'/admin'})
         html=self.req_text('GET','/admin')
         self.assertIn('NapTable 管理台', html); self.assertIn('/static/admin.js', html)
         self.assertIn('NapTable 管理台', self.req_text('GET','/admin/'))
         self.assertIn('text/css', self.req_headers('GET','/static/admin.css')['Content-Type'])
         self.assertIn('application/javascript', self.req_headers('GET','/static/admin.js')['Content-Type'])
+    def test_public_website_is_served(self):
+        self.assertIn('/privacy', self.req_text('GET','/'))
+        self.assertIn('隐私政策', self.req_text('GET','/privacy'))
+        self.assertIn('text/css', self.req_headers('GET','/site/site.css')['Content-Type'])
+        self.assertEqual(self.req_headers('GET','/site/img/week-view.jpg')['Content-Type'], 'image/jpeg')
+        for path in ('/site/../naptable_server.py', '/site/index.html', '/site/img/missing.jpg'):
+            with self.assertRaises(HTTPError) as caught: self.req_text('GET', path)
+            self.assertEqual(caught.exception.code, 404)
     def test_oversized_request_is_rejected_before_reading_the_body(self):
         connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=5)
         connection.request('POST', '/v1/shares', headers={

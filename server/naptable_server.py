@@ -18,6 +18,11 @@ except ImportError:  # pragma: no cover - depends on how the server was started
     import holidays, live_activity
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
+SITE_ROOT = STATIC_ROOT / "site"
+# The public website: a fixed list, so no request path ever reaches the filesystem.
+SITE_ASSETS = {"site.css": "text/css; charset=utf-8", "img/icon.png": "image/png", "img/favicon.png": "image/png",
+               **{f"img/{name}.jpg": "image/jpeg" for name in ("week-view", "month-view", "onboarding-import",
+                                                                 "device-settings", "today-widget", "two-day-widget")}}
 # Usage days follow the school clock, not UTC: "today" starts at 00:00 UTC+8.
 USAGE_ZONE = timezone(timedelta(hours=8))
 
@@ -186,6 +191,8 @@ class Store:
             if "term_id" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_id TEXT NOT NULL DEFAULT ''")
             if "term_version" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_version INTEGER NOT NULL DEFAULT 0")
             if "term_snapshot_json" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_snapshot_json TEXT NOT NULL DEFAULT '{}'")
+            # Revoking or replacing a share used to only flag the row.
+            self.db.execute("DELETE FROM shares WHERE revoked!=0")
             self.db.commit(); self.seed(); self._migrate_configuration_model()
     def close(self):
         with self.lock: self.db.close()
@@ -640,7 +647,7 @@ class Store:
             scope = previous["schedule_scope"] if previous_code is not None else secrets.token_hex(16)
             self.db.execute("UPDATE shares SET schedule_scope=? WHERE code=?", (scope, code))
             for obsolete_code in obsolete_codes:
-                self.db.execute("UPDATE shares SET revoked=1 WHERE code=?", (obsolete_code,))
+                self.db.execute("DELETE FROM shares WHERE code=?", (obsolete_code,))
         return self.get(code, include_token=True, token=token)
     def get(self, code, include_token=False, token=None):
         with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
@@ -704,8 +711,12 @@ class Store:
         if not term: raise ValueError("该分享的学校或学期已不在服务端配置中")
         return self._freeze(code, term)
     def revoke(self, code, token):
-        if not self.authorize(code, token): return False
-        with self.lock: self.db.execute("UPDATE shares SET revoked=1 WHERE code=?",(code.upper(),)); self.db.commit()
+        """Delete the share. None when it no longer exists, so an owner whose
+        share is already gone can drop the stale credential."""
+        with self.lock:
+            if self.db.execute("SELECT 1 FROM shares WHERE code=?",(code.upper(),)).fetchone() is None: return None
+            if not self.authorize(code, token): return False
+            self.db.execute("DELETE FROM shares WHERE code=?",(code.upper(),)); self.db.commit()
         return True
 
 class Handler(BaseHTTPRequestHandler):
@@ -757,7 +768,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path=urlparse(self.path).path
         if live_activity.handle(self, self.live_activity, "GET", path): return
-        if path == "/": return self.send_json(200,{"name":"NapTable Server","admin":"/admin"})
+        if path == "/": return self.send_file(SITE_ROOT / "index.html", "text/html; charset=utf-8")
+        if path in ("/privacy", "/privacy/"): return self.send_file(SITE_ROOT / "privacy.html", "text/html; charset=utf-8")
+        if path.startswith("/site/"):
+            name = path[len("/site/"):]
+            if name not in SITE_ASSETS: return self.send_json(404, {"error": "not found"})
+            return self.send_file(SITE_ROOT / name, SITE_ASSETS[name])
         if path in ("/admin", "/admin/"): return self.send_file(STATIC_ROOT / "admin.html", "text/html; charset=utf-8")
         if path == "/static/admin.css": return self.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8")
         if path == "/static/admin.js": return self.send_file(STATIC_ROOT / "admin.js", "application/javascript; charset=utf-8")
@@ -910,7 +926,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(404, {"error": "school not found"})
             return self.send_json(200, {"deleted": True})
         token=self.headers.get("X-Write-Token","")
-        if path.startswith("/v1/shares/"): return self.send_json(200,{"revoked":True}) if self.store.revoke(path.rsplit("/",1)[-1],token) else self.send_json(403,{"error":"invalid write token"})
+        if path.startswith("/v1/shares/"):
+            revoked=self.store.revoke(path.rsplit("/",1)[-1],token)
+            if revoked is None: return self.send_json(404,{"error":"share not found"})
+            return self.send_json(200,{"revoked":True}) if revoked else self.send_json(403,{"error":"invalid write token"})
         self.send_json(404,{"error":"not found"})
 
 def main():

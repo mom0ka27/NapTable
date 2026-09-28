@@ -180,6 +180,8 @@ private struct ShareOwnScheduleView: View {
     @ObservedObject private var service = ScheduleSharingService.shared
     @State private var busy = false
     @State private var errorMessage: String?
+    @State private var pendingRevoke: ShareCredential?
+    @State private var revoking = false
 
     private var currentShare: ShareCredential? {
         guard let table = store.selectedTable else { return nil }
@@ -268,7 +270,16 @@ private struct ShareOwnScheduleView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
-                        .disabled(busy || !canGenerateShare)
+                        .disabled(busy || revoking || !canGenerateShare)
+                    }
+
+                    if let credential = currentShare {
+                        Button(role: .destructive) { pendingRevoke = credential } label: {
+                            Text(revoking ? "正在撤销…" : "撤销分享")
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(busy || revoking)
                     }
 
                     if let errorMessage {
@@ -302,6 +313,13 @@ private struct ShareOwnScheduleView: View {
                                     Label("发送", systemImage: "square.and.arrow.up")
                                 }
                                 .buttonStyle(.bordered)
+                                Button(role: .destructive) { pendingRevoke = credential } label: {
+                                    Label("撤销", systemImage: "trash")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(busy || revoking)
+                                .accessibilityLabel("撤销分享码 \(credential.code)")
                             }
                             .padding(16)
                             .background(Color.appSecondaryGroupedBackground, in: RoundedRectangle(cornerRadius: 16))
@@ -316,6 +334,13 @@ private struct ShareOwnScheduleView: View {
         .background(Color.appGroupedBackground)
         .navigationTitle("分享课表")
         .appInlineNavigationTitle()
+        .confirmationDialog("撤销分享码 \(pendingRevoke?.code ?? "")？",
+                            isPresented: Binding(get: { pendingRevoke != nil }, set: { if !$0 { pendingRevoke = nil } }),
+                            titleVisibility: .visible, presenting: pendingRevoke) { credential in
+            Button("撤销并删除", role: .destructive) { revoke(credential) }
+        } message: { _ in
+            Text("服务端会删除这份分享，朋友将无法再读取或关心它。")
+        }
     }
 
     private var sharingHint: String {
@@ -330,6 +355,20 @@ private struct ShareOwnScheduleView: View {
 
     private func shareLabel(_ credential: ShareCredential) -> String {
         store.tables.first { $0.id == credential.tableID }?.name ?? "已分享的课表"
+    }
+
+    private func revoke(_ credential: ShareCredential) {
+        guard !busy, !revoking else { return }
+        revoking = true
+        errorMessage = nil
+        Task { @MainActor in
+            defer { revoking = false }
+            do {
+                try await service.revoke(credential)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func generateShare() {

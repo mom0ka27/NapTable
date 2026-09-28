@@ -109,14 +109,14 @@ APNs HTTP/2/JWT 连接实现在 `server/apns.py`；缺失 HTTP 状态视为结�
 | 方法 | 路径 | 凭据 | 说明 |
 | --- | --- | --- | --- |
 | POST | `/v1/shares` | 无 | 首次创建。返回一次性的 `writeToken` |
-| POST | `/v1/shares/{code}/replace` | `X-Write-Token` | 有变更时生成新码，同一事务撤销旧码；无变更返回 400 |
+| POST | `/v1/shares/{code}/replace` | `X-Write-Token` | 有变更时生成新码，同一事务删除旧码；无变更返回 400 |
 | GET | `/v1/shares/{code}` | 无 | 读取完整课表与时间配置 |
 | GET | `/v1/shares/{code}/meta` | 无 | 只读元信息，不含课程；用来判断要不要重新下载 |
 | PUT | `/v1/shares/{code}` | `X-Write-Token` | 用新课程覆盖；不写 `schoolID`/`termID` 就留在原学期 |
 | POST | `/v1/shares/{code}/resync` | `X-Write-Token` | 按学校当前的学期配置重新固化时间，课程不动 |
-| DELETE | `/v1/shares/{code}` | `X-Write-Token` | 撤销 |
+| DELETE | `/v1/shares/{code}` | `X-Write-Token` | 撤销并删除记录；分享不存在返回 404，凭据错误返回 403 |
 
-新客户端按本地课表保存分享凭据，后续生成使用 `replace`，请求体与首次创建相同。课程或实际校历没有变化时禁止重新生成；课程行顺序、本地 ID 和版本计数不视为内容变化。成功后旧码及其 `/meta` 返回 404，失败则保留旧码。升级前同一课表的多条分享可通过 `previousShares: [{code, token}]` 一并撤销，每条均校验写入凭据。服务端需先部署此接口，再发布新版客户端。
+新客户端按本地课表保存分享凭据，后续生成使用 `replace`，请求体与首次创建相同。课程或实际校历没有变化时禁止重新生成；课程行顺序、本地 ID 和版本计数不视为内容变化。成功后旧码及其 `/meta` 返回 404，失败则保留旧码。升级前同一课表的多条分享可通过 `previousShares: [{code, token}]` 一并删除，每条均校验写入凭据。旧版本只把撤销的分享标为停用，服务端启动时会清掉这些残留记录。服务端需先部署此接口，再发布新版客户端。
 
 ### 配置所有权与分享快照
 
