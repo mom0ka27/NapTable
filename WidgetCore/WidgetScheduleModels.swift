@@ -153,8 +153,11 @@ struct WidgetDay: Codable, Identifiable, Equatable {
     }
 
     static func empty(date: String, offset: Int) -> WidgetDay {
-        let target = Calendar.current.date(byAdding: .day, value: offset, to: WidgetClock.now) ?? WidgetClock.now
-        let weekday = Calendar.current.component(.weekday, from: target)
+        // 星期几按日期本身算；日期写坏了才退回「现在往后数几天」。
+        let target = ChineseCalendarInfo.date(fromDate: date)
+            ?? Calendar.current.date(byAdding: .day, value: offset, to: WidgetClock.now)
+            ?? WidgetClock.now
+        let weekday = ChineseCalendarInfo.gregorian.component(.weekday, from: target)
         let day = weekday == 1 ? 7 : weekday - 1
         let labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         return WidgetDay(
@@ -165,6 +168,61 @@ struct WidgetDay: Codable, Identifiable, Equatable {
             isToday: offset == 0,
             courses: []
         )
+    }
+}
+
+/// 今天不能照常列课的原因，见 `WidgetSchedulePayload.notice(now:)`。
+enum WidgetScheduleNotice: Equatable {
+    case vacation(WidgetVacation)
+    /// 学期内，但数据里没有今天：「打开 App 更新课表」。
+    case stale
+}
+
+/// 学期之外的日子。
+struct WidgetVacation: Equatable {
+    enum Kind: Equatable {
+        case winter
+        case summer
+        /// 学期和月份都判断不出是寒假还是暑假。
+        case other
+    }
+
+    let kind: Kind
+    /// 离开学还有几天。只有学期还没开始时知道；学期已经结束时下学期什么时候开学不知道，为 `nil`。
+    let daysUntilTerm: Int?
+
+    var title: String {
+        switch kind {
+        case .winter: return "寒假ing"
+        case .summer: return "暑假ing"
+        case .other: return "放假ing"
+        }
+    }
+
+    /// 「距开学还有 12 天」，不知道开学日期时为 `nil`。
+    var countdown: String? {
+        guard let days = daysUntilTerm, days > 0 else { return nil }
+        return "距开学还有 \(days) 天"
+    }
+
+    /// 离学期超过这么多天，就不拿学期推寒暑假了（多半是好几个月没打开 App），改看月份。
+    static let termReach = 100
+
+    /// 寒假还是暑假。先看学期：已经结束的是秋季学期（8–10 月开学）、或者快开学的是春季学期
+    ///（2–3 月开学）就是寒假，反过来是暑假。学期看不出来（开学月份不典型、离学期太远）时
+    /// 看月份：12–3 月寒假、6–9 月暑假，其余只说放假。
+    static func kind(termEnded: Bool, termStartMonth: Int?, distance: Int?, month: Int) -> Kind {
+        if let startMonth = termStartMonth, (distance ?? 0) <= termReach {
+            let autumn = (8...10).contains(startMonth)
+            let spring = (2...3).contains(startMonth)
+            if (termEnded && autumn) || (!termEnded && spring) { return .winter }
+            if (termEnded && spring) || (!termEnded && autumn) { return .summer }
+        }
+        switch month {
+        case 12, 1, 2, 3: return .winter
+        case 6...9: return .summer
+        default: return .other
+        }
     }
 }
 
@@ -195,10 +253,63 @@ struct WidgetSchedulePayload: Codable, Equatable {
     /// 服务端下发的法定放假日（国务院放假安排，含连休里的周末），节假日提示按它算。
     /// 没同步到或旧版本 payload 时为 `nil`，退回离线推算的法定假日。
     var holidays: [PublishedHoliday]? = nil
+    /// 学期第 1 周的周一（`yyyy-MM-dd`）和一共几周，小组件靠它认出寒暑假。
+    /// 旧版本 payload 没有这两个字段，解码成 `nil`，那就不判断放假。
+    var termStart: String? = nil
+    var termWeeks: Int? = nil
 
     func fullDay(for date: String, fallbackOffset: Int) -> WidgetDay {
         if let exact = knownDay(for: date) { return exact }
+        // 带日期的数据里没有这一天：课表过期了，或者已经放假。不能拿别的周同一个星期几的课顶上，
+        // 那样日期栏是今天、课却是几周前的。只有最早不带日期的 payload 才按星期几找。
+        guard !hasDatedDays else { return .empty(date: date, offset: fallbackOffset) }
         return day(for: date, fallbackOffset: fallbackOffset)
+    }
+
+    /// 写的时候带了日期（现在的 App 都带）。最早的版本只有星期几。
+    var hasDatedDays: Bool {
+        ([today].compactMap { $0 } + (weekDays ?? []) + (nextWeekDays ?? []) + (days ?? []))
+            .contains { !($0.date ?? "").isEmpty }
+    }
+
+    /// 学期的第一天和最后一天（第 1 周周一、最后一周周日）。没带学期信息时为 `nil`。
+    var termRange: (start: String, end: String)? {
+        guard let termStart, let weeks = termWeeks, weeks > 0,
+              let start = ChineseCalendarInfo.date(fromDate: termStart),
+              let end = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: weeks * 7 - 1, to: start) else {
+            return nil
+        }
+        return (ChineseCalendarInfo.dateString(start), ChineseCalendarInfo.dateString(end))
+    }
+
+    /// 今天在学期之外：寒假、暑假。学期内、或者 payload 没带学期信息时为 `nil`。
+    func vacation(on date: String) -> WidgetVacation? {
+        guard let range = termRange, let month = Int(date.dropFirst(5).prefix(2)) else { return nil }
+        let startMonth = Int(range.start.dropFirst(5).prefix(2))
+        if date < range.start {
+            let days = ChineseCalendarInfo.dayGap(from: date, to: range.start)
+            return WidgetVacation(
+                kind: WidgetVacation.kind(termEnded: false, termStartMonth: startMonth, distance: days, month: month),
+                daysUntilTerm: days
+            )
+        }
+        if date > range.end {
+            let days = ChineseCalendarInfo.dayGap(from: range.end, to: date)
+            return WidgetVacation(
+                kind: WidgetVacation.kind(termEnded: true, termStartMonth: startMonth, distance: days, month: month),
+                daysUntilTerm: nil
+            )
+        }
+        return nil
+    }
+
+    /// 今天不能照常列课的原因：放假了，或者课表过期（学期内、带日期的数据里却没有今天，
+    /// 一般是四周多没打开 App）。两种情况都不显示任何一天的课。
+    func notice(now: Date = WidgetClock.now) -> WidgetScheduleNotice? {
+        let date = Self.dateString(now)
+        if let vacation = vacation(on: date) { return .vacation(vacation) }
+        if hasDatedDays, knownDay(for: date) == nil { return .stale }
+        return nil
     }
 
     /// 只在确实有这一天的数据时返回，`nil` 表示这一天不在已同步的周次里。
@@ -223,7 +334,10 @@ struct WidgetSchedulePayload: Codable, Equatable {
     /// Widgets stay on the current date. A finished school day shows an empty
     /// state rather than rolling forward to a later day's classes.
     func currentDay(now: Date = WidgetClock.now) -> WidgetDay {
-        fullDay(for: Self.dateString(now), fallbackOffset: 0)
+        let date = Self.dateString(now)
+        // 放假、过期时今天是空的：哪怕数据里恰好有这一天（放假前写的最后一周），也不再列课。
+        if notice(now: now) != nil { return .empty(date: date, offset: 0) }
+        return fullDay(for: date, fallbackOffset: 0)
     }
 
     /// Today's classes that have not finished yet, at most two. With
@@ -252,6 +366,8 @@ struct WidgetSchedulePayload: Codable, Equatable {
 
     /// 今天之后三周之内第一个有课的日期；已同步的周次里找不到就是 `nil`。
     func nextCourseDay(after now: Date = WidgetClock.now) -> (day: WidgetDay, offset: Int)? {
+        // 放假、过期时显示假期或「打开 App 更新课表」，不往后找课。
+        guard notice(now: now) == nil else { return nil }
         for offset in 1...Self.lookaheadDays {
             guard let date = ChineseCalendarInfo.gregorian.date(byAdding: .day, value: offset, to: now),
                   let day = knownDay(for: Self.dateString(date)),
@@ -259,6 +375,24 @@ struct WidgetSchedulePayload: Codable, Equatable {
             return (day, offset)
         }
         return nil
+    }
+
+    /// 小组件下一次该刷新的时刻：今天剩下的课程边界里最近的一个（开始或下课）再往后一分钟；
+    /// 都过了（包括放假、课表过期时今天是空的）就是次日零点过一分钟。
+    func nextRefreshBoundary(now: Date) -> Date {
+        let today = currentDay(now: now)
+        let nowMinutes = Self.minutesSinceMidnight(now)
+        let startOfDay = ChineseCalendarInfo.gregorian.startOfDay(for: now)
+        // 开始边界要在现在之后（开始那一分钟已经算上课中）。下课那一分钟里课还算没结束
+        //（`remainingCourses` 用的是 `>=`），所以正在下课的这一分钟也要算，否则会漏掉这次刷新。
+        // 刷新排在边界后一分钟，边界不早于现在这一分钟，刷新时间就一定在将来，不会原地打转。
+        let starts = today.courseList.compactMap(\.startMinutes).filter { $0 > nowMinutes }
+        let ends = today.courseList.map(\.endMinutes).filter { $0 > 0 && $0 >= nowMinutes }
+        // 过了零点日期栏和课都要换成新的一天，不能等兜底的半小时。
+        guard let minutes = (starts + ends).min() else {
+            return startOfDay.addingTimeInterval(TimeInterval((24 * 60 + 1) * 60))
+        }
+        return startOfDay.addingTimeInterval(TimeInterval((minutes + 1) * 60))
     }
 
     static func dateString(_ date: Date) -> String {

@@ -219,12 +219,17 @@ struct ChineseCalendarChecks {
             nextWeekDays: nil
         )
         expect(quietWeek.nextCourseDay(after: afterSchool) == nil, "三周内都没课时返回 nil")
-        // 长假：下一节课在十三天以后也要找得到；隔了十五天就不找了
+        // 长假：下一节课在十三天以后也要找得到；隔了二十二天就不找了。
+        // 9.8、9.9 也要在数据里：数据里没有「今天」就是课表过期，不往后找课。
         let longBreak = WidgetSchedulePayload(
             title: nil, sourceLabel: nil, generatedAt: nil, semester: nil, currentWeek: 4,
             today: widgetDay(thursday, day: 4, week: 4, courses: []),
             days: nil,
-            weekDays: [widgetDay(thursday, day: 4, week: 4, courses: [])],
+            weekDays: [
+                widgetDay("2026-09-08", day: 2, week: 3, courses: []),
+                widgetDay("2026-09-09", day: 3, week: 3, courses: []),
+                widgetDay(thursday, day: 4, week: 4, courses: []),
+            ],
             nextWeekDays: [
                 widgetDay("2026-09-27", day: 7, week: 5, courses: []),
                 widgetDay("2026-09-30", day: 3, week: 6, courses: [course("假期后的课")]),

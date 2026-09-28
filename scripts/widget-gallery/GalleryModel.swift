@@ -167,6 +167,19 @@ struct GalleryScenario {
     var overrides: [Int: [WidgetCourse]] = [:]
     /// 按离「今天」的天数写调休说明。
     var notes: [Int: String] = [:]
+    /// 学期怎么放：默认 2026-08-31 起 20 周；也可以放在今天之外，看寒暑假和课表过期。
+    var term: GalleryTerm = .standard
+}
+
+enum GalleryTerm {
+    /// 第 1 周周一 `GalleryPayload.semesterStart`，20 周。
+    case standard
+    /// 学期（18 周）在这么多天前结束：寒暑假里、下学期开学日期不知道。
+    case endedDaysAgo(Int)
+    /// 学期（18 周）过这么多天开学：「距开学还有 N 天」。
+    case startsIn(Int)
+    /// 学期照常，但 App 五周前写的数据：今天不在里面，提示「打开 App 更新课表」。
+    case stale
 }
 
 enum GalleryScenarios {
@@ -221,6 +234,18 @@ enum GalleryScenarios {
         GalleryScenario(
             id: "adjustment", title: "调休上课日", detail: "今天补另一天的课，带调休说明",
             week: normalWeek, overrides: [0: normalWeek[4] ?? []], notes: [0: "上 10.9 周四的课"]
+        ),
+        GalleryScenario(
+            id: "vacation", title: "放假（学期已结束）", detail: "学期三周前结束；日期选 1 月下旬看寒假、7 月下旬看暑假",
+            week: normalWeek, term: .endedDaysAgo(21)
+        ),
+        GalleryScenario(
+            id: "beforeTerm", title: "放假（快开学）", detail: "9 天后开学，显示「距开学还有 9 天」",
+            week: normalWeek, term: .startsIn(9)
+        ),
+        GalleryScenario(
+            id: "stale", title: "课表过期", detail: "五周没打开 App，今天不在数据里",
+            week: normalWeek, term: .stale
         ),
     ]
 
@@ -297,7 +322,11 @@ enum GalleryPayload {
         // 下面按日期查节假日，要先换上放假安排。
         ChineseCalendarInfo.usePublishedHolidays(sampleHolidays)
         let calendar = GalleryTime.calendar
-        let today = calendar.startOfDay(for: now)
+        let realToday = calendar.startOfDay(for: now)
+        // 课表过期：数据是五周前写的，按那时的「今天」排。
+        let staleShift: Int
+        if case .stale = scenario.term { staleShift = -35 } else { staleShift = 0 }
+        let today = calendar.date(byAdding: .day, value: staleShift, to: realToday)!
         let weekday = calendar.component(.weekday, from: today)
         let mondayOffset = weekday == 1 ? -6 : 2 - weekday
         let monday = calendar.date(byAdding: .day, value: mondayOffset, to: today)!
@@ -329,6 +358,16 @@ enum GalleryPayload {
         let firstOffset = calendar.dateComponents([.day], from: today, to: monday).day ?? 0
         let weekDays = (0..<7).map { day(firstOffset + $0) }
         let later = (firstOffset + 7..<firstOffset + 7 + 21).map(day)
+        let term: (start: String, weeks: Int)
+        switch scenario.term {
+        case .standard, .stale:
+            term = (semesterStart, 20)
+        case .endedDaysAgo(let days):
+            let end = calendar.date(byAdding: .day, value: -days, to: realToday)!
+            term = (WidgetSchedulePayload.dateString(calendar.date(byAdding: .day, value: -(18 * 7 - 1), to: end)!), 18)
+        case .startsIn(let days):
+            term = (WidgetSchedulePayload.dateString(calendar.date(byAdding: .day, value: days, to: realToday)!), 18)
+        }
         let name = job.tableName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let source = job.sourceLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
         return WidgetSchedulePayload(
@@ -341,7 +380,9 @@ enum GalleryPayload {
             days: nil,
             weekDays: weekDays,
             nextWeekDays: later,
-            holidays: sampleHolidays
+            holidays: sampleHolidays,
+            termStart: term.start,
+            termWeeks: term.weeks
         )
     }
 }
