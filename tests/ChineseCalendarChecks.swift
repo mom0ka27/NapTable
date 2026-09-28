@@ -250,6 +250,46 @@ struct ChineseCalendarChecks {
         expect(restored.nextWeekDays == nil && restored.currentWeek == 4, "旧 payload 仍可解码")
         expect(restored.knownDay(for: monday) == nil, "旧 payload 查不到明天")
 
+        // MARK: 元旦跨年：服务端下发的 2026-12-31 ~ 2027-01-02 不能把 2026 年的元旦删掉
+
+        let crossYearNewYear = PublishedHoliday.fromOffDays(
+            [("2026-12-31", "元旦"), ("2027-01-01", "元旦"), ("2027-01-02", "元旦")]
+        )
+        ChineseCalendarInfo.usePublishedHolidays(crossYearNewYear)
+        expect(ChineseCalendarInfo.info(forDate: "2026-01-01")?.holiday == "元旦", "2026 年元旦还在")
+        expect(ChineseCalendarInfo.info(forDate: "2026-12-31")?.holiday == "元旦", "跨年元旦 12.31")
+        expect(ChineseCalendarInfo.info(forDate: "2027-01-02")?.holiday == "元旦", "跨年元旦 1.2")
+        expect(ChineseCalendarInfo.info(forDate: "2027-01-03")?.holiday == nil, "元旦放到 1.2")
+        ChineseCalendarInfo.usePublishedHolidays([])
+        expect(ChineseCalendarInfo.info(forDate: "2026-01-01")?.holiday == "元旦", "清空后本地推算的元旦还在")
+
+        // MARK: 清明
+
+        let qingming: [(String, Int)] = [
+            ("2008-04-04", 4), ("2016-04-04", 4), ("2020-04-04", 4), ("2024-04-04", 4),
+            ("2025-04-04", 4), ("2026-04-05", 5), ("2027-04-05", 5), ("2028-04-04", 4),
+            ("2029-04-04", 4), ("2030-04-05", 5),
+            // 旧的四年一轮只到 2043 年，2046 年起就错了一天
+            ("2046-04-04", 4), ("2050-04-04", 4),
+        ]
+        for (date, qingmingDay) in qingming {
+            expect(ChineseCalendarInfo.info(forDate: date)?.solarTerm == "清明", "\(date) 是清明")
+            expect(ChineseCalendarInfo.info(forDate: date)?.holiday == "清明节", "\(date) 清明放假")
+            let other = "\(date.prefix(4))-04-\(qingmingDay == 4 ? "05" : "04")"
+            expect(ChineseCalendarInfo.info(forDate: other)?.solarTerm == nil, "清明当天只有一天：\(other)")
+        }
+
+        // MARK: 换了放假安排，缓存跟着换（算到一半换安排时旧结果不写回，见 YearCache.version）
+
+        let midAutumn = ChineseCalendarInfo.date(fromDate: "2026-09-25")!
+        let beforeSwap = ChineseCalendarInfo.countdown(from: midAutumn, withinDays: 120)
+        expect(beforeSwap?.window.name == "中秋节", "本地推算的中秋在前")
+        ChineseCalendarInfo.usePublishedHolidays(
+            PublishedHoliday.fromOffDays([("2026-09-25", "国庆节")])
+        )
+        let afterSwap = ChineseCalendarInfo.countdown(from: midAutumn, withinDays: 120)
+        expect(afterSwap?.window.name == "国庆节", "换安排后不再拿旧结果：\(afterSwap?.window.name ?? "nil")")
+
         print("ok")
     }
 }
