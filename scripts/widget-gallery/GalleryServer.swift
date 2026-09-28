@@ -2,7 +2,8 @@ import Foundation
 import Network
 
 /// 极简 HTTP/1.1 服务，只给本机的网页和批量脚本用。模拟器和 Mac 共用网络，
-/// 浏览器直接访问 http://localhost:<port>。所有连接都在主队列上处理，渲染也在主线程。
+/// 浏览器直接访问 http://127.0.0.1:<port>。只监听回环地址，局域网里的其他机器连不上，
+/// 也不会因为响应带通配 CORS 头而被别的网页跨源读取。所有连接都在主队列上处理，渲染也在主线程。
 final class GalleryServer {
     struct Request {
         let method: String
@@ -34,7 +35,10 @@ final class GalleryServer {
     init(port: UInt16, handler: @escaping (Request) -> Response) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        let endpoint = NWEndpoint.Port(rawValue: port)!
+        // 只监听 127.0.0.1：模拟器和 Mac 都能访问，但局域网上的其他设备访问不到。
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: endpoint)
+        listener = try NWListener(using: parameters)
         self.handler = handler
     }
 
@@ -76,7 +80,6 @@ final class GalleryServer {
         var head = "HTTP/1.1 \(response.status) \(response.status == 200 ? "OK" : "Error")\r\n"
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
-        head += "Access-Control-Allow-Origin: *\r\n"
         head += "Cache-Control: no-store\r\n"
         for (key, value) in response.headers { head += "\(key): \(value)\r\n" }
         head += "Connection: close\r\n\r\n"

@@ -138,17 +138,17 @@ SIMCTL_CHILD_GALLERY_PORT="$port" xcrun simctl launch --terminate-running-proces
 
 echo -n "==> 等待画廊服务"
 for _ in $(seq 1 60); do
-    if curl -sf "http://localhost:$port/api/health" >/dev/null; then echo " 就绪"; break; fi
+    if curl -sf "http://127.0.0.1:$port/api/health" >/dev/null; then echo " 就绪"; break; fi
     echo -n "."; sleep 0.5
 done
-curl -sf "http://localhost:$port/api/health" >/dev/null || { echo; echo "画廊服务没起来" >&2; exit 1; }
+curl -sf "http://127.0.0.1:$port/api/health" >/dev/null || { echo; echo "画廊服务没起来" >&2; exit 1; }
 
 case "$mode" in
     open)
-        open "http://localhost:$port"
-        echo "网页：http://localhost:$port（模拟器在后台运行，用 --stop 关闭）" ;;
+        open "http://127.0.0.1:$port"
+        echo "网页：http://127.0.0.1:$port（模拟器在后台运行，用 --stop 关闭）" ;;
     serve)
-        echo "网页：http://localhost:$port" ;;
+        echo "网页：http://127.0.0.1:$port" ;;
     all)
-        python3 "$src_dir/batch.py" --server "http://localhost:$port" --out "$out_dir" "${batch_args[@]+"${batch_args[@]}"}" ;;
+        python3 "$src_dir/batch.py" --server "http://127.0.0.1:$port" --out "$out_dir" "${batch_args[@]+"${batch_args[@]}"}" ;;
 esac

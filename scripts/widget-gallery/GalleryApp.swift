@@ -12,7 +12,7 @@ struct WidgetGalleryApp: App {
         let port = UInt16(ProcessInfo.processInfo.environment["GALLERY_PORT"] ?? "") ?? 8765
         server = try? GalleryServer(port: port, handler: GalleryRoutes.handle)
         server?.start()
-        _status = State(initialValue: server == nil ? "端口 \(port) 启动失败" : "http://localhost:\(port)")
+        _status = State(initialValue: server == nil ? "端口 \(port) 启动失败" : "http://127.0.0.1:\(port)")
     }
 
     var body: some Scene {

@@ -60,7 +60,7 @@ def intents(kind, family):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--server", default="http://localhost:8765")
+    parser.add_argument("--server", default="http://127.0.0.1:8765")
     parser.add_argument("--out", required=True)
     parser.add_argument("--devices")
     parser.add_argument("--schemes")
