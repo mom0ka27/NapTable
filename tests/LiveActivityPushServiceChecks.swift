@@ -125,6 +125,8 @@ enum ScheduleServiceError: LocalizedError {
                     if unknownActivity, request.httpMethod == "PUT" { return response(request, ["error": "unknown or finished occurrence"], status: 404) }
                     return response(request, ["pending": 3])
                 }
+                // Switching off at the end forgets the device.
+                if request.httpMethod == "DELETE" { return response(request, ["forgotten": true]) }
                 fatalError("unexpected request \(request.httpMethod!) \(path)")
             }
         func makeService(_ controller: NativeLiveActivityController) -> LiveActivityPushService {

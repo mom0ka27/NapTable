@@ -368,6 +368,28 @@ class ScheduledTests(unittest.TestCase):
         self.service.follow_shares()
         self.assertEqual(shared(), [False])
 
+    def test_the_phone_learns_each_final_periods_channel(self):
+        self.assertEqual(self.upload()['channels'], {}, 'no channel is ready before maintenance')
+        self.service.maintain_channels()
+        channels = self.service.claim(self.id, {"slots": 0})['channels']
+        self.assertEqual(sorted(channels), ["1", "2", "3", "4"])
+        ready = dict(self.db.execute("SELECT final_period,channel FROM la_channels").fetchall())
+        self.assertEqual(channels, {str(period): channel for period, channel in ready.items()})
+        self.assertEqual(self.upload(revision=2, settings={"leadMinutes": 15})['channels'], channels)
+        self.share()
+        self.assertEqual(self.upload(revision=3, follow={"share": "SHARE1"})['channels'], {}, 'a followed share runs on tokens')
+
+    def test_a_missed_end_bell_still_goes_out(self):
+        self.upload()
+        self.service.maintain_channels()
+        self.clock = at("09:49")
+        self.service.plan_broadcasts()
+        self.clock = at("09:50") + 3000
+        self.service.dispatch_broadcasts()
+        events = [payload['aps']['event'] for _, payload, _ in self.client.broadcasts]
+        self.assertIn('end', events, 'the end of the last class, an hour late')
+        self.assertNotIn('update', events, 'a missed bell is not replayed')
+
     def test_nightly_drops_settled_broadcasts_after_three_days(self):
         old, recent = self.clock - 4 * 86400, self.clock - 86400
         self.db.executemany("INSERT INTO la_v2_broadcasts(channel_key,day,fire_at,payload,state) VALUES(?,?,?,?,?)", [
@@ -467,6 +489,35 @@ class RedrawTests(unittest.TestCase):
         self.assertEqual(self.client.starts[-1][1]['aps']['dismissal-date'], at("10:30"))
         self.assertNotIn((self.id, self.occurrence), self.service.redraws, 'done once the end went')
 
+    def test_an_activity_started_on_entry_is_ended_by_the_server(self):
+        self.upload()
+        self.clock = at("07:40")
+        local = "foreground:math:" + str(float(at("08:00")))
+        for bad in ({"token": self.token}, {"token": self.token, "end": at("07:39")}, {"token": self.token, "end": at("16:00")},
+                    {"token": self.token, "end": "08:50"}):
+            with self.assertRaises(ProtocolError) as error:
+                self.service.register_token(self.id, local, bad)
+            self.assertEqual(error.exception.status, 400)
+        with self.assertRaises(ProtocolError):
+            self.service.register_token(self.id, self.jobs()[0]['occurrence'], {"token": self.token, "end": at("08:50")})
+        self.service.register_token(self.id, local, {"token": self.token, "end": at("08:50")})
+        self.assertEqual(self.service.redraws[(self.id, local)].stamps[-1], at("08:50"))
+        self.service = self.restart()
+        self.service.load()
+        self.clock = at("08:50")
+        self.service.dispatch_token_updates()
+        self.assertEqual(self.client.starts[-1][1]['aps']['event'], 'end')
+        self.assertEqual(self.client.starts[-1][1]['aps']['dismissal-date'], at("08:50"))
+        self.assertNotIn((self.id, local), self.service.redraws)
+
+    def test_a_late_end_is_still_sent(self):
+        self.started()
+        self.clock = at("10:30") + 3600
+        self.service = self.restart()
+        self.service.load()
+        self.service.dispatch_token_updates()
+        self.assertEqual(self.sent()[-1], (at("10:30"), 'end', False))
+
     def test_offline_through_refreshes_sends_the_newest_only(self):
         self.started()
         self.clock = at("09:40")
@@ -477,7 +528,7 @@ class RedrawTests(unittest.TestCase):
 
     def test_an_end_long_past_is_not_sent(self):
         self.started()
-        self.clock = at("10:30") + 61
+        self.clock = at("10:30") + 8 * 3600 + 61
         self.service.dispatch_token_updates()
         self.assertEqual(self.client.starts, [])
         self.assertEqual(self.service.redraws, {})

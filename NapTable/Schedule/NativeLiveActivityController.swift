@@ -43,6 +43,7 @@ final class NativeLiveActivityController: ObservableObject {
     @Published private(set) var coverage = "尚未安排"
     @Published private(set) var conflicts: [LiveActivityTimeline.Conflict] = []
     @Published private(set) var omitted = 0
+    @Published private(set) var dismissedOccurrence: String?
     /// Asks the system to wake the app around an instant (see `LiveActivityBackgroundRefresh`).
     var scheduleBackgroundWakeup: ((Date) -> Void)?
     /// The timetable or a setting changed: the push service uploads it again.
@@ -58,6 +59,7 @@ final class NativeLiveActivityController: ObservableObject {
     private var task: Task<Void, Never>?
     private var retirementTask: Task<Void, Never>?
     private var epoch = 0
+    private var isForeground = false
     private let now: () -> Date
     private let privacyDefaults: UserDefaults
     private let defaults: UserDefaults
@@ -71,6 +73,10 @@ final class NativeLiveActivityController: ObservableObject {
     /// Ends the preview state when the preview activity goes away on its own
     /// (it runs out, or is swiped away on the Lock Screen).
     private var previewObserver: Task<Void, Never>?
+    private var dismissalObservers: [String: Task<Void, Never>] = [:]
+    private let dismissalDefaults = UserDefaults.standard
+    private static let hadActivityKey = "naptable.liveActivity.hadActivity"
+    private static let channelsKey = "naptable.liveActivity.v2.channels"
 
     init(now: @escaping () -> Date = { .now }, privacyDefaults: UserDefaults = .standard) {
         self.privacyDefaults = privacyDefaults
@@ -177,11 +183,30 @@ final class NativeLiveActivityController: ObservableObject {
             activity.activityState != .ended && activity.activityState != .dismissed && activity.attributes.scheduleScope == scope {
             guard let id = activity.attributes.occurrenceId, (activity.attributes.reservationEnd ?? .distantPast) > now(), !live.contains(id) else { continue }
             live.insert(id)
-            if let token = activityTokens[activity.id] { registrations.append(.init(occurrenceId: id, token: token)) }
+            if let token = activityTokens[activity.id] {
+                // Not in the server's plan: it has to be told when to end it.
+                let local = id.hasPrefix("foreground:") ? activity.attributes.reservationEnd?.timeIntervalSince1970 : nil
+                registrations.append(.init(occurrenceId: id, token: token, end: local))
+            }
         }
         return (registrations, live)
     }
     func observeTokens(of activity: Activity<ScheduleLiveActivityAttributes>) {
+        // A delayed push can arrive after the foreground fallback. Retire
+        // the fallback once the server-backed activity is actually running.
+        if activity.attributes.occurrenceId?.hasPrefix("foreground:") != true,
+           activity.activityState == .active || activity.activityState == .stale {
+            let fallbacks = courseActivities.filter {
+                $0.attributes.occurrenceId?.hasPrefix("foreground:") == true &&
+                $0.attributes.scheduleScope == activity.attributes.scheduleScope &&
+                $0.attributes.dateKey == activity.attributes.dateKey &&
+                ($0.attributes.reservationStart ?? .distantFuture) < (activity.attributes.reservationEnd ?? .distantPast) &&
+                ($0.attributes.reservationEnd ?? .distantPast) > (activity.attributes.reservationStart ?? .distantFuture)
+            }
+            if !fallbacks.isEmpty {
+                Task { for fallback in fallbacks { await fallback.end(nil, dismissalPolicy: .immediate) } }
+            }
+        }
         guard activity.attributes.pushMode == "token", tokenObservers[activity.id] == nil else { return }
         let id = activity.id
         tokenObservers[id] = Task { [weak self] in
@@ -213,7 +238,69 @@ final class NativeLiveActivityController: ObservableObject {
     private func staleDate(_ attributes: ScheduleLiveActivityAttributes, in display: LiveActivityDisplaySnapshot?) -> Date? {
         display?.nextChange(attributes: attributes, after: now()) ?? attributes.reservationEnd
     }
-    func foreground() { if !isPreviewActive { rebuild() } }
+    func foreground() {
+        isForeground = true
+        observeDismissals()
+        detectMissingActivityAfterRelauch()
+        if !isPreviewActive { rebuild() }
+    }
+    /// A force-quit removes the process observers, so no `.dismissed` event is
+    /// delivered. Persist that an activity existed and check its current
+    /// course window when the app returns to the foreground.
+    private func detectMissingActivityAfterRelauch() {
+        guard isEnabled, !isPreviewActive,
+              dismissalDefaults.bool(forKey: Self.hadActivityKey),
+              let display, let occurrence = display.occurrences.first(where: {
+                  $0.reminder <= now().timeIntervalSince1970 && now().timeIntervalSince1970 < $0.end
+              }),
+              !courseActivities.contains(where: {
+                  $0.attributes.scheduleScope == display.scope &&
+                  $0.attributes.dateKey == occurrence.dateKey &&
+                  ($0.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
+                  ($0.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) > occurrence.start
+              }),
+              !dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress.all"),
+              !dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress." + occurrence.sourceID) else { return }
+        dismissedOccurrence = "foreground:" + occurrence.sourceID + ":" + String(occurrence.start)
+    }
+    func clearDismissalNotice() { dismissedOccurrence = nil }
+    /// Channel mode: the server's broadcast channel of each final period of the
+    /// table `scope`, so an activity started on entry follows the school's bells.
+    /// Empty in token mode (a followed share, or bells the school does not have).
+    func setBroadcastChannels(_ channels: [String: String], scope: String) {
+        defaults.set(["scope": scope, "channels": channels] as [String: Any], forKey: Self.channelsKey)
+    }
+    /// The channel ending with the period that ends `occurrence`, when the table shown has them.
+    private func broadcastChannel(for occurrence: LiveActivityOccurrence, in display: LiveActivityDisplaySnapshot) -> String? {
+        guard let stored = defaults.dictionary(forKey: Self.channelsKey), stored["scope"] as? String == display.scope,
+              let channels = stored["channels"] as? [String: String], let snapshot = currentScheduleMetadata,
+              let zone = TimeZone(identifier: snapshot.timeZone ?? TimeZone.current.identifier),
+              let period = snapshot.periods.first(where: {
+                  LiveActivityTimeline.instant(day: occurrence.dateKey, clock: $0.endTime, zone: zone) == occurrence.end
+              }) else { return nil }
+        return channels[String(period.number)]
+    }
+    func suppressDismissal(for occurrenceID: String, permanently: Bool) {
+        let key = occurrenceID.split(separator: ":").dropFirst().first.map(String.init) ?? occurrenceID
+        dismissalDefaults.set(true, forKey: "naptable.liveActivity.suppress." + key)
+        if permanently { dismissalDefaults.set(true, forKey: "naptable.liveActivity.suppress.all") }
+        dismissedOccurrence = nil
+    }
+    private func observeDismissals() {
+        for activity in courseActivities where dismissalObservers[activity.id] == nil {
+            let id = activity.id
+            dismissalObservers[id] = Task { [weak self] in
+                for await state in activity.activityStateUpdates where state == .dismissed {
+                    guard let self, let occurrence = activity.attributes.occurrenceId,
+                          !self.dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress.all"),
+                          !self.dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress." + occurrence) else { return }
+                    self.dismissedOccurrence = occurrence
+                }
+                self?.dismissalObservers[id] = nil
+            }
+        }
+    }
+    func leaveForeground() { isForeground = false }
     func refreshForThemeChange() { rebuild() }
     func reset() {
         currentScheduleMetadata = nil
@@ -254,6 +341,42 @@ final class NativeLiveActivityController: ObservableObject {
         }
         observeTokenActivities()
         defer { announceTokens() }
+        guard valid(generation) else { return }
+        if isForeground {
+            let instant = now()
+            for occurrence in display.occurrences where occurrence.reminder <= instant.timeIntervalSince1970 && instant.timeIntervalSince1970 < occurrence.end {
+                // A server activity (including a reservation) already covering
+                // this course takes precedence over a foreground fallback.
+                guard !courseActivities.contains(where: {
+                    $0.attributes.scheduleScope == display.scope && $0.attributes.dateKey == occurrence.dateKey &&
+                    ($0.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
+                    ($0.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) > occurrence.start
+                }), let state = occurrence.state(at: instant) else { continue }
+                // The server ends it on time, the process may be long gone by then:
+                // on the school's bells like its own activities, else by its token.
+                let channel = broadcastChannel(for: occurrence, in: display)
+                let attributes = ScheduleLiveActivityAttributes(
+                    semester: currentScheduleMetadata?.data?.currentSemester ?? "", dateKey: occurrence.dateKey,
+                    protocolVersion: 2, scheduleScope: display.scope,
+                    occurrenceId: "foreground:" + occurrence.sourceID + ":" + String(occurrence.start),
+                    reservationStart: Date(timeIntervalSince1970: occurrence.start),
+                    reservationEnd: Date(timeIntervalSince1970: occurrence.end),
+                    broadcastChannel: channel,
+                    reminderDate: Date(timeIntervalSince1970: occurrence.reminder), pushMode: channel == nil ? "token" : nil)
+                do {
+                    let activity = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes,
+                        content: ActivityContent(state: state, staleDate: staleDate(attributes, in: display)),
+                        pushType: channel.map { .channel($0) } ?? .token)
+                    observeTokens(of: activity)
+                    dismissalDefaults.set(true, forKey: Self.hadActivityKey)
+                } catch {
+                    status = Self.isCapacityError(error)
+                        ? .limited("系统暂无可用的实时活动名额，请稍后重试。")
+                        : .failed("实时通知没能启动，请稍后重新进入 App 重试。")
+                    return
+                }
+            }
+        }
         let running = courseActivities.filter { $0.activityState == .active || $0.activityState == .stale }
         for activity in running {
             if let state = display.resolve(attributes: activity.attributes, at: now()) {
@@ -314,6 +437,7 @@ final class NativeLiveActivityController: ObservableObject {
                 _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: claim.end)),
                     pushType: pushType, style: .standard, alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default),
                     start: Date(timeIntervalSince1970: claim.reminder))
+                dismissalDefaults.set(true, forKey: Self.hadActivityKey)
             } catch {
                 release.append(claim.occurrenceId)
                 if Self.isCapacityError(error) { quotaReached = true } else { failure = "部分提醒暂时没能安排，稍后会自动重试。" }
@@ -413,5 +537,7 @@ final class NativeLiveActivityController: ObservableObject {
 nonisolated struct LiveActivityTokenRegistration: Equatable {
     var occurrenceId: String
     var token: String
+    /// The end of an activity the app started on entry, which the server has no plan for.
+    var end: Double? = nil
 }
 #endif

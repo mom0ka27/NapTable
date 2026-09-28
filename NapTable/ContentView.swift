@@ -16,6 +16,8 @@ struct ContentView: View {
     @StateObject private var themeSettings = NativeThemeSettings.shared
     @State private var showImport = false
     @State private var showSettings = false
+    @State private var showLiveActivityDismissal = false
+    @State private var dismissalOccurrence = ""
 
     var body: some View {
         Group {
@@ -50,15 +52,38 @@ struct ContentView: View {
             syncCompanionFeatures()
             if store.tables.isEmpty { showImport = true }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            #if os(iOS)
+            if phase == .active {
+                NativeLiveActivityController.shared.foreground()
+            } else {
+                NativeLiveActivityController.shared.leaveForeground()
+            }
+            #endif
             guard phase == .active else { return }
             // A followed share lives on the server, so the companion surfaces
             // can go stale while the app sits in the background. The refresh
             // is a small meta request unless the share actually moved.
             Task { await ScheduleSharingService.shared.refreshFollowed() }
-            #if os(iOS)
-            NativeLiveActivityController.shared.foreground()
-            #endif
+        }
+        .onReceive(NativeLiveActivityController.shared.$dismissedOccurrence) { occurrence in
+            guard let occurrence else { return }
+            dismissalOccurrence = occurrence
+            showLiveActivityDismissal = true
+        }
+        .alert("实时通知似乎被关闭了", isPresented: $showLiveActivityDismissal) {
+            Button("永不提醒") {
+                NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: true)
+            }
+            Button("本节课不再提醒") {
+                NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: false)
+            }
+            Button("继续提醒") {
+                NativeLiveActivityController.shared.clearDismissalNotice()
+                NativeLiveActivityController.shared.foreground()
+            }
+        } message: {
+            Text("实时通知可以在锁定屏幕上显示课程进度。需要我在课程提醒时再次为你打开吗？")
         }
     }
 

@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS la_v2_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 DEAD_TOKEN_REASONS = ('BadDeviceToken', 'Unregistered', 'ExpiredToken', 'DeviceTokenNotForTopic')
 # Refusals of the provider token, not of the notification: the client signs a
 # new token, and the push is worth trying again.
+# An end is still worth sending this late: the system keeps an activity for
+# at most 8 hours, and a late end only takes it off the screen sooner.
+END_GRACE = 8 * 3600
 PUSH_RETRY = frozenset((403, reason) for reason in ('ExpiredProviderToken', 'InvalidProviderToken'))
 
 # Ledger states: `local` is the phone's own reservation. Every other state is a
@@ -195,7 +198,7 @@ class Service:
                 self._rebuild(db, device)
         with self.lock:
             now = self.now()
-            for row in self.db.execute("SELECT device,occurrence,day,end_at FROM la_activity_tokens WHERE end_at>?", (now - 60,)).fetchall():
+            for row in self.db.execute("SELECT device,occurrence,day,end_at FROM la_activity_tokens WHERE end_at>?", (now - END_GRACE,)).fetchall():
                 found = self._find(row['device'], row['occurrence'])
                 # An activity whose course changed after it started: only its end is known.
                 item = found[1] if found else Occurrence(row['occurrence'], 0, row['end_at'], (), ())
@@ -453,6 +456,7 @@ class Service:
             stored = db.execute("SELECT * FROM la_timetables WHERE device=?", (device,)).fetchone()
             _, own, share, _, _ = self._tables(db, stored)
             taken = {row[0] for row in db.execute("SELECT occurrence FROM la_starts WHERE device=?", (device,))}
+            channels = self._channels(db, row, stored)
         with self.lock:
             pending = len(self._pending(device, taken, now))
         # The rest of the term only feeds the settings page: computed outside the write lock.
@@ -460,7 +464,7 @@ class Service:
         found, omitted = schedule_engine.conflicts_between(device, first, min((share or own).last_day(), first + timedelta(days=200)),
                                                            own, share, body['settings'], body['conflicts'], now)
         return {"revision": revision, "pushMode": stored['push_mode'], "following": bool(stored['follow_scope']),
-                "conflicts": found, "omitted": omitted, "pendingCount": pending}
+                "conflicts": found, "omitted": omitted, "pendingCount": pending, "channels": channels}
 
     def _payload(self, occurrence, stored, texts, scope, channel):
         """The start push, built when it is sent or claimed: the plan keeps its times only."""
@@ -527,6 +531,15 @@ class Service:
         key = self.key(owner['bundle'], owner['environment'], stored['school'], 'default', stored['version'], occurrence['lastPeriod'])
         row = db.execute("SELECT channel FROM la_channels WHERE logical_key=? AND state='ready'", (key,)).fetchone()
         return key, row['channel'] if row else None
+
+    def _channels(self, db, owner, stored):
+        """Channel mode: the ready channel of each final period, `{"3": id}`.
+        An activity the app starts itself subscribes by the period it ends in."""
+        if stored is None or stored['push_mode'] == 'token':
+            return {}
+        rows = db.execute("SELECT final_period,channel FROM la_channels WHERE bundle=? AND environment=? AND school=? AND schedule='default' AND version=? AND state='ready' AND channel!=''",
+                          (owner['bundle'], owner['environment'], stored['school'], stored['version'])).fetchall()
+        return {str(row['final_period']): row['channel'] for row in rows}
 
     def _find(self, device, occurrence):
         """(day, Occurrence) of an occurrence in the plan, or None."""
@@ -636,7 +649,8 @@ class Service:
                                 "start": occurrence['start'], "end": occurrence['end'], "pushMode": stored['push_mode'],
                                 "scheduleScope": scope, "scheduleVersion": stored['version'], "channel": channel,
                                 "shared": attributes.get('shared', [])})
-        return {"claims": claimed}
+            channels = self._channels(db, owner, source[0] if source else None)
+        return {"claims": claimed, "channels": channels}
 
     def release(self, device, occurrence):
         """A reservation the phone could not make goes back to the server."""
@@ -649,18 +663,30 @@ class Service:
 
     def register_token(self, device, occurrence, value):
         """Token mode: the phone sends the activity's token only; the refresh
-        instants come from the schedule."""
+        instants come from the schedule.
+
+        An activity the app started itself on entry (id `foreground:…`) is not
+        in the plan: it names its own end, so the server can still end it."""
         occurrence = identifier(occurrence)
         token = value.get("token")
-        if set(value) != {"token"} or not isinstance(token, str) or not 16 <= len(token) <= 512 or any(c not in "0123456789abcdefABCDEF" for c in token):
+        local = occurrence.startswith("foreground:")
+        end = value.get("end")
+        if set(value) != ({"token", "end"} if local else {"token"}) or not isinstance(token, str) or not 16 <= len(token) <= 512 or any(c not in "0123456789abcdefABCDEF" for c in token):
             raise ProtocolError("invalid activity push token")
-        sealed = self.vault.seal(token)
         now = self.now()
+        if local and (type(end) not in (int, float) or not now < end <= now + 8 * 3600):
+            raise ProtocolError("invalid activity end")
+        sealed = self.vault.seal(token)
         with self.transaction() as db:
             if db.execute("SELECT revoked FROM la_v2_devices WHERE id=?", (device,)).fetchone()['revoked']:
                 raise ProtocolError("device revoked", 409)
-            found = self._find(device, occurrence)
-            if found is None:
+            found = None if local else self._find(device, occurrence)
+            if local:
+                # The server's own occurrence of that class, when it has one, lends its refreshes.
+                same = [(day, item) for day, items in self.plans.get(device, {}).items() for item in items if item.fire_at <= now and item.end == end]
+                day, item = same[0] if same else (schedule_engine.today(now), Occurrence(occurrence, now, end, (), ()))
+                found = (day, item._replace(id=occurrence))
+            elif found is None:
                 # Its course changed after it started: the activity keeps running to its end.
                 row = db.execute("SELECT day,fire_at,expires_at FROM la_starts WHERE device=? AND occurrence=? AND state!='local'", (device, occurrence)).fetchone()
                 found = (date.fromisoformat(row['day']), Occurrence(occurrence, row['fire_at'], row['expires_at'], (), ())) if row else None
@@ -915,7 +941,9 @@ class Service:
             return
         now = self.now()
         with self.transaction() as db:
-            db.execute("UPDATE la_v2_broadcasts SET state='expired' WHERE state='pending' AND fire_at<?", (now - 60,))
+            # A missed bell is dropped; a missed end still goes, or the activity stays up.
+            db.execute("UPDATE la_v2_broadcasts SET state='expired' WHERE state='pending' AND fire_at<? AND (fire_at<? OR payload NOT LIKE '%\"event\":\"end\"%')",
+                       (now - 60, now - END_GRACE))
             rows = db.execute("SELECT b.*,c.channel,c.environment,c.bundle,v.definition FROM la_v2_broadcasts b JOIN la_channels c ON b.channel_key=c.logical_key JOIN la_schedule_versions v ON c.bundle=v.bundle AND c.environment=v.environment AND c.school=v.school AND c.schedule=v.schedule AND c.version=v.version WHERE b.state='pending' AND b.fire_at<=? AND b.next_attempt<=? AND c.bundle=? ORDER BY b.fire_at DESC LIMIT 200", (now, now, self.client.bundle_id)).fetchall()
         claimed = []
         for row in rows:
@@ -972,7 +1000,8 @@ class Service:
                     continue
                 stamp = past[-1]
                 last = stamp == redraws.stamps[-1]
-                expires = stamp + 60 if last else redraws.stamps[redraws.stamps.index(stamp) + 1]
+                # An end sent late still takes the activity off the screen.
+                expires = max(stamp + 60, min(now + 60, stamp + END_GRACE)) if last else redraws.stamps[redraws.stamps.index(stamp) + 1]
                 if expires <= now:
                     self.redraws.pop(activity)
                     continue

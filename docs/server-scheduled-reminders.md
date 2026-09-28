@@ -50,7 +50,7 @@
 - 所有日期和时刻一律按 UTC+8 解释，上传内容不带时区。
 - 服务端只挑出上面列出的字段，规范化后保存；不认识的字段直接忽略、不会存下来（客户端多带了课程名也不会落库），新客户端加字段也不会让旧服务端拒收。仍然检查取值：节次必须有序且不重叠，课的节次不能超出节次表，提前量只能是 15 / 30 / 60，课程数、周数、调休条数都有上限，不合法返回 400。`revision` 和摘要都按规范化后的内容计算。
 - `revision` 必须单调递增：旧 revision 返回 409；同一 revision 内容相同则幂等。
-- 响应为 `{revision, pushMode, following, conflicts, omitted, pendingCount}`：`conflicts` 是从今天到学期末（最多 200 天）主导课表的节次冲突，每项 `{id: "日期:节次", date, period, choices: [课程 ID]}`，已选择的也列出；`omitted` 是超过 8 小时等无法排程的次数。
+- 响应为 `{revision, pushMode, following, conflicts, omitted, pendingCount, channels}`：`channels` 在公共广播模式下给出每个结束节次已就绪的频道 `{"节次": 频道 ID}`（令牌模式为空），`POST /claims` 的响应同样带它；`conflicts` 是从今天到学期末（最多 200 天）主导课表的节次冲突，每项 `{id: "日期:节次", date, period, choices: [课程 ID]}`，已选择的也列出；`omitted` 是超过 8 小时等无法排程的次数。
 - `pushMode`：不关心共享课表、带了 `schoolID`，并且上传的节次与这所学校当前的作息完全一致时为 `channel`（订阅学校频道，上下课由公共广播刷新）；其余一律 `token`。
 
 ## 4. 服务端排程
@@ -112,7 +112,7 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 - `starts` 循环每秒从到期堆弹出最多 100 条，逐条核对（见 §4.2）、写入 `submitting`、现拼启动推送后批量发送。频道还没建好、设备没有启动令牌时隔 5 秒再试。频道模式写入 `input-push-channel`，令牌模式写入 `input-push-token: 1`。（一批满额时立即继续下一批：尚未实现。）
 - 启动推送不带 frames。自己的课什么都不带：attributes 里已有这个活动的起止时刻（`reservationStart` / `reservationEnd`）和提醒时刻，小组件从本地课表找出这段时间里自己的课，按当前时刻和 §4.1 的规则现算画面。
 - 对方的课：attributes 新增 `shared`，列出这个活动里对方的每节课 `{course, first, last, start, end, name, teacher, location}`（取自服务端的分享快照），手机上的分享快照过时也能正确显示。推送超过 3900 字节时先去掉文字，再去掉整个列表；一般远小于上限（两张课表各三门课串成一长串、分节计时，整条推送约 1.2 KB；原先带 frames 时 frames 就有 7.8 KB，会被 APNs 拒收）。
-- 令牌模式的刷新时刻和提醒时刻（`refreshAt` / `alertAt`）由服务端根据 frames 计算。客户端只需上传令牌：`PUT /devices/{id}/activities/{occurrenceId}` 的请求体为 `{"token": "…"}`。刷新在内存里排队：同一活动只发最新到期的一次，已经处理过的时刻不再发；可以重试的失败按 10、20、40、60 秒退避，直到下一次刷新取代它；令牌失效（410 等）时删除令牌、停止刷新。服务端重启后，按令牌表和重建的计划恢复队列，先补发一次当前画面，再按剩下的时刻继续。已经启动的活动遇到重建时，保留启动记录，但尚未发送的刷新按新的 frames 重排。
+- 令牌模式的刷新时刻和提醒时刻（`refreshAt` / `alertAt`）由服务端根据 frames 计算。客户端只需上传令牌：`PUT /devices/{id}/activities/{occurrenceId}` 的请求体为 `{"token": "…"}`。进入 App 时本地补启动的活动（`occurrenceId` 以 `foreground:` 开头）不在服务端计划里：公共广播模式下它按 `channels` 订阅自己最后一节的频道；令牌模式下请求体为 `{"token": "…", "end": 结束时刻}`（须在 8 小时内），服务端到点发送 end，计划里有同一结束时刻的那次提醒时沿用它的刷新时刻。end（令牌 end 与频道的最后一节下课广播）晚发也照发，最多晚 8 小时；普通刷新晚过 60 秒即放弃。刷新在内存里排队：同一活动只发最新到期的一次，已经处理过的时刻不再发；可以重试的失败按 10、20、40、60 秒退避，直到下一次刷新取代它；令牌失效（410 等）时删除令牌、停止刷新。服务端重启后，按令牌表和重建的计划恢复队列，先补发一次当前画面，再按剩下的时刻继续。已经启动的活动遇到重建时，保留启动记录，但尚未发送的刷新按新的 frames 重排。
 - 频道承诺：上传时续到 8 天后；夜间任务为所有走频道的设备所用的作息版本再续到 8 天后，不再依赖客户端请求凭证。
 
 ## 5. 客户端
@@ -130,7 +130,7 @@ frames 中的 `lead` 与 `companion` 结构相同：`{table, course, day, phase,
 | PUT | `/devices/{id}/timetable` | 新增，取代 `PUT /devices/{id}/plan` |
 | POST | `/devices/{id}/claims` | 新增：按名额认领最近几节并返回预约所需内容，取代 `local-handoff` / `remote-resume` / `foreground-recovery` |
 | DELETE | `/devices/{id}/claims/{occurrenceId}` | 新增：交还预约失败的课 |
-| PUT | `/devices/{id}/activities/{occurrenceId}` | 请求体只剩 `token` |
+| PUT | `/devices/{id}/activities/{occurrenceId}` | 请求体只剩 `token`；`foreground:` 活动另带 `end` |
 | DELETE | `/devices/{id}/activities/{occurrenceId}` | 不变 |
 | GET | `/devices/{id}` | 另外返回 `timetableRevision`、`pushMode`、`following` |
 | DELETE | `/devices/{id}` | 不变，同时删除课表和关注关系 |

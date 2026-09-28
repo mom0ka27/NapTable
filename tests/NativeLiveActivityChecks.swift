@@ -208,6 +208,7 @@ struct NativeLiveActivityChecks {
         precondition(announcements == 2 && follower.tokenRegistrations().registrations == [.init(occurrenceId: "server-id", token: "abcd01")])
         follower.foreground(); await settle()
         precondition(announcements == 2, "An unchanged rebuild announces nothing")
+        follower.leaveForeground()
         follower.accept(fixture(), own: nil); await settle()
         precondition(remote.activityState == .ended && announcements == 3, "Another table ends the share's activity and withdraws its token")
 
@@ -278,6 +279,61 @@ struct NativeLiveActivityChecks {
         precondition(running.activityState == .active, "The first timetable after launch must not end the class being shown")
         precondition(foreign.activityState == .ended, "Another table's activity is retired by its scope")
         cold.setEnabled(false); await settle()
+
+        // MARK: Entering the app starts the current reminder without a push
+        var foregroundTime = now
+        let entering = NativeLiveActivityController(now: { foregroundTime }, privacyDefaults: defaults)
+        entering.setEnabled(true)
+        entering.foreground() // The scene can become active before the timetable loads.
+        entering.accept(snapshot); await settle()
+        precondition(live.count == 1 && live[0].content.state.phase == .upcoming)
+        precondition(live[0].pushType == .token && live[0].attributes.pushMode == "token", "The entry reminder takes pushes so the server can end it")
+        live[0].deliverPushToken(Data([0xab, 0xcd])); await settle()
+        let entryID = live[0].attributes.occurrenceId ?? ""
+        precondition(entering.tokenRegistrations().registrations.contains(.init(occurrenceId: entryID, token: "abcd", end: first.end)),
+                     "The entry reminder's token goes up with its end")
+        let localID = live[0].id
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].id == localID, "Repeated entry does not duplicate the reminder")
+        live[0].dismiss(); await settle()
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].id != localID, "Entry restores a dismissed reminder")
+        let fallback = live[0]
+        let delayed = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: matching, content: .init(state: first.frames[0].state, staleDate: nil))
+        entering.observeTokens(of: delayed); await settle()
+        precondition(fallback.activityState == .ended && live.count == 1, "A delayed push replaces the local fallback")
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].id == delayed.id, "An existing remote reminder is reused")
+        delayed.dismiss(); await settle()
+        entering.leaveForeground()
+        entering.accept(snapshot); await settle()
+        precondition(live.isEmpty, "Background refresh must not start a foreground reminder")
+        foregroundTime = Date(timeIntervalSince1970: first.start + 60)
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].content.state.phase == .inProgress)
+        entering.setEnabled(false); await settle()
+        entering.foreground(); await settle()
+        precondition(live.isEmpty, "Entry respects the disabled switch")
+        foregroundTime = Date(timeIntervalSince1970: first.reminder - 60)
+        entering.setEnabled(true); await settle()
+        precondition(live.isEmpty, "Do not start before the configured reminder time")
+        foregroundTime = Date(timeIntervalSince1970: first.end)
+        entering.foreground(); await settle()
+        precondition(live.isEmpty, "Do not revive a finished class")
+        // Channel mode: the entry reminder listens to the bell ending its last period.
+        foregroundTime = now
+        entering.setBroadcastChannels(["2": "bell-2", "4": "bell-4"], scope: "other")
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].pushType == .token, "Another table's channels are not used")
+        live[0].dismiss(); await settle()
+        entering.setBroadcastChannels(["2": "bell-2", "4": "bell-4"], scope: snapshot.scheduleScope!)
+        entering.foreground(); await settle()
+        precondition(live.count == 1 && live[0].pushType == .channel("bell-2") && live[0].attributes.broadcastChannel == "bell-2"
+                     && live[0].attributes.pushMode == nil, "The school's bell ends the entry reminder")
+        precondition(!entering.tokenRegistrations().live.contains(live[0].attributes.occurrenceId ?? ""), "A channel activity has no token to upload")
+        live[0].dismiss(); await settle()
+        entering.setBroadcastChannels([:], scope: snapshot.scheduleScope!)
+        entering.setEnabled(false); await settle()
         print("Live Activity v2 Swift checks passed")
     }
     @MainActor static var live: [Activity<ScheduleLiveActivityAttributes>] {

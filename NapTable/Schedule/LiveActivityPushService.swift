@@ -269,7 +269,13 @@ final class LiveActivityPushService: ObservableObject {
         if code == 404, timetable["follow"] != nil { throw ScheduleServiceError.server("关注的共享课表已失效，请重新关注。") }
         guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
         uploadedDigest = digest
+        acceptChannels(response)
         return response["pendingCount"] as? Int
+    }
+    /// The school's channels the server names for the table just synced; none in token mode.
+    private func acceptChannels(_ response: [String: Any]) {
+        guard let scope = controller.currentScheduleMetadata?.scheduleScope else { return }
+        controller.setBroadcastChannels(response["channels"] as? [String: String] ?? [:], scope: scope)
     }
     /// iOS 26: claims as many of the nearest reminders as there are free
     /// reservation slots, reserves them, and gives back what could not be reserved.
@@ -278,6 +284,7 @@ final class LiveActivityPushService: ObservableObject {
         // A preview holds the slots: claim none, and `reserve` gives back what the server still counts as reserved here.
         let slots = controller.isPreviewActive ? 0 : max(0, NativeLiveActivityController.reservationSlots - controller.reservationCount)
         let response = try await request("/devices/\(device)/claims", method: "POST", body: ["slots": slots])
+        acceptChannels(response)
         let claims = try JSONDecoder().decode([LiveActivityClaim].self, from: JSONSerialization.data(withJSONObject: response["claims"] as? [Any] ?? []))
         for id in await controller.reserve(claims) {
             // Best effort: one not given back is still reserved nowhere, so retry it next pass.
@@ -295,9 +302,12 @@ final class LiveActivityPushService: ObservableObject {
         guard !registrations.isEmpty || !uploaded.isEmpty else { return }
         do {
             for registration in registrations where uploaded[registration.occurrenceId] != registration.token {
-                let (code, response) = try await send("/devices/\(device)/activities/\(registration.occurrenceId)", method: "PUT", body: ["token": registration.token])
+                var body: [String: Any] = ["token": registration.token]
+                if let end = registration.end { body["end"] = end }
+                let (code, response) = try await send("/devices/\(device)/activities/\(registration.occurrenceId)", method: "PUT", body: body)
                 // 404: the server no longer schedules it (finished, or moved away); nothing to refresh.
-                guard (200..<300).contains(code) || code == 404 else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
+                // 400 on an activity started on entry: the server cannot end it, the next wakeup will.
+                guard (200..<300).contains(code) || code == 404 || (code == 400 && registration.end != nil) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
                 uploaded[registration.occurrenceId] = registration.token
                 group.set(uploaded, forKey: Self.activityLedgerKey)
             }
