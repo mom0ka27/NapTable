@@ -8,8 +8,10 @@
 
 ```sh
 export NAPTABLE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-python3 server/naptable_server.py --host 0.0.0.0 --port 8787 --db naptable.sqlite3
+python3 server/naptable_server.py --host 127.0.0.1 --port 8787 --db naptable.sqlite3
 ```
+
+本地服务是明文 HTTP。改成 `--host 0.0.0.0` 让局域网里的手机访问时，管理员令牌和会话 Cookie 会在局域网内明文传输，只在可信网络里临时这样做，用完改回 `127.0.0.1`。
 
 请把管理员令牌保存在你的服务部署环境中；更新配置的命令需要使用同一个令牌。SQLite 数据库保存学校配置与分享记录，重启时继续指定同一数据库路径。
 
@@ -19,14 +21,28 @@ python3 server/naptable_server.py --host 0.0.0.0 --port 8787 --db naptable.sqlit
 curl --fail http://127.0.0.1:8787/health
 ```
 
+## 公开站点
+
+同一个进程还提供 NapTable 官网，内容在 `server/static/site/`：
+
+| 路径 | 内容 |
+| --- | --- |
+| `/` | 官网首页（`site/index.html`） |
+| `/privacy`、`/privacy/` | 隐私协议（`site/privacy.html`） |
+| `/site/*` | 官网静态资源，只放行 `naptable_server.py` 中 `SITE_ASSETS` 白名单里的文件（如 `site.css`、`img/icon.png`），其他路径返回 404 |
+
+这些路径都支持 `HEAD`。`/site/*` 资源带 `Cache-Control: public, max-age=86400`，修改后浏览器最多一天内生效；首页和隐私协议不缓存。
+
 ## 生产部署
 
 仓库的 `deploy/` 目录包含线上运行所需的固定配置：
 
 - `naptable.service`：以独立的 `naptable` 用户运行服务，只监听 `127.0.0.1:8787`；
-- `nginx.conf`：为 `naptable.mom0ka27.top` 提供 HTTPS、HTTP 跳转、请求限速和 1 MiB 请求体上限；
+- `nginx.conf`：为 `naptable.mom0ka27.top` 提供 HTTPS、HTTP 跳转、请求限速和 1 MiB 请求体上限。限速按来源 IP 分三档：官网（`/`、`/privacy`、`/site/`）和公开接口（`/v1/schools`、`/v1/calendar`、`/v1/usage/`）放宽到每秒 30 次、突发 120 次，照顾校园网共用出口 IP；管理员登录（`POST /v1/admin/session`）每秒 1 次、突发 5 次；其余接口每秒 10 次、突发 30 次；
 - `naptable-backup.service` / `.timer`：每天对 SQLite 做一致性备份，保留最近 14 份；
 - `reload-nginx-after-renewal.sh`：Let's Encrypt 证书更新后重新加载 Nginx。
+
+发布包包含 `server/` 下的 Python 代码、管理页和官网 `server/static/site/`，部署时会校验首页、隐私协议和 `site.css` 都在。
 
 线上代码目录为 `/opt/naptable/current`，数据库为 `/var/lib/naptable/naptable.sqlite3`，备份位于 `/var/backups/naptable`。管理员令牌保存在仅 root 可读的 `/etc/naptable/naptable.env`，不要写入代码仓库或 App。APNs `.p8` 同样只应保存在服务器上，并通过管理页配置其绝对路径。
 
@@ -183,6 +199,8 @@ NJU 内置值用于演示，必须根据实际校历和作息核对后再使用�
 ## 配置学校、学期与调休
 
 `DELETE /v1/schools/{id}` 删除学校及全部学期，需要管理员认证；学校不存在时返回 404。
+
+`POST /v1/schools/{id}` 默认是“有则更新、无则创建”。请求体带 `"create": true` 时只创建：该 ID 已存在返回 409 `{"error": "school exists"}`，不会覆盖。管理页「新增学校」使用这种方式，编辑保存不带 `create`。
 
 学校节次只提交一次到学校接口：
 

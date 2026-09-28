@@ -27,7 +27,7 @@
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
     const response = await fetch(path, { credentials: "same-origin", ...options, headers });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok) throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { status: response.status });
     return data;
   };
 
@@ -218,6 +218,12 @@
     if (kind === "swap") value.source = row.querySelector('[data-field="source"]')?.value || "";
     return value;
   });
+  // 表单行里没有“常见选择”，从 DOM 重建时按日期把原来的候选日期带回来，否则别的行的提示会消失。
+  const adjustmentRowsWithCandidates = () => {
+    const candidates = new Map((state.calendar.adjustments || [])
+      .filter(item => item.candidates?.length).map(item => [item.date, item.candidates]));
+    return adjustmentRows().map(item => candidates.has(item.date) ? { ...item, candidates: candidates.get(item.date) } : item);
+  };
   const candidateChips = (item, swap) => {
     if (!swap || item.source || !item.candidates?.length) return "";
     const chips = item.candidates
@@ -239,13 +245,13 @@
       row.querySelectorAll(".candidate-chip").forEach(chip => {
         chip.onclick = () => {
           row.querySelector('[data-field="source"]').value = chip.dataset.date;
-          state.calendar.adjustments = adjustmentRows();
+          state.calendar.adjustments = adjustmentRowsWithCandidates();
           renderCalendar();
         };
       });
-      row.querySelector('[data-field="kind"]').onchange = () => { state.calendar.adjustments = adjustmentRows(); renderCalendar(); };
+      row.querySelector('[data-field="kind"]').onchange = () => { state.calendar.adjustments = adjustmentRowsWithCandidates(); renderCalendar(); };
       row.querySelector(".remove-button").onclick = () => {
-        state.calendar.adjustments = adjustmentRows();
+        state.calendar.adjustments = adjustmentRowsWithCandidates();
         state.calendar.adjustments.splice(index, 1);
         renderCalendar();
       };
@@ -557,14 +563,22 @@
     const button = event.currentTarget.querySelector('[type="submit"]');
     setLoading(button, true);
     try {
+      // create: true 让服务端在 ID 已被占用时返回 409，而不是覆盖别人刚建好的学校。
       const school = await request(`/v1/schools/${encodeURIComponent(id)}`, {
-        method: "POST", body: JSON.stringify({ name, note: "", periods: [{ id: 1, name: "第1节", start: "08:00", end: "08:50" }] })
+        method: "POST", body: JSON.stringify({ create: true, name, note: "", periods: [{ id: 1, name: "第1节", start: "08:00", end: "08:50" }] })
       });
       state.schools.push(school); updateMetrics(); $("newSchoolDialog").close();
       $("schoolSearch").value = ""; selectSchool(school.id);
       document.querySelector(".metadata-section").open = true;
       notice("学校已创建，请继续配置节次与学期", "success");
-    } catch (error) { notice(error.message, "error"); }
+    } catch (error) {
+      if (error.status !== 409) return notice(error.message, "error");
+      notice("该学校 ID 已存在，已刷新学校列表，请换一个 ID 再试", "error");
+      try {
+        state.schools = (await request("/v1/schools")).schools || [];
+        renderSchools(); updateMetrics();
+      } catch (refreshError) { notice(refreshError.message, "error"); }
+    }
     finally { setLoading(button, false); }
   };
   const deleteSchool = async () => {
