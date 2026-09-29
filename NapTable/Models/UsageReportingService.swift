@@ -51,7 +51,8 @@ import Darwin
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(secret, forHTTPHeaderField: "X-Device-Secret")
             do {
-                let (_, response) = try await transport(request)
+                let (_, response) = try await transport(await AppAttestService.shared.signed(request))
+                AppAttestService.shared.observe(response)
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                     lastPayload = body; lastURL = url; lastSent = Date()
                 }

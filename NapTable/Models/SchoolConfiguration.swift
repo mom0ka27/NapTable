@@ -29,8 +29,8 @@ struct AnyCodable: Codable {
 enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String), missingBaseURL; var errorDescription: String? { switch self { case .invalidResponse: return "服务返回格式错误"; case .server(let v): return v; case .missingBaseURL: return "未配置 NapTable 服务地址" } } }
 
 private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -> [ServiceSchoolConfiguration] {
-    // Only Nanjing University and Sun Yat-sen University are currently visible in the client.
-    schools.filter { school in ["nju", "sysu"].contains { $0.caseInsensitiveCompare(school.id) == .orderedSame } }
+    // Only Nanjing University, Sun Yat-sen University and Nanjing Forestry University are currently visible in the client.
+    schools.filter { school in ["nju", "sysu", "njfu"].contains { $0.caseInsensitiveCompare(school.id) == .orderedSame } }
 }
 
 @MainActor final class ScheduleSharingService: ObservableObject {
@@ -41,7 +41,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
     /// The production service. Device credentials and schedule data only ever
     /// travel over HTTPS to this host, so the address is fixed in the app
     /// instead of being configurable.
-    let serverURLString = "https://naptable.mom0ka27.top"
+    let serverURLString = "https://nap.qiuxieit.cn"
     var validatedBaseURL: URL? { URL(string: serverURLString) }
     /// The most recently created share, kept for the screens that only ever
     /// showed one. `myShares` is the full list.
@@ -102,9 +102,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         return myShares.last(where: { $0.tableID == table.id })?.fingerprint != fingerprint
     }
 
-    /// Signed in, the share names the account's nickname and carries its avatar to readers.
-    func share(courses: [Course], table: CourseTable, owner: String? = nil) async throws -> SharedScheduleEnvelope {
-        let owner = owner ?? AccountService.shared.account?.name.trimmedNonEmpty ?? "我"
+    func share(courses: [Course], table: CourseTable, owner: String = "我") async throws -> SharedScheduleEnvelope {
         guard !generatingShare else { throw ScheduleServiceError.server("正在生成分享码，请稍候") }
         generatingShare = true
         defer { generatingShare = false }
@@ -137,7 +135,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
         let body: [String: Any] = ["owner": owner, "schoolID": schoolID, "termID": termID, "courses": rows,
             "previousShares": obsolete.filter { $0.code != previous?.code }.map { ["code": $0.code, "token": $0.token] }]
         let path = previous.map { "/v1/shares/\($0.code)/replace" } ?? "/v1/shares"
-        let headers = (previous.map { ["X-Write-Token": $0.token] } ?? [:]).merging(AccountService.shared.authorizationHeader) { old, _ in old }
+        let headers = previous.map { ["X-Write-Token": $0.token] } ?? [:]
         let data: Data
         do { data = try await request(path: path, method: "POST", body: body, headers: headers) }
         catch ScheduleServiceError.server(let reason) where reason == "课表没有变更，请继续使用现有分享码" {
@@ -159,6 +157,6 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
     func revokeSavedShare() async throws { guard let credential = myShares.last else { throw ScheduleServiceError.server("本机没有可撤销的分享") }; try await revoke(credential) }
     /// Not private: `ScheduleSharing.swift` extends this service with the
     /// share endpoints and needs the same transport.
-    func request(path:String,method:String,body:Any?=nil,headers:[String:String]=[:]) async throws -> Data { guard let baseURL=validatedBaseURL, let url=URL(string:path,relativeTo:baseURL) else { throw ScheduleServiceError.missingBaseURL }; var r=URLRequest(url:url); r.httpMethod=method; r.setValue("application/json",forHTTPHeaderField:"Content-Type"); headers.forEach { r.setValue($1,forHTTPHeaderField:$0) }; if let body { r.httpBody=try JSONSerialization.data(withJSONObject:body) }; let (data,response)=try await URLSession.shared.data(for:r); guard let http=response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }; guard (200..<300).contains(http.statusCode) else { let m=(try? JSONSerialization.jsonObject(with:data) as? [String:Any])?["error"] as? String ?? "HTTP \(http.statusCode)"; throw ScheduleServiceError.server(m) }; return data }
+    func request(path:String,method:String,body:Any?=nil,headers:[String:String]=[:]) async throws -> Data { guard let baseURL=validatedBaseURL, let url=URL(string:path,relativeTo:baseURL) else { throw ScheduleServiceError.missingBaseURL }; var r=URLRequest(url:url); r.httpMethod=method; r.setValue("application/json",forHTTPHeaderField:"Content-Type"); headers.forEach { r.setValue($1,forHTTPHeaderField:$0) }; if let body { r.httpBody=try JSONSerialization.data(withJSONObject:body) }; r=await AppAttestService.shared.signed(r); let (data,response)=try await URLSession.shared.data(for:r); AppAttestService.shared.observe(response); guard let http=response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }; guard (200..<300).contains(http.statusCode) else { let m=(try? JSONSerialization.jsonObject(with:data) as? [String:Any])?["error"] as? String ?? "HTTP \(http.statusCode)"; throw ScheduleServiceError.server(m) }; return data }
 }
 enum ServiceSchoolCatalog { static let nju=ServiceSchoolConfiguration(id:"nju",name:"南京大学",timezone:"Asia/Shanghai",terms:[],note:"服务端模板，需按校历校准") }

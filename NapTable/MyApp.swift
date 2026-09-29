@@ -17,9 +17,6 @@ struct MyApp: App {
         // token for the activity the system just created only reaches a
         // running app, so the observers start here rather than on first view.
         if #available(iOS 17.2, *) {
-            LiveActivityPushService.shared.deviceSynced = { device, secret in
-                await AccountService.shared.bindIfNeeded(device: device, secret: secret)
-            }
             if PrivacyPolicy.liveAllowed() {
                 LiveActivityPushService.shared.activate()
             } else {

@@ -39,6 +39,7 @@ struct SchoolConfigView: View {
                 }
             }
         }
+        .appListBackground()
         .navigationTitle("课表服务")
     }
 
@@ -83,7 +84,7 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                 ForEach(service.sharedSchedules, id: \.meta.code) { schedule in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
-                            AccountAvatarView(url: schedule.meta.ownerAvatarURL, name: schedule.meta.ownerName ?? schedule.name, size: 40)
+                            ShareOwnerMonogram(name: schedule.meta.ownerName ?? schedule.name, size: 40)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(schedule.name).font(.headline)
                                 Text([schedule.meta.ownerName.map { "来自 \($0)" }, "\(schedule.meta.schoolName) · \(schedule.courses.count) 门课程"]
@@ -169,8 +170,10 @@ struct MySchedulesView<OwnedSchedules: View>: View {
             }
             if let message { Text(message).font(.footnote).foregroundStyle(.secondary) }
         }
+        .appListBackground()
         .navigationTitle("我的课表")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
         .sheet(isPresented: $showingSharedImport) {
             SharedScheduleImportView { name in
                 message = "已导入「\(name)」，可在课表顶部切换查看"
@@ -351,9 +354,10 @@ private struct ShareOwnScheduleView: View {
             .padding(20)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.appGroupedBackground)
+        .background(.appGroupedBackground)
         .navigationTitle("分享课表")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
     }
 
     private var sharingHint: String {
@@ -467,7 +471,7 @@ private struct SharedScheduleImportView: View {
                 if let preview {
                     Section("课表预览") {
                         HStack(spacing: 12) {
-                            AccountAvatarView(url: preview.meta.ownerAvatarURL, name: preview.meta.ownerName ?? preview.name, size: 44)
+                            ShareOwnerMonogram(name: preview.meta.ownerName ?? preview.name, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(preview.name).font(.headline)
                                 if let owner = preview.meta.ownerName {
@@ -531,6 +535,7 @@ private struct SharedScheduleImportView: View {
                     }
                 }
             }
+            .appListBackground()
             .navigationTitle("导入共享课表")
             .appInlineNavigationTitle()
             .toolbar {

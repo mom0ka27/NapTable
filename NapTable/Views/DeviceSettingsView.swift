@@ -72,6 +72,7 @@ struct ScheduleDisplaySettingsScreen: View {
         Form {
             ScheduleSettingsSection()
         }
+        .appListBackground()
     }
 }
 
@@ -95,6 +96,7 @@ struct ScheduleBackgroundSettingsScreen: View {
             ScheduleBackgroundSection(preferences: preferences, dark: false, pendingBackground: $editingBackground)
             ScheduleBackgroundSection(preferences: preferences, dark: true, pendingBackground: $editingBackground)
         }
+        .appListBackground()
         .navigationDestination(item: $editingBackground) { pending in
             // 另一个外观有自己的图，这张就只属于当前外观，预览和不透明度都锁在它上面。
             BackgroundCropEditor(
@@ -159,11 +161,13 @@ struct ScheduleSettingsSection: View {
         }
 
         Section {
-            Picker("隐藏之后的行", selection: $preferences.hideSlotsAfter) {
-                Text("不隐藏").tag(0)
-                ForEach(hideSlotOptions, id: \.self) { slot in
-                    Text("第 \(slot) 节之后").tag(slot)
-                }
+            Toggle("隐藏晚间空行", isOn: $preferences.hideLateSlots)
+            if preferences.hideLateSlots {
+                Stepper(
+                    "隐藏第 \(preferences.hideSlotsAfter) 节之后",
+                    value: $preferences.hideSlotsAfter,
+                    in: hideSlotRange
+                )
             }
         } header: {
             Text("节次")
@@ -172,13 +176,9 @@ struct ScheduleSettingsSection: View {
         }
     }
 
-    /// 从第 4 节起到倒数第二节；当前值不在范围里（换了节次更少的课表）也保留，免得选中项变空。
-    private var hideSlotOptions: [Int] {
-        let total = ScheduleSlot.all.count
-        var options = total > 4 ? Array(4..<total) : []
-        let current = preferences.hideSlotsAfter
-        if current > 0, !options.contains(current) { options.append(current); options.sort() }
-        return options
+    /// 1 到倒数第二节；当前值超出（换了节次更少的课表）时上限放宽到当前值，免得步进器卡住。
+    private var hideSlotRange: ClosedRange<Int> {
+        1...max(ScheduleSlot.all.count - 1, preferences.hideSlotsAfter, 1)
     }
 }
 
@@ -343,14 +343,18 @@ struct WidgetSettingsScreen: View {
             Section {
                 Toggle("农历日期", isOn: optionBinding(\.showLunarDate))
                 Toggle("节假日提示", isOn: optionBinding(\.showHoliday))
+                Toggle("始终显示最近节假日", isOn: optionBinding(\.holidayAlwaysVisible))
+                    .disabled(!settings.options.showHoliday)
             } header: {
                 Text("日期信息")
             } footer: {
-                Text("仅标注法定节假日与传统节日，没课时显示最近假期的倒计时。调休安排由学校配置提供，并直接体现在课表与小组件中。")
+                Text("仅标注法定节假日与传统节日，没课时显示最近假期的倒计时；开启「始终显示最近节假日」后，有课时日期栏也会显示。调休安排由学校配置提供，并直接体现在课表与小组件中。")
             }
         }
+        .appListBackground()
         .navigationTitle("桌面小组件")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
     }
 
     private func optionBinding(_ keyPath: WritableKeyPath<NativeWidgetSettings.WidgetDisplayOptions, Bool>) -> Binding<Bool> {
@@ -491,9 +495,7 @@ struct GlobalThemeSettingsSection: View {
 @available(iOS 16.1, *)
 struct LiveActivitySettingsScreen: View {
     @ObservedObject private var consent = PrivacyConsent.shared
-    @ObservedObject private var account = AccountService.shared
     @State private var showPrivacyConsent = false
-    @State private var showSignIn = false
     @ObservedObject private var controller = NativeLiveActivityController.shared
     @State private var enabled: Bool
     @State private var perPeriod: Bool
@@ -517,26 +519,15 @@ struct LiveActivitySettingsScreen: View {
                 Toggle("显示实时活动", isOn: Binding(
                     get: { enabled },
                     set: { value in
-                        // Signing in also gives the consent, so it comes first.
-                        if value && !account.isSignedIn { showSignIn = true; return }
                         if value && !consent.liveAccepted { showPrivacyConsent = true; return }
                         enabled = value
                         NativeLiveActivityController.shared.setEnabled(value)
                     }
                 ))
-                if let summary = account.account {
-                    NavigationLink { AccountView() } label: {
-                        LabeledContent("使用日与订阅", value: summary.entitlement.summary)
-                    }
-                } else {
-                    Button("通过 Apple 登录") { showSignIn = true }
-                }
             } header: {
                 Text("总开关")
             } footer: {
-                Text(account.isSignedIn
-                     ? "在锁屏与灵动岛上显示上课、下课倒计时。当天真正收到提醒才计 1 个使用日。"
-                     : "在锁屏与灵动岛上显示上课、下课倒计时。需要登录，新用户免费 30 个使用日。")
+                Text("在锁屏与灵动岛上显示上课、下课倒计时。测试期间免费。")
             }
 
             Section {
@@ -654,19 +645,15 @@ struct LiveActivitySettingsScreen: View {
                 Text("当前状态")
             }
         }
+        .appListBackground()
         .navigationTitle("实时活动")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
         .onAppear { enabled = controller.isEnabled }
+        .onChange(of: controller.status) { _, _ in enabled = controller.isEnabled }
         .onChange(of: consent.liveAccepted) { _, _ in enabled = controller.isEnabled }
         .sheet(isPresented: $showPrivacyConsent) {
             LiveActivityConsentView {
-                controller.setEnabled(true)
-                enabled = controller.isEnabled
-            }
-        }
-        .sheet(isPresented: $showSignIn) {
-            LiveActivitySignInSheet {
-                consent.setLiveConsent(true)
                 controller.setEnabled(true)
                 enabled = controller.isEnabled
             }

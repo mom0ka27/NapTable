@@ -54,19 +54,33 @@ struct OnboardingView: View {
     @Environment(\.colorScheme) private var scheme
     @ObservedObject private var consent = PrivacyConsent.shared
     @StateObject private var scheduleStore = NativeScheduleStore()
-    @ObservedObject private var account = AccountService.shared
-    @State private var basicChecked = false
+    @State private var basicChecked: Bool
+    @State private var liveChecked: Bool
     @State private var showImport = false
     @State private var initialSchool: String?
-    @State private var reviewingPrivacy = false
-    /// The Live Activity page was dealt with: signed in, or skipped.
-    @AppStorage("naptable.onboarding.liveStepDone") private var liveStepDone = false
-    private enum Step { case privacy, live, importing }
-    private var step: Step {
-        if !consent.basicAccepted || reviewingPrivacy { return .privacy }
-        return Self.offersLiveActivities && !liveStepDone ? .live : .importing
-    }
+    /// Where the user is. Navigation is explicit: skipping a page only moves
+    /// past it, so going back (or forward again) still passes through it.
+    @State private var step: Step
+    /// Direction of the last page change, for the slide.
+    @State private var forward = true
+    /// The Live Activity page was dealt with once: turned on, or skipped.
+    /// Only used to resume onboarding at the right page after a relaunch.
+    @AppStorage(Self.liveStepDoneKey) private var liveStepDone = false
+    private static let liveStepDoneKey = "naptable.onboarding.liveStepDone"
+    private enum Step: Int { case privacy, live, importing }
     private var isImportStep: Bool { step == .importing }
+    private var steps: [Step] { Self.offersLiveActivities ? [.privacy, .live, .importing] : [.privacy, .importing] }
+    private var stepIndex: Int { steps.firstIndex(of: step) ?? 0 }
+
+    init() {
+        let consent = PrivacyConsent.shared
+        let liveDone = UserDefaults.standard.bool(forKey: Self.liveStepDoneKey)
+        let initial: Step = !consent.basicAccepted ? .privacy
+            : Self.offersLiveActivities && !liveDone ? .live : .importing
+        _step = State(initialValue: initial)
+        _basicChecked = State(initialValue: consent.basicAccepted)
+        _liveChecked = State(initialValue: consent.liveAccepted)
+    }
     /// Reminders need iOS 18; before that there is only the preview, and nothing to sign in for.
     private static var offersLiveActivities: Bool {
         #if os(iOS)
@@ -78,21 +92,25 @@ struct OnboardingView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+            VStack(spacing: 0) {
+                // Header and progress stay put; only the page below slides.
+                VStack(alignment: .leading, spacing: 14) {
                     brandHeader
                     progress
-                    switch step {
-                    case .privacy: welcome; privacyStep
-                    case .live: LiveActivitySignInContent()
-                    case .importing: welcome; importStep
-                    }
                 }
                 .padding(.horizontal, 24)
-                .padding(.top, 12)
-                .padding(.bottom, 24)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
                 .frame(maxWidth: 570)
                 .frame(maxWidth: .infinity)
+                ZStack {
+                    page
+                        // A fresh scroll view per page, so every page starts at its top.
+                        .id(step)
+                        .transition(pageTransition)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             }
             .background(colors.background.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { bottomAction }
@@ -113,8 +131,44 @@ struct OnboardingView: View {
         .onAppear { scheduleStore.connect(store) }
     }
 
+    private var page: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                switch step {
+                case .privacy: welcome; privacyStep
+                case .live: LiveActivityIntroContent()
+                case .importing: welcome; importStep
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+            .frame(maxWidth: 570)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Pages push in from the side they come from, like a navigation stack.
+    private var pageTransition: AnyTransition {
+        .asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                    removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity))
+    }
+
     private var brandHeader: some View {
         HStack(spacing: 10) {
+            // The slot is always there, so the logo never shifts when it appears.
+            Button { goBack() } label: {
+                Image(systemName: "chevron.left").font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(colors.accent)
+                    .frame(width: 28, height: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(stepIndex > 0 ? 1 : 0)
+            .disabled(stepIndex == 0)
+            .accessibilityHidden(stepIndex == 0)
+            .accessibilityLabel("返回上一步")
+            .padding(.trailing, -4)
             Image("AppLogo")
                 .resizable()
                 .scaledToFit()
@@ -128,19 +182,51 @@ struct OnboardingView: View {
                 Button("跳过") { finishLiveStep() }
                     .font(.subheadline.weight(.medium)).foregroundStyle(colors.accent)
                     .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityHint("不开启实时活动，之后可在设置中登录")
+                    .accessibilityHint("不开启实时活动，之后可在设置中开启")
             }
         }
     }
 
-    /// Past the Live Activity page. Someone who already has courses (an
-    /// upgrade) is done with onboarding here; everyone else goes on to import.
-    private func finishLiveStep() {
-        liveStepDone = true
-        if !store.courses.isEmpty { store.saveNow(); consent.completeOnboarding(hasImportedCourses: true) }
+    private func go(to next: Step) {
+        let isForward = next.rawValue > step.rawValue
+        guard isForward != forward else { return withAnimation(.smooth(duration: 0.35)) { step = next } }
+        // The leaving page keeps the transition of its last render: let it
+        // pick up the new direction first, then change page.
+        forward = isForward
+        DispatchQueue.main.async { withAnimation(.smooth(duration: 0.35)) { step = next } }
     }
 
-    private func signedIn() {
+    private func goBack() {
+        guard stepIndex > 0 else { return }
+        if steps[stepIndex - 1] == .privacy { basicChecked = consent.basicAccepted }
+        go(to: steps[stepIndex - 1])
+    }
+
+    /// Accepting the basic agreement moves on to the next page.
+    private func acceptPrivacy() {
+        // The Live Activity consent is given on its own page, by signing in.
+        consent.acceptBasic(liveActivities: consent.liveAccepted)
+        if Self.offersLiveActivities { go(to: .live) } else { enterImport() }
+    }
+
+    /// Past the Live Activity page, whether by turning it on or skipping.
+    private func finishLiveStep() {
+        liveStepDone = true
+        enterImport()
+    }
+
+    /// Someone who already has courses (an upgrade) is done with onboarding
+    /// here; everyone else goes on to import.
+    private func enterImport() {
+        if !store.courses.isEmpty {
+            store.saveNow()
+            consent.completeOnboarding(hasImportedCourses: true)
+        } else {
+            go(to: .importing)
+        }
+    }
+
+    private func enableLive() {
         consent.setLiveConsent(true)
         #if os(iOS)
         NativeLiveActivityController.shared.setEnabled(true)
@@ -149,8 +235,10 @@ struct OnboardingView: View {
     }
 
     private var progress: some View {
-        let titles = Self.offersLiveActivities ? ["隐私许可", "实时活动", "导入课表"] : ["隐私许可", "导入课表"]
-        let current = step == .privacy ? 0 : step == .live ? 1 : titles.count - 1
+        let titles = steps.map { step -> String in
+            switch step { case .privacy: "隐私许可"; case .live: "实时活动"; case .importing: "导入课表" }
+        }
+        let current = stepIndex
         return HStack(spacing: 12) {
             ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
                 progressItem(String(format: "%02d", index + 1), title: title, complete: index < current, active: index == current)
@@ -206,10 +294,9 @@ struct OnboardingView: View {
     private var importStep: some View {
         VStack(alignment: .leading, spacing: 17) {
             schoolCard("南京大学", glyph: "南", detail: "本科生 · 研究生教务入口")
-            schoolCard("中山大学", glyph: "中", detail: "本科生教务入口")
 
             Button {
-                initialSchool = ImportView.manualRoute
+                initialSchool = nil
                 showImport = true
             } label: {
                 HStack(spacing: 14) {
@@ -220,8 +307,8 @@ struct OnboardingView: View {
                         .background(colors.soft, in: RoundedRectangle(cornerRadius: 16))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("学校不在列表里").font(.headline).foregroundStyle(colors.ink)
-                        Text("自己设学期、节次，逐门添加课程").font(.caption).foregroundStyle(colors.secondary)
+                        Text("其他学校").font(.headline).foregroundStyle(colors.ink)
+                        Text("从学校列表中选择，或手动创建课表").font(.caption).foregroundStyle(colors.secondary)
                     }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.subheadline).foregroundStyle(colors.accent)
@@ -232,7 +319,7 @@ struct OnboardingView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 21))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("学校不在列表里，手动创建课表")
+            .accessibilityLabel("其他学校，从列表选择或手动创建课表")
 
             VStack(alignment: .leading, spacing: 0) {
                 importInstruction("1", title: "选择教务入口", detail: "找到适合你的本科生或研究生系统。", last: false)
@@ -249,17 +336,6 @@ struct OnboardingView: View {
                     .font(.caption2).lineSpacing(3)
             }
             .foregroundStyle(colors.secondary)
-            Button {
-                basicChecked = consent.basicAccepted
-                reviewingPrivacy = true
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
-                    Text("返回上一步")
-                }
-                .font(.caption).foregroundStyle(colors.accent).frame(minHeight: 44)
-            }
-            .buttonStyle(.plain)
         }
     }
 
@@ -309,21 +385,23 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder private var bottomAction: some View {
-        if step == .live { liveAction } else { primaryAction }
+        switch step {
+        case .privacy: primaryAction
+        case .live: liveAction
+        // 导入页直接点学校卡片进入，不再有底部按钮。
+        case .importing: EmptyView()
+        }
     }
 
     private var liveAction: some View {
         VStack(spacing: 10) {
-            if account.isSignedIn {
-                Button { signedIn() } label: {
-                    HStack { Spacer(); Text("开启实时活动"); Spacer(); Image(systemName: "arrow.right").font(.subheadline.weight(.semibold)) }
-                        .padding(.horizontal, 20)
-                }
-                .buttonStyle(OnboardingPrimaryButtonStyle())
-            } else {
-                AccountSignInButton { signedIn() }
+            LiveActivityConsentNote(agreed: $liveChecked)
+            Button { enableLive() } label: {
+                HStack { Spacer(); Text(consent.liveAccepted ? "已开启，继续" : "开启实时活动"); Spacer(); Image(systemName: "arrow.right").font(.subheadline.weight(.semibold)) }
+                    .padding(.horizontal, 20)
             }
-            AccountConsentNote()
+            .buttonStyle(OnboardingPrimaryButtonStyle())
+            .disabled(!liveChecked)
         }
         .padding(.horizontal, 24).padding(.top, 15).padding(.bottom, 10)
         .frame(maxWidth: 570)
@@ -334,35 +412,18 @@ struct OnboardingView: View {
 
     private var primaryAction: some View {
         VStack(spacing: 10) {
-            Button {
-                if isImportStep {
-                    if store.courses.isEmpty {
-                        initialSchool = nil
-                        showImport = true
-                    }
-                    else {
-                        store.saveNow()
-                        consent.completeOnboarding(hasImportedCourses: true)
-                    }
-                } else {
-                    // The Live Activity consent is given on its own page, by signing in.
-                    consent.acceptBasic(liveActivities: consent.liveAccepted)
-                    reviewingPrivacy = false
-                    // Existing users retain their imported courses during the upgrade.
-                    if !store.courses.isEmpty, step == .importing { consent.completeOnboarding(hasImportedCourses: true) }
-                }
-            } label: {
+            Button { acceptPrivacy() } label: {
                 HStack {
                     Spacer()
-                    Text(isImportStep ? (store.courses.isEmpty ? "选择入口，导入课表" : "查看已导入的课表") : "同意并继续")
+                    Text("同意并继续")
                     Spacer()
                     Image(systemName: "arrow.right").font(.subheadline.weight(.semibold))
                 }
                 .padding(.horizontal, 20)
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
-            .disabled(!isImportStep && !basicChecked)
-            Text(isImportStep ? "导入或添加课程后，即可进入主界面" : "基础协议为必选；实时通知在下一步决定")
+            .disabled(!basicChecked)
+            Text("基础协议为必选；实时通知在下一步决定")
                 .font(.caption2).foregroundStyle(colors.secondary)
                 .multilineTextAlignment(.center)
         }

@@ -45,9 +45,6 @@ final class LiveActivityPushService: ObservableObject {
     private static let activityLedgerKey = "naptable.liveActivity.v2.activityTokens"
     private static let keychainService = "naptable.liveActivity.device"
     @Published private(set) var status: Status = .off
-    /// Called with the device ID and secret after every sync that reached
-    /// the server: the account joins the device to itself (`AccountService`).
-    var deviceSynced: ((String, String) async -> Void)?
     struct CredentialStore {
         var read: (String) -> String?
         var write: (String, String) throws -> Void
@@ -150,6 +147,8 @@ final class LiveActivityPushService: ObservableObject {
         if enabled { activate() } else { revoke() }
     }
     func revoke() {
+        activityTask?.cancel()
+        activityTask = nil
         defaults.set(true, forKey: Self.revokeKey)
         generation += 1
         dirty = true
@@ -235,7 +234,6 @@ final class LiveActivityPushService: ObservableObject {
             defaults.set(Self.digest(registrationToken), forKey: Self.registeredTokenKey)
             guard current(captured, scope: scope) else { dirty = true; return }
         }
-        if let deviceSynced, let secret = secret(device) { await deviceSynced(device, secret) }
         let pending = try await upload(timetable, device: device)
         guard current(captured, scope: scope) else { dirty = true; return }
         if #available(iOS 26.0, *) {
@@ -354,7 +352,8 @@ final class LiveActivityPushService: ObservableObject {
         let data: Data
         let response: URLResponse
         if let transport { (data, response) = try await transport(request) }
-        else { (data, response) = try await URLSession.shared.data(for: request) }
+        else { (data, response) = try await URLSession.shared.data(for: await AppAttestService.shared.signed(request)) }
+        AppAttestService.shared.observe(response)
         guard let http = response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }
         if http.statusCode == 403, method != "DELETE", !path.hasSuffix("/devices") {
             // The server no longer knows this device (its data was reset): the

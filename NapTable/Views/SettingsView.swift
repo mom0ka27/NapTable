@@ -31,7 +31,6 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                AccountSettingsSection()
                 appearanceGroup
                 NativeDeviceSettingsContent(
                     scheduleStore: scheduleStore,
@@ -40,7 +39,9 @@ struct SettingsView: View {
                 tablesGroup
                 dataGroup
             }
+            .appListBackground()
             .navigationTitle("设置")
+            .appSoftTopScrollEdge()
             .appInlineNavigationTitle()
             #if os(macOS)
             // The Mac presents settings as a sheet, so it needs a way out. On
@@ -71,8 +72,10 @@ struct SettingsView: View {
                 systemImage: "paintpalette"
             ) {
                 Form { GlobalThemeSettingsSection() }
+                    .appListBackground()
                     .navigationTitle("主题与外观")
                     .appInlineNavigationTitle()
+                    .appSoftTopScrollEdge()
             }
 
             SettingsDestinationRow(
@@ -83,6 +86,7 @@ struct SettingsView: View {
                 ScheduleDisplaySettingsScreen()
                     .navigationTitle("课表显示")
                     .appInlineNavigationTitle()
+                    .appSoftTopScrollEdge()
             }
 
             SettingsDestinationRow(
@@ -93,6 +97,7 @@ struct SettingsView: View {
                 ScheduleBackgroundSettingsScreen()
                     .navigationTitle("背景图片")
                     .appInlineNavigationTitle()
+                    .appSoftTopScrollEdge()
             }
         } header: {
             Text("外观")
@@ -142,8 +147,10 @@ struct SettingsView: View {
                 systemImage: "externaldrive"
             ) {
                 Form { dataSection }
+                    .appListBackground()
                     .navigationTitle("数据与备份")
                     .appInlineNavigationTitle()
+                    .appSoftTopScrollEdge()
             }
 
             SettingsDestinationRow(
@@ -155,8 +162,10 @@ struct SettingsView: View {
                     aboutSection
                     creditsSection
                 }
+                .appListBackground()
                 .navigationTitle("关于")
                 .appInlineNavigationTitle()
+                .appSoftTopScrollEdge()
             }
         } header: {
             Text("数据与关于")
@@ -279,9 +288,11 @@ struct SettingsView: View {
         }
     }
 
-    /// Credits for the two open-source projects this app stands on: the schedule
-    /// surface is a port of CpuTime's iOS client, and the import parsing, school
-    /// catalogue and calendar data come from 南哪课表.
+    /// Credits for the open-source projects this app stands on: the schedule
+    /// surface is a port of CpuTime's iOS client, the import parsing, school
+    /// catalogue and calendar data come from 南哪课表, the SYSU importer
+    /// follows sysukcb's academic-system flow, and the NJFU importer follows
+    /// NJFU-schedule's timetable parsing.
     private var creditsSection: some View {
         Section {
             creditRow(
@@ -293,6 +304,16 @@ struct SettingsView: View {
                 name: "CpuTime",
                 detail: "课表界面与玻璃拟态设计",
                 urlString: "https://github.com/sx120609/CPU-web"
+            )
+            creditRow(
+                name: "sysukcb",
+                detail: "中山大学教务导入流程与周次解析",
+                urlString: "https://github.com/pipidu/sysukcb"
+            )
+            creditRow(
+                name: "NJFU-schedule",
+                detail: "南京林业大学教务导入流程与课表解析",
+                urlString: "https://github.com/keggin-CHN/NJFU-schedule"
             )
         } header: {
             Text("开源鸣谢")
