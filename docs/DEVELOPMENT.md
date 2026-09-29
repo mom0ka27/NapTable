@@ -6,7 +6,7 @@
 | --- | --- |
 | `NapTable/` | App 本体，包括导入、数据模型、课表视图和设置页 |
 | `WidgetCore/` | App 与小组件共用的 payload、主题、显示选项和 Live Activity model |
-| `NapTableWidgets/` | 小组件扩展 target，包括临近课程、今日课表、两日课表和实时活动 |
+| `NapTableWidgets/` | 小组件扩展 target，包括今日课程、两日课表和实时活动 |
 | `server/` | Python（FastAPI + uvicorn）+ SQLite 服务端，负责学校配置、分享和可选推送调度 |
 | `tests/` | Swift 模型检查和 Python 服务端测试 |
 | `Config/` | App 与扩展的 Info.plist、entitlements 和构建配置 |
@@ -28,12 +28,14 @@ Live Activity 本身需要 iOS 16.1+，当前 iOS 部署目标为 17.0。iOS、m
 
 | 项 | 值 |
 | --- | --- |
-| App bundle id | `me.mom0ka27.naptable` |
-| 小组件扩展 bundle id | `me.mom0ka27.naptable.widgets` |
-| App Group | `group.me.mom0ka27.naptable` |
+| App bundle id | `com.niyiwei.naptable` |
+| 小组件扩展 bundle id | `com.niyiwei.naptable.widgets` |
+| App Group | `group.com.niyiwei.naptable` |
 | 回跳 URL scheme | `naptable://schedule` |
 
 App 与扩展通过 App Group 共享课表 payload、主题和实时活动设置。修改 Team 或 bundle 前缀时，优先修改构建设置中的 `CPU_APP_GROUP_IDENTIFIER` 和 `PRODUCT_BUNDLE_IDENTIFIER`，同时检查 Info.plist 的 URL 配置。
+
+切换到当前 Bundle ID 后，发布前需在 Apple Developer 中确认主应用和扩展的 App ID、共享 App Group 及签名配置；主应用还需启用推送和 App Attest。已有服务端部署需在管理页同步更新 APNs 配置中的 `bundleID`（App Attest 也用它和 Team ID 校验），并检查 `NAPTABLE_APNS_BUNDLE_ID` 环境变量；修改代码默认值不会覆盖数据库中已保存的配置。新 Bundle ID 和 App Group 使用新的应用身份与共享容器，本次修改不包含旧应用数据迁移。
 
 App Group 只有在签名构建中才会分配共享容器。使用 `CODE_SIGNING_ALLOWED=NO` 构建时，小组件显示「等待课表同步」属于预期行为。
 
@@ -66,13 +68,13 @@ xcodebuild -project NapTable.xcodeproj -scheme NapTable \
   -derivedDataPath .build/dd-signed build
 
 xcrun simctl install booted .build/dd-signed/Build/Products/Debug-iphonesimulator/NapTable.app
-xcrun simctl launch booted me.mom0ka27.naptable
-xcrun simctl get_app_container booted me.mom0ka27.naptable groups
+xcrun simctl launch booted com.niyiwei.naptable
+xcrun simctl get_app_container booted com.niyiwei.naptable groups
 ```
 
 ## 测试与验证
 
-Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh` 用 Node 运行中山大学导入脚本）：
+Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh`、`check-njfu-extractor.sh` 用 Node 运行中山大学、南京林业大学导入脚本）：
 
 ```sh
 for script in tests/check-*.sh; do bash "$script" || break; done

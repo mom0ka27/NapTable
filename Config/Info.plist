@@ -4,13 +4,13 @@
 <dict>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>me.mom0ka27.naptable.liveactivity.refresh</string>
+		<string>com.niyiwei.naptable.liveactivity.refresh</string>
 	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>me.mom0ka27.naptable</string>
+			<string>com.niyiwei.naptable</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>naptable</string>
@@ -27,6 +27,13 @@
 		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
+			<key>njfu.edu.cn</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
 			<key>nju.edu.cn</key>
 			<dict>
 				<key>NSIncludesSubdomains</key>
@@ -39,6 +46,13 @@
 				<key>NSIncludesSubdomains</key>
 				<true/>
 				<key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>sysu.edu.cn</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
 				<true/>
 			</dict>
 			<key>ucas.edu.cn</key>

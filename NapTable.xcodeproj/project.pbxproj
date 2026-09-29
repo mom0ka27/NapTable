@@ -346,8 +346,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = NapTable/NapTable.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CPU_APP_GROUP_IDENTIFIER = group.me.mom0ka27.naptable;
-				CURRENT_PROJECT_VERSION = 4;
+				CPU_APP_GROUP_IDENTIFIER = group.com.niyiwei.naptable;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 34T668D87P;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -380,8 +380,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.mom0ka27.naptable;
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niyiwei.naptable;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -403,8 +403,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = NapTable/NapTable.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CPU_APP_GROUP_IDENTIFIER = group.me.mom0ka27.naptable;
-				CURRENT_PROJECT_VERSION = 4;
+				CPU_APP_GROUP_IDENTIFIER = group.com.niyiwei.naptable;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 34T668D87P;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -437,8 +437,8 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.mom0ka27.naptable;
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niyiwei.naptable;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -459,8 +459,8 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Config/NapTableWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CPU_APP_GROUP_IDENTIFIER = group.me.mom0ka27.naptable;
-				CURRENT_PROJECT_VERSION = 4;
+				CPU_APP_GROUP_IDENTIFIER = group.com.niyiwei.naptable;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 34T668D87P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Config/NapTableWidgets-Info.plist";
@@ -470,8 +470,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.mom0ka27.naptable.widgets;
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niyiwei.naptable.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
@@ -489,8 +489,8 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = Config/NapTableWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CPU_APP_GROUP_IDENTIFIER = group.me.mom0ka27.naptable;
-				CURRENT_PROJECT_VERSION = 4;
+				CPU_APP_GROUP_IDENTIFIER = group.com.niyiwei.naptable;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = 34T668D87P;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Config/NapTableWidgets-Info.plist";
@@ -500,8 +500,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = me.mom0ka27.naptable.widgets;
+				MARKETING_VERSION = 1.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niyiwei.naptable.widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
