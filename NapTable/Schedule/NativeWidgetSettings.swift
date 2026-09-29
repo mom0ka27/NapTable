@@ -38,6 +38,7 @@ final class NativeWidgetSettings: ObservableObject {
         var showTime: Bool
         var showLunarDate: Bool
         var showHoliday: Bool
+        var holidayAlwaysVisible: Bool
 
         static let `default` = WidgetDisplayOptions(
             showCourseName: true,
@@ -45,7 +46,8 @@ final class NativeWidgetSettings: ObservableObject {
             showTeacher: true,
             showTime: true,
             showLunarDate: true,
-            showHoliday: true
+            showHoliday: true,
+            holidayAlwaysVisible: true
         )
 
         init(
@@ -54,7 +56,8 @@ final class NativeWidgetSettings: ObservableObject {
             showTeacher: Bool,
             showTime: Bool,
             showLunarDate: Bool = true,
-            showHoliday: Bool = true
+            showHoliday: Bool = true,
+            holidayAlwaysVisible: Bool = true
         ) {
             self.showCourseName = showCourseName
             self.showRoom = showRoom
@@ -62,6 +65,7 @@ final class NativeWidgetSettings: ObservableObject {
             self.showTime = showTime
             self.showLunarDate = showLunarDate
             self.showHoliday = showHoliday
+            self.holidayAlwaysVisible = holidayAlwaysVisible
         }
 
         init(_ value: ScheduleWidgetDisplayOptions) {
@@ -71,7 +75,8 @@ final class NativeWidgetSettings: ObservableObject {
                 showTeacher: value.showTeacher,
                 showTime: value.showTime,
                 showLunarDate: value.showLunarDate,
-                showHoliday: value.showHoliday
+                showHoliday: value.showHoliday,
+                holidayAlwaysVisible: value.holidayAlwaysVisible
             )
         }
 
@@ -82,7 +87,8 @@ final class NativeWidgetSettings: ObservableObject {
                 showTeacher: showTeacher,
                 showTime: showTime,
                 showLunarDate: showLunarDate,
-                showHoliday: showHoliday
+                showHoliday: showHoliday,
+                holidayAlwaysVisible: holidayAlwaysVisible
             )
         }
     }
@@ -168,11 +174,13 @@ final class NativeWidgetSettings: ObservableObject {
 
         let weekDays = days(for: week)
         let currentWeekData = calendar.weeks.first(where: { $0.week == calendar.currentWeek }) ?? week
-        // 周日晚上要显示「明天」，那一天属于下一周；「最近有课的一天」最多往后看三周。
-        // 所以按真正的当前周带上这一周和之后三周（翻到别的周时 weekDays 不是当前周），去掉和 weekDays 重复的日子。
+        // 按真正的当前周带上这一周到学期最后一周（翻到别的周时 weekDays 不是当前周），去掉和 weekDays 重复的日子。
+        // 周日晚上的「明天」、「最近有课的一天」都在这里找；带满整个学期，很久不打开 App 小组件也照样有课，
+        // 不会在学期中途就提示「打开 App 更新课表」。
         var knownDates = Set(weekDays.compactMap(\.date))
-        let nextWeekDays = (0...3)
-            .compactMap { offset in calendar.weeks.first(where: { $0.week == currentWeekData.week + offset }) }
+        let nextWeekDays = calendar.weeks
+            .filter { $0.week >= currentWeekData.week }
+            .sorted { $0.week < $1.week }
             .flatMap(days(for:))
             .filter { day in day.date.map { knownDates.insert($0).inserted } ?? false }
         // 今天就写今天。以前找不到会按星期几挑同一周的另一个日期，放寒暑假时

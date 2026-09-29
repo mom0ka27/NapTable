@@ -35,16 +35,6 @@ extension Color {
         return Color(red: value.red, green: value.green, blue: value.blue)
     }
 
-    /// `Color(uiColor: .systemGroupedBackground)` equivalent that also builds on
-    /// macOS. The timetable pages sit on this tone.
-    static var appGroupedBackground: Color {
-        #if canImport(UIKit)
-        return Color(uiColor: .systemGroupedBackground)
-        #else
-        return Color(nsColor: .windowBackgroundColor)
-        #endif
-    }
-
     /// Card / cell surface used by the grid, the editor and the settings list.
     static var appSecondaryGroupedBackground: Color {
         #if canImport(UIKit)
@@ -63,17 +53,70 @@ extension Color {
         #endif
     }
 
-    /// Page background behind the whole shell.
-    static var appBackground: Color {
+}
+
+extension EnvironmentValues {
+    /// 当前主题色。深色页面底色按它调出来；主题一换，环境跟着变，用到底色的
+    /// 页面都会重画。`ContentView` 从 `NativeThemeSettings` 注入。
+    @Entry var appThemeBrand: ScheduleLiveActivityRGB = NextWidgetConfiguration.globalBrandColor
+}
+
+#if canImport(UIKit)
+/// 深色模式的页面底色：主题色的深色版本，不用纯黑。取主题色的色相，饱和度
+/// 压到一半左右、亮度压到 0.11，只留一点颜色倾向；系统的分组卡片叠在上面仍分得出层次。
+/// 自定义主题挑了灰色时饱和度本来就低，自然退回中性深灰。
+func appDarkCanvas(brand: ScheduleLiveActivityRGB) -> UIColor {
+    var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0
+    UIColor(red: brand.red, green: brand.green, blue: brand.blue, alpha: 1)
+        .getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
+    return UIColor(hue: hue, saturation: saturation * 0.55, brightness: 0.11, alpha: 1)
+}
+#endif
+
+/// 整页底色。浅色跟系统走；深色用主题色的深色版本。弹出的 sheet 系统本来就会
+/// 抬亮，那里照旧用系统色。
+struct AppBackgroundStyle: ShapeStyle {
+    /// 分组列表（Form / List）的底色，否则是普通页面底色。
+    var grouped = false
+
+    func resolve(in environment: EnvironmentValues) -> Color {
         #if canImport(UIKit)
-        return Color(uiColor: .systemBackground)
+        let dark = appDarkCanvas(brand: environment.appThemeBrand)
+        let system: UIColor = grouped ? .systemGroupedBackground : .systemBackground
+        return Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark && traits.userInterfaceLevel != .elevated
+                ? dark
+                : system.resolvedColor(with: traits)
+        })
         #else
         return Color(nsColor: .windowBackgroundColor)
         #endif
     }
 }
 
+extension ShapeStyle where Self == AppBackgroundStyle {
+    static var appBackground: AppBackgroundStyle { AppBackgroundStyle() }
+    static var appGroupedBackground: AppBackgroundStyle { AppBackgroundStyle(grouped: true) }
+}
+
 extension View {
+    /// 设置、导入这些 Form / List 页面换成 `appGroupedBackground`，深色时是主题色
+    /// 的深色版本，不是系统的纯黑底。
+    func appListBackground() -> some View {
+        scrollContentBackground(.hidden)
+            .background(.appGroupedBackground)
+    }
+
+    /// 顶部滚动边缘用柔和的渐隐（iOS 26 / macOS 26 起才有）；更早的系统保持原样。
+    @ViewBuilder
+    func appSoftTopScrollEdge() -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            self.scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            self
+        }
+    }
+
     /// `.navigationBarTitleDisplayMode(.inline)` is unavailable on macOS; on the
     /// Mac the window title bar already keeps the title compact.
     @ViewBuilder

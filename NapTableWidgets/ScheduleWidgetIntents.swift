@@ -8,7 +8,7 @@ struct ScheduleWidgetConfiguration: Sendable {
     var afterClass: ScheduleWidgetAfterClassStyle = .nextCourseDay
     /// 小号「临近课程」显示几节课。
     var upcomingCourseCount = 1
-    /// 大号今日课表和两日课表的课怎么排。
+    /// 大号今日课程和两日课表的课怎么排。
     var layout: ScheduleWidgetLayoutStyle = .timeline
 }
 
@@ -116,38 +116,9 @@ protocol ScheduleWidgetIntent: WidgetConfigurationIntent {
     var configuration: ScheduleWidgetConfiguration { get }
 }
 
-struct TodayScheduleWidgetIntent: ScheduleWidgetIntent {
-    static let title: LocalizedStringResource = "今日课表"
-    static let description = IntentDescription("设置今日课程结束后小组件显示的内容，以及大尺寸组件的显示方式。")
-
-    @Parameter(title: "今日课程结束后", default: .nextCourseDay)
-    var afterClass: AfterClassOption
-
-    @Parameter(title: "显示方式", default: .timeline)
-    var layout: LayoutOption
-
-    /// 中号只放得下两门课，没有时间线可选。
-    static var parameterSummary: some ParameterSummary {
-        When(widgetFamily: .equalTo, .systemLarge) {
-            Summary {
-                \.$afterClass
-                \.$layout
-            }
-        } otherwise: {
-            Summary {
-                \.$afterClass
-            }
-        }
-    }
-
-    var configuration: ScheduleWidgetConfiguration {
-        ScheduleWidgetConfiguration(afterClass: afterClass.style, layout: layout.style)
-    }
-}
-
 struct UpcomingScheduleWidgetIntent: ScheduleWidgetIntent {
-    static let title: LocalizedStringResource = "临近课程"
-    static let description = IntentDescription("设置今日课程结束后显示的内容，以及小尺寸组件显示的课程数。")
+    static let title: LocalizedStringResource = "今日课程"
+    static let description = IntentDescription("设置今日课程结束后显示的内容、小尺寸组件显示的课程数，以及大尺寸组件的显示方式。")
 
     @Parameter(title: "今日课程结束后", default: .nextCourseDay)
     var afterClass: AfterClassOption
@@ -155,7 +126,11 @@ struct UpcomingScheduleWidgetIntent: ScheduleWidgetIntent {
     @Parameter(title: "显示课程数", default: .one)
     var courseCount: UpcomingCourseCountOption
 
-    /// 中号本来就是「当前 / 接下来」两栏，锁屏也只放得下一节，节数只在小号上给选。
+    @Parameter(title: "显示方式", default: .timeline)
+    var layout: LayoutOption
+
+    /// 中号本来就是「当前 / 接下来」两栏，锁屏也只放得下一节，节数只在小号上给选；
+    /// 时间线只有大号的今日课表排得出来。
     static var parameterSummary: some ParameterSummary {
         When(widgetFamily: .equalTo, .systemSmall) {
             Summary {
@@ -163,14 +138,25 @@ struct UpcomingScheduleWidgetIntent: ScheduleWidgetIntent {
                 \.$courseCount
             }
         } otherwise: {
-            Summary {
-                \.$afterClass
+            When(widgetFamily: .equalTo, .systemLarge) {
+                Summary {
+                    \.$afterClass
+                    \.$layout
+                }
+            } otherwise: {
+                Summary {
+                    \.$afterClass
+                }
             }
         }
     }
 
     var configuration: ScheduleWidgetConfiguration {
-        ScheduleWidgetConfiguration(afterClass: afterClass.style, upcomingCourseCount: courseCount.rawValue)
+        ScheduleWidgetConfiguration(
+            afterClass: afterClass.style,
+            upcomingCourseCount: courseCount.rawValue,
+            layout: layout.style
+        )
     }
 }
 
@@ -186,7 +172,7 @@ struct TwoDayScheduleWidgetIntent: ScheduleWidgetIntent {
     var configuration: ScheduleWidgetConfiguration { ScheduleWidgetConfiguration(layout: layout.style) }
 }
 
-/// 三个小组件共用同一条时间线，只是各自带上自己的配置。
+/// 两个小组件共用同一条时间线，只是各自带上自己的配置。
 struct ScheduleIntentTimelineProvider<Configuration: ScheduleWidgetIntent>: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> ScheduleEntry { .placeholder }
 

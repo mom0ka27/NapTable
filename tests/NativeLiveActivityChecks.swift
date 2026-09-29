@@ -282,7 +282,9 @@ struct NativeLiveActivityChecks {
 
         // MARK: Entering the app starts the current reminder without a push
         var foregroundTime = now
-        let entering = NativeLiveActivityController(now: { foregroundTime }, privacyDefaults: defaults)
+        var applicationActive = true
+        let entering = NativeLiveActivityController(now: { foregroundTime }, privacyDefaults: defaults,
+                                                    applicationIsActive: { applicationActive })
         entering.setEnabled(true)
         entering.foreground() // The scene can become active before the timetable loads.
         entering.accept(snapshot); await settle()
@@ -297,7 +299,45 @@ struct NativeLiveActivityChecks {
         precondition(live.count == 1 && live[0].id == localID, "Repeated entry does not duplicate the reminder")
         live[0].dismiss(); await settle()
         entering.foreground(); await settle()
-        precondition(live.count == 1 && live[0].id != localID, "Entry restores a dismissed reminder")
+        precondition(live.isEmpty && entering.dismissedOccurrence != nil, "Entry waits for the dismissal decision")
+        applicationActive = false
+        let attemptsBeforeRestore = TestActivityKit.requestAttempts
+        entering.continueDismissedReminder()
+        await settle()
+        precondition(TestActivityKit.requestAttempts == attemptsBeforeRestore && entering.restorationFailure == nil,
+                     "An alert action must not request an activity until UIKit reports active")
+        // Dismissing the alert can reactivate the scene before the async request runs.
+        entering.leaveForeground()
+        entering.accept(snapshot) // A timetable refresh replaces the first restore task.
+        await settle()
+        precondition(live.isEmpty && entering.dismissedOccurrence == nil,
+                     "An inactive scene waits without losing the user's restore decision")
+        applicationActive = true
+        entering.resumeReminderRestoration()
+        entering.foreground() // Repeated entry must not open another dismissal prompt.
+        await settle()
+        precondition(live.count == 1 && live[0].id != localID && entering.dismissedOccurrence == nil,
+                     "Continue restores the reminder even when the scene reactivates before the request")
+        live[0].dismiss(); await settle()
+        let pendingRestore = try Activity<ScheduleLiveActivityAttributes>.request(attributes: matching,
+            content: .init(state: first.frames[0].state, staleDate: nil), pushType: .token, style: .standard,
+            alertConfiguration: .init(title: "课程提醒", body: "即将上课", sound: .default), start: now.addingTimeInterval(60))
+        entering.continueDismissedReminder(); await settle()
+        precondition(pendingRestore.activityState == .ended && live.count == 1 && live[0].activityState == .active,
+                     "Continue replaces a covering pending reservation with a visible activity")
+        live[0].dismiss(); await settle()
+        TestActivityKit.activitiesEnabled = false
+        entering.continueDismissedReminder(); await settle()
+        precondition(live.isEmpty && entering.restorationFailure?.contains("系统设置") == true,
+                     "A denied restore reports the permission problem")
+        TestActivityKit.activitiesEnabled = true
+        TestActivityKit.capacity = 0
+        entering.continueDismissedReminder(); await settle()
+        precondition(live.isEmpty && entering.restorationFailure?.contains("名额") == true,
+                     "A failed restore reports system capacity instead of disappearing silently")
+        TestActivityKit.capacity = Int.max
+        entering.continueDismissedReminder(); await settle()
+        precondition(live.count == 1 && entering.restorationFailure == nil)
         let fallback = live[0]
         let delayed = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: matching, content: .init(state: first.frames[0].state, staleDate: nil))
         entering.observeTokens(of: delayed); await settle()
@@ -310,6 +350,7 @@ struct NativeLiveActivityChecks {
         precondition(live.isEmpty, "Background refresh must not start a foreground reminder")
         foregroundTime = Date(timeIntervalSince1970: first.start + 60)
         entering.foreground(); await settle()
+        entering.continueDismissedReminder(); await settle()
         precondition(live.count == 1 && live[0].content.state.phase == .inProgress)
         entering.setEnabled(false); await settle()
         entering.foreground(); await settle()
@@ -324,16 +365,86 @@ struct NativeLiveActivityChecks {
         foregroundTime = now
         entering.setBroadcastChannels(["2": "bell-2", "4": "bell-4"], scope: "other")
         entering.foreground(); await settle()
+        entering.continueDismissedReminder(); await settle()
         precondition(live.count == 1 && live[0].pushType == .token, "Another table's channels are not used")
         live[0].dismiss(); await settle()
         entering.setBroadcastChannels(["2": "bell-2", "4": "bell-4"], scope: snapshot.scheduleScope!)
         entering.foreground(); await settle()
+        entering.continueDismissedReminder(); await settle()
         precondition(live.count == 1 && live[0].pushType == .channel("bell-2") && live[0].attributes.broadcastChannel == "bell-2"
                      && live[0].attributes.pushMode == nil, "The school's bell ends the entry reminder")
         precondition(!entering.tokenRegistrations().live.contains(live[0].attributes.occurrenceId ?? ""), "A channel activity has no token to upload")
         live[0].dismiss(); await settle()
         entering.setBroadcastChannels([:], scope: snapshot.scheduleScope!)
         entering.setEnabled(false); await settle()
+        // The buttons control reminders, including after relaunch and delayed pushes.
+        entering.setEnabled(true); await settle()
+        entering.continueDismissedReminder(); await settle()
+        precondition(live.count == 1)
+        live[0].dismiss(); await settle()
+        entering.foreground(); await settle()
+        let dismissed = entering.dismissedOccurrence!
+        entering.suppressDismissal(for: dismissed, permanently: false); await settle()
+        entering.foreground(); await settle()
+        precondition(entering.isEnabled && live.isEmpty && entering.dismissedOccurrence == nil,
+                     "Skip leaves the feature enabled but does not recreate this occurrence")
+        precondition((entering.timetable()?["skippedOccurrences"] as? [[String: Any]])?.count == 1,
+                     "The server receives the skipped course window")
+        let late = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: matching, content: .init(state: first.frames[0].state, staleDate: nil))
+        entering.observeTokens(of: late); await settle()
+        precondition(late.activityState == .ended, "An in-flight push cannot restore a skipped occurrence")
+        let relaunched = NativeLiveActivityController(now: { foregroundTime }, privacyDefaults: defaults)
+        relaunched.accept(snapshot); relaunched.foreground(); await settle()
+        precondition(live.isEmpty && relaunched.dismissedOccurrence == nil, "Skipping survives relaunch")
+        // The same source next week is a separate occurrence.
+        foregroundTime = now.addingTimeInterval(7 * 86400)
+        relaunched.accept(fixture(weeks: [1, 2, 3, 4])); await settle()
+        precondition(live.count == 1, "Skipping one occurrence does not suppress the next week's course")
+        relaunched.suppressDismissal(for: "", permanently: true); await settle()
+        precondition(!relaunched.isEnabled && live.isEmpty, "Never remind disables the feature and ends activities")
+        relaunched.foreground(); await settle()
+        precondition(live.isEmpty, "Disabled reminders stay disabled on entry")
+        relaunched.setEnabled(true); await settle()
+        precondition(relaunched.isEnabled && live.count == 1, "Settings can re-enable reminders")
+        relaunched.setEnabled(false); await settle()
+        // No current reminder means no dismissal notice, including stale saved history.
+        var noticeTime = now.addingTimeInterval(-3600)
+        let notices = NativeLiveActivityController(now: { noticeTime }, privacyDefaults: defaults)
+        let noticeScope = "dismissal-window-tests"
+        let noticeSnapshot = fixture(scope: noticeScope)
+        defaults.set(true, forKey: "naptable.liveActivity.hadActivity") // Legacy versions wrote this for reservations too.
+        notices.setLeadMinutes(30)
+        notices.setEnabled(true)
+        notices.accept(noticeSnapshot)
+        notices.foreground(); await settle()
+        precondition(live.isEmpty && notices.dismissedOccurrence == nil, "Entry before the lead window is normal, not a dismissal")
+        let futureAttributes = attributes(id: "future-notice", scope: noticeScope)
+        let futureReservation = try Activity<ScheduleLiveActivityAttributes>.request(attributes: futureAttributes,
+            content: .init(state: first.frames[0].state, staleDate: nil), pushType: .token, style: .standard,
+            alertConfiguration: .init(title: "课程提醒", body: "即将上课", sound: .default), start: now)
+        notices.foreground(); await settle()
+        futureReservation.dismiss(); await settle()
+        precondition(notices.dismissedOccurrence == nil, "Removing a future reservation must never say notifications were closed")
+        let premature = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: futureAttributes,
+            content: .init(state: first.frames[0].state, staleDate: nil))
+        notices.foreground(); await settle()
+        premature.dismiss(); await settle()
+        precondition(notices.dismissedOccurrence == nil, "Even an active event outside the configured reminder window must not prompt")
+        noticeTime = now
+        notices.foreground(); await settle()
+        precondition(live.count == 1 && notices.dismissedOccurrence == nil,
+                     "A missing reminder without a dismissal event is restored without accusing the user of closing it")
+        live[0].dismiss(); await settle()
+        precondition(notices.dismissedOccurrence != nil, "An actual dismissal during the current reminder window still prompts")
+        notices.leaveForeground()
+        noticeTime = Date(timeIntervalSince1970: first.end)
+        notices.foreground(); await settle()
+        precondition(live.isEmpty && notices.dismissedOccurrence == nil, "Returning after class clears a queued dismissal notice")
+        noticeTime = now.addingTimeInterval(86400)
+        notices.foreground(); await settle()
+        precondition(live.isEmpty && notices.dismissedOccurrence == nil, "A day without courses never shows the dismissal notice")
+        notices.setEnabled(false); await settle()
+        defaults.removeObject(forKey: "naptable.liveActivity.hadActivity")
         print("Live Activity v2 Swift checks passed")
     }
     @MainActor static var live: [Activity<ScheduleLiveActivityAttributes>] {

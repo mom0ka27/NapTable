@@ -62,7 +62,7 @@ struct BackgroundCropEditor: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(Color.appGroupedBackground.ignoresSafeArea())
+        .background(.appGroupedBackground)
         .navigationTitle(locksPreviewAppearance ? (previewDark ? "调整深色背景" : "调整浅色背景") : "调整背景")
         .appInlineNavigationTitle()
         #if os(iOS)
@@ -122,7 +122,7 @@ struct BackgroundCropEditor: View {
             // 框内：课表页上真实的样子。拖动和缩放时图片先按原样显示、示意课表
             // 藏起来，框里框外连成一张图，好对准位置。
             ZStack {
-                Color.appGroupedBackground
+                Rectangle().fill(.scheduleCanvas)
                 BackgroundCropLayer(image: image, frame: frame, scale: liveScale, offset: liveOffset)
                     .opacity(adjusting ? 1 : currentOpacity.wrappedValue)
                 TimetableSilhouette()

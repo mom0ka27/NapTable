@@ -31,7 +31,8 @@ enum GalleryRenderer {
             showTeacher: flags["showTeacher"] ?? true,
             showTime: flags["showTime"] ?? true,
             showLunarDate: flags["showLunarDate"] ?? true,
-            showHoliday: flags["showHoliday"] ?? true
+            showHoliday: flags["showHoliday"] ?? true,
+            holidayAlwaysVisible: flags["holidayAlwaysVisible"] ?? true
         )
         defaults.set(try? JSONEncoder().encode(options), forKey: NextWidgetConfiguration.widgetDisplayOptionsKey)
         defaults.set(job.persistent ?? false, forKey: NextWidgetConfiguration.liveActivityPersistentKey)

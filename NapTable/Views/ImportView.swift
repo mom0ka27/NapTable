@@ -49,6 +49,7 @@ struct ImportView: View {
                         }
 
                     }
+                    .appListBackground()
                 } else {
                     List {
                         Section {
@@ -74,6 +75,7 @@ struct ImportView: View {
                             Text("学校不在列表里，就自己设好学期和节次，再逐门添加课程。")
                         }
                     }
+                    .appListBackground()
                     .searchable(text: $search, prompt: "搜索学校")
                 }
             }
@@ -127,6 +129,7 @@ struct ImportView: View {
             }
             Section { NavigationLink("手动创建课表") { manualForm(school: name) } }
         }
+        .appListBackground()
         .navigationTitle(name)
         .appInlineNavigationTitle()
     }
@@ -142,7 +145,7 @@ struct ImportView: View {
 
 extension SchoolConfig {
     var schoolName: String {
-        ["南京大学", "中山大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
+        ["南京大学", "中山大学", "南京林业大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
             .first { title.hasPrefix($0) } ?? title
     }
 }
@@ -268,6 +271,7 @@ struct ImportedScheduleForm: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .appListBackground()
         .onAppear {
             // Keep the choices stable while installation updates the store and
             // this confirmation sheet is animating out.

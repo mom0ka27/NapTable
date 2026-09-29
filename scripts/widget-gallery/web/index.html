@@ -183,7 +183,7 @@ const OFFLINE_DIMS = ["schemes", "intent", "times", "devices", "scenarios"];
 let meta = null;
 let state = {
   surface: "widget",
-  widgets: ["upcoming:systemSmall", "upcoming:systemMedium", "today:systemMedium", "today:systemLarge", "twoday:systemLarge"],
+  widgets: ["upcoming:systemSmall", "upcoming:systemMedium", "upcoming:systemLarge", "twoday:systemLarge"],
   activities: ["lockScreen", "islandExpanded", "islandCompact"],
   afterClass: "nextCourseDay", courseCount: 1, layout: "auto",
   theme: "bunny", customColor: "#e26f63", solid: false,
@@ -417,14 +417,14 @@ function intentVariants(job) {
   if (job.kind === "twoday") return layouts;
   const after = OPTIONS.afterClass.map(([v]) => ({ afterClass: v }));
   if (job.kind === "upcoming" && job.family === "systemSmall") return after.flatMap((a) => OPTIONS.courseCount.map(([c]) => ({ ...a, courseCount: c })));
-  if (job.kind === "today" && job.family === "systemLarge") return after.flatMap((a) => layouts.map((l) => ({ ...a, ...l })));
+  if (job.kind === "upcoming" && job.family === "systemLarge") return after.flatMap((a) => layouts.map((l) => ({ ...a, ...l })));
   return after;
 }
 
 /// 有「显示方式」的画面才有值；没选就是这个小组件的默认。和 batch.py 的 layout_of 一致。
 function layoutOf(job) {
   if (job.kind === "twoday") return job.layout || "list";
-  if (job.kind === "today" && job.family === "systemLarge") return job.layout || "timeline";
+  if (job.kind === "upcoming" && job.family === "systemLarge") return job.layout || "timeline";
   return null;
 }
 

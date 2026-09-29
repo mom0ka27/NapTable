@@ -39,6 +39,7 @@ struct ManualScheduleWizard: View {
             case .review: reviewStep
             }
         }
+        .appListBackground()
         .navigationTitle(step.title)
         .appInlineNavigationTitle()
         .navigationBarBackButtonHidden(step != .semester)
@@ -443,6 +444,7 @@ private struct ManualCourseEditor: View {
                     }
                 }
             }
+            .appListBackground()
             .navigationTitle(isNew ? "添加课程" : "编辑课程")
             .appInlineNavigationTitle()
             .toolbar {

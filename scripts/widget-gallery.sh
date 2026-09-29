@@ -5,7 +5,7 @@
 #   scripts/widget-gallery.sh --all [目录] 批量渲染所有模式（默认 build/widget-gallery/）
 #   scripts/widget-gallery.sh --zip        批量渲染并打包成 build/widget-gallery.zip，发给别人双击就能看
 #       可加 --devices all|se,pro  --schemes light,dark  --times all|inClass,...
-#            --scenarios all|normal,...  --widgets upcoming,today,twoday,activity  --date YYYY-MM-DD
+#            --scenarios all|normal,...  --widgets upcoming,twoday,activity  --date YYYY-MM-DD
 #   scripts/widget-gallery.sh --build      只编译
 #   scripts/widget-gallery.sh --web        只把改过的网页同步进已安装的画廊，刷新浏览器即可
 #   scripts/widget-gallery.sh --stop       关掉画廊用的模拟器
@@ -17,7 +17,7 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 src_dir="$repo_dir/scripts/widget-gallery"
 build_dir="$repo_dir/build/widget-gallery-app"
 app="$build_dir/WidgetGallery.app"
-bundle_id="me.mom0ka27.naptable.widgetgallery"
+bundle_id="com.niyiwei.naptable.widgetgallery"
 device_name="NapTable Widget Gallery"
 port="${GALLERY_PORT:-8765}"
 
@@ -106,7 +106,7 @@ build() {
     <key>MinimumOSVersion</key><string>18.0</string>
     <key>UIDeviceFamily</key><array><integer>1</integer></array>
     <key>UILaunchScreen</key><dict/>
-    <key>CPUAppGroupIdentifier</key><string>group.me.mom0ka27.naptable.gallery</string>
+    <key>CPUAppGroupIdentifier</key><string>group.com.niyiwei.naptable.gallery</string>
 </dict>
 </plist>
 PLIST

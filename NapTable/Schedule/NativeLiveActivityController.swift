@@ -2,6 +2,9 @@
 import ActivityKit
 import Combine
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 
 /// The phone's half of the course reminders. The server computes when each
 /// activity starts and ends from the uploaded timetable; this renders them
@@ -44,6 +47,7 @@ final class NativeLiveActivityController: ObservableObject {
     @Published private(set) var conflicts: [LiveActivityTimeline.Conflict] = []
     @Published private(set) var omitted = 0
     @Published private(set) var dismissedOccurrence: String?
+    @Published private(set) var restorationFailure: String?
     /// Asks the system to wake the app around an instant (see `LiveActivityBackgroundRefresh`).
     var scheduleBackgroundWakeup: ((Date) -> Void)?
     /// The timetable or a setting changed: the push service uploads it again.
@@ -52,8 +56,8 @@ final class NativeLiveActivityController: ObservableObject {
     /// service reconciles the server's registrations.
     var activityTokensDidChange: (() -> Void)?
     /// Whether the server lets this device have reminders today, as the last
-    /// sync or account refresh said. False only once charging started and the
-    /// device is signed out or out of usage days: the app then starts no
+    /// sync said. False only once a subscription is required and this device
+    /// has none: the app then starts no
     /// activity of its own on entry either.
     var reminderAllowed = true {
         didSet { if oldValue != reminderAllowed { rebuild() } }
@@ -68,6 +72,16 @@ final class NativeLiveActivityController: ObservableObject {
     private var epoch = 0
     private var isForeground = false
     private let now: () -> Date
+    private let applicationIsActive: (() -> Bool)?
+    private var canStartForegroundActivity: Bool {
+        guard isForeground else { return false }
+        if let applicationIsActive { return applicationIsActive() }
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .active
+        #else
+        return true
+        #endif
+    }
     private let privacyDefaults: UserDefaults
     private let defaults: UserDefaults
     /// Activity ID → hex push token. Subscriptions live only as long as the process.
@@ -81,11 +95,40 @@ final class NativeLiveActivityController: ObservableObject {
     /// (it runs out, or is swiped away on the Lock Screen).
     private var previewObserver: Task<Void, Never>?
     private var dismissalObservers: [String: Task<Void, Never>] = [:]
-    private let dismissalDefaults = UserDefaults.standard
-    private static let hadActivityKey = "naptable.liveActivity.hadActivity"
+    private struct DismissalWindow: Codable, Equatable {
+        var scope: String
+        var dateKey: String
+        var start: Double
+        var end: Double
+        func overlaps(scope: String, dateKey: String, start: Double, end: Double) -> Bool {
+            self.scope == scope && self.dateKey == dateKey && self.start < end && self.end > start
+        }
+    }
+    private var dismissalWindow: DismissalWindow?
+    // Keep the user's decision across scene reactivation and cancelled rebuilds.
+    // Until reconciliation runs, a missing activity is expected, not a new dismissal.
+    private var restoringDismissedReminder = false
+    private var restorationWindow: DismissalWindow?
+    private var dismissalDefaults: UserDefaults { privacyDefaults }
+    private static let skippedKey = "naptable.liveActivity.skippedOccurrences"
+    private var skippedWindows: [DismissalWindow] {
+        guard let data = dismissalDefaults.data(forKey: Self.skippedKey),
+              let windows = try? JSONDecoder().decode([DismissalWindow].self, from: data) else { return [] }
+        return windows.filter { $0.end > now().timeIntervalSince1970 }
+    }
+    private func isSkipped(scope: String, dateKey: String, start: Double, end: Double) -> Bool {
+        skippedWindows.contains { $0.overlaps(scope: scope, dateKey: dateKey, start: start, end: end) }
+    }
+    private func isSkipped(_ attributes: ScheduleLiveActivityAttributes) -> Bool {
+        guard let start = attributes.reservationStart, let end = attributes.reservationEnd else { return false }
+        return isSkipped(scope: attributes.scheduleScope ?? "", dateKey: attributes.dateKey,
+                         start: start.timeIntervalSince1970, end: end.timeIntervalSince1970)
+    }
     private static let channelsKey = "naptable.liveActivity.v2.channels"
 
-    init(now: @escaping () -> Date = { .now }, privacyDefaults: UserDefaults = .standard) {
+    init(now: @escaping () -> Date = { .now }, privacyDefaults: UserDefaults = .standard,
+         applicationIsActive: (() -> Bool)? = nil) {
+        self.applicationIsActive = applicationIsActive
         self.privacyDefaults = privacyDefaults
         self.now = now
         defaults = UserDefaults(suiteName: NextWidgetConfiguration.appGroup) ?? .standard
@@ -102,7 +145,7 @@ final class NativeLiveActivityController: ObservableObject {
     func setEnabled(_ requested: Bool) {
         let value = requested && PrivacyPolicy.liveAllowed(privacyDefaults)
         defaults.set(value, forKey: Self.enabledKey)
-        if value { rebuild() } else { end(); status = .disabled }
+        if value { rebuild() } else { clearDismissalNotice(); end(); status = .disabled }
         #if os(iOS)
         if #available(iOS 17.2, *) { LiveActivityPushService.shared.enabledDidChange(value) }
         #endif
@@ -132,8 +175,12 @@ final class NativeLiveActivityController: ObservableObject {
     /// What the server needs to compute the reminders; `nil` without a usable semester.
     func timetable() -> [String: Any]? {
         guard let snapshot = currentScheduleMetadata, let own = following ? ownScheduleMetadata : snapshot else { return nil }
-        return LiveActivityTimeline.timetable(own: own, share: following ? snapshot : nil, choices: choices,
-                                              lead: leadMinutes, sharedLead: sharedLeadMinutes, perPeriod: perPeriod)
+        guard var body = LiveActivityTimeline.timetable(own: own, share: following ? snapshot : nil, choices: choices,
+                                              lead: leadMinutes, sharedLead: sharedLeadMinutes, perPeriod: perPeriod) else { return nil }
+        body["skippedOccurrences"] = skippedWindows.map {
+            ["scope": $0.scope, "dateKey": $0.dateKey, "start": $0.start, "end": $0.end] as [String: Any]
+        }
+        return body
     }
     func accept(_ snapshot: NativeScheduleSnapshot, own: NativeScheduleSnapshot? = nil) {
         guard !snapshot.cancelled else { return }
@@ -158,6 +205,7 @@ final class NativeLiveActivityController: ObservableObject {
         let value = LiveActivityDisplaySnapshot(scope: scope, sourceLabel: snapshot.sourceLabel, occurrences: built.occurrences)
         do { try value.save(); display = value }
         catch { status = .failed("暂时无法保存提醒，请稍后重试。"); return }
+        validateDismissalNotice()
         planDidChange?()
         let generation = epoch
         task = Task { [weak self] in
@@ -199,6 +247,10 @@ final class NativeLiveActivityController: ObservableObject {
         return (registrations, live)
     }
     func observeTokens(of activity: Activity<ScheduleLiveActivityAttributes>) {
+        if !isEnabled || isSkipped(activity.attributes) {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            return
+        }
         // A delayed push can arrive after the foreground fallback. Retire
         // the fallback once the server-backed activity is actually running.
         if activity.attributes.occurrenceId?.hasPrefix("foreground:") != true,
@@ -247,30 +299,48 @@ final class NativeLiveActivityController: ObservableObject {
     }
     func foreground() {
         isForeground = true
-        observeDismissals()
-        detectMissingActivityAfterRelauch()
+        // Refresh the course window before retaining or presenting any notice.
+        // Absence alone does not prove dismissal (a reminder may not have arrived).
         if !isPreviewActive { rebuild() }
+        validateDismissalNotice()
+        observeDismissals()
     }
-    /// A force-quit removes the process observers, so no `.dismissed` event is
-    /// delivered. Persist that an activity existed and check its current
-    /// course window when the app returns to the foreground.
-    private func detectMissingActivityAfterRelauch() {
-        guard isEnabled, !isPreviewActive,
-              dismissalDefaults.bool(forKey: Self.hadActivityKey),
-              let display, let occurrence = display.occurrences.first(where: {
-                  $0.reminder <= now().timeIntervalSince1970 && now().timeIntervalSince1970 < $0.end
-              }),
-              !courseActivities.contains(where: {
-                  $0.attributes.scheduleScope == display.scope &&
-                  $0.attributes.dateKey == occurrence.dateKey &&
-                  ($0.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
-                  ($0.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) > occurrence.start
-              }),
-              !dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress.all"),
-              !dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress." + occurrence.sourceID) else { return }
-        dismissedOccurrence = "foreground:" + occurrence.sourceID + ":" + String(occurrence.start)
+    private func currentOccurrence(overlapping window: DismissalWindow) -> LiveActivityOccurrence? {
+        guard isEnabled, !isPreviewActive, let display, display.scope == window.scope else { return nil }
+        let instant = now().timeIntervalSince1970
+        return display.occurrences.first {
+            $0.reminder <= instant && instant < $0.end &&
+            window.overlaps(scope: display.scope, dateKey: $0.dateKey, start: $0.start, end: $0.end)
+        }
     }
-    func clearDismissalNotice() { dismissedOccurrence = nil }
+    private func validateDismissalNotice() {
+        guard let window = dismissalWindow else { return }
+        if currentOccurrence(overlapping: window) == nil { clearDismissalNotice() }
+    }
+    func clearDismissalNotice() { dismissedOccurrence = nil; dismissalWindow = nil }
+    func continueDismissedReminder() {
+        restorationFailure = nil
+        restorationWindow = dismissalWindow
+        if restorationWindow == nil, let display,
+           let occurrence = display.occurrences.first(where: { $0.reminder <= now().timeIntervalSince1970 && now().timeIntervalSince1970 < $0.end }) {
+            restorationWindow = .init(scope: display.scope, dateKey: occurrence.dateKey, start: occurrence.start, end: occurrence.end)
+        }
+        clearDismissalNotice()
+        guard isEnabled else { restorationFailure = "实时通知已关闭，请先在设置中开启。"; return }
+        guard currentScheduleMetadata != nil, !isPreviewActive else {
+            restorationFailure = "请先结束预览并打开课表，再恢复实时通知。"; return
+        }
+        guard restorationWindow != nil else { restorationFailure = "本次课程已结束或不在提醒时间内。"; return }
+        restoringDismissedReminder = true
+        // Do not pretend the app is active while its alert is still dismissing.
+        // foreground() will retry when the actual application becomes active.
+        rebuild()
+    }
+    func clearRestorationFailure() { restorationFailure = nil }
+    func resumeReminderRestoration() {
+        guard restoringDismissedReminder else { return }
+        foreground()
+    }
     /// Channel mode: the server's broadcast channel of each final period of the
     /// table `scope`, so an activity started on entry follows the school's bells.
     /// Empty in token mode (a followed share, or bells the school does not have).
@@ -288,19 +358,42 @@ final class NativeLiveActivityController: ObservableObject {
         return channels[String(period.number)]
     }
     func suppressDismissal(for occurrenceID: String, permanently: Bool) {
-        let key = occurrenceID.split(separator: ":").dropFirst().first.map(String.init) ?? occurrenceID
-        dismissalDefaults.set(true, forKey: "naptable.liveActivity.suppress." + key)
-        if permanently { dismissalDefaults.set(true, forKey: "naptable.liveActivity.suppress.all") }
-        dismissedOccurrence = nil
+        if permanently { setEnabled(false); return }
+        guard occurrenceID == dismissedOccurrence, let window = dismissalWindow else { return }
+        var windows = skippedWindows
+        if !windows.contains(window) { windows.append(window) }
+        if let data = try? JSONEncoder().encode(windows) { dismissalDefaults.set(data, forKey: Self.skippedKey) }
+        clearDismissalNotice()
+        let previousRetirement = retirementTask
+        let activities = courseActivities.filter { isSkipped($0.attributes) }
+        retirementTask = Task { [weak self] in
+            await previousRetirement?.value
+            for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
+            self?.announceTokens()
+        }
+        rebuild()
     }
     private func observeDismissals() {
         for activity in courseActivities where dismissalObservers[activity.id] == nil {
             let id = activity.id
+            let initiallyVisible = activity.activityState == .active || activity.activityState == .stale
             dismissalObservers[id] = Task { [weak self] in
-                for await state in activity.activityStateUpdates where state == .dismissed {
-                    guard let self, let occurrence = activity.attributes.occurrenceId,
-                          !self.dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress.all"),
-                          !self.dismissalDefaults.bool(forKey: "naptable.liveActivity.suppress." + occurrence) else { return }
+                // A pending reservation being removed is not a displayed activity
+                // being dismissed. Remember whether this activity actually started.
+                var wasVisible = initiallyVisible
+                for await state in activity.activityStateUpdates {
+                    if state == .active || state == .stale { wasVisible = true }
+                    guard state == .dismissed else { continue }
+                    guard let self, wasVisible, self.isEnabled, !self.isPreviewActive, !self.restoringDismissedReminder,
+                          let occurrence = activity.attributes.occurrenceId,
+                          let scope = activity.attributes.scheduleScope,
+                          let start = activity.attributes.reservationStart, let end = activity.attributes.reservationEnd,
+                          let reminder = activity.attributes.reminderDate,
+                          reminder <= self.now(), self.now() < end, !self.isSkipped(activity.attributes) else { break }
+                    let window = DismissalWindow(scope: scope, dateKey: activity.attributes.dateKey,
+                                                 start: start.timeIntervalSince1970, end: end.timeIntervalSince1970)
+                    guard self.currentOccurrence(overlapping: window) != nil else { break }
+                    self.dismissalWindow = window
                     self.dismissedOccurrence = occurrence
                 }
                 self?.dismissalObservers[id] = nil
@@ -332,6 +425,23 @@ final class NativeLiveActivityController: ObservableObject {
     }
     private func reconcile(generation: Int) async {
         guard valid(generation), let display else { return }
+        // A superseded task must not consume the decision: its successor still
+        // needs to restore the activity. If the scene is inactive, wait for entry.
+        defer {
+            if valid(generation), canStartForegroundActivity, restoringDismissedReminder {
+                let restored = courseActivities.contains { activity in
+                    (activity.activityState == .active || activity.activityState == .stale) &&
+                    restorationWindow?.overlaps(scope: activity.attributes.scheduleScope ?? "", dateKey: activity.attributes.dateKey,
+                        start: activity.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity,
+                        end: activity.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) == true
+                }
+                if !restored {
+                    restorationFailure = status.detail ?? "本次课程已结束，或系统未能恢复实时通知。请重新打开课表后重试。"
+                }
+                restoringDismissedReminder = false
+                restorationWindow = nil
+            }
+        }
         guard #available(iOS 18.0, *) else {
             coverage = "当前系统仅支持预览效果"
             status = .unavailable("自动提醒需要 iOS 18 或更新版本。")
@@ -341,7 +451,7 @@ final class NativeLiveActivityController: ObservableObject {
         for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.activityState != .ended && activity.activityState != .dismissed {
             guard valid(generation) else { return }
             // One-time retirement is also safe after an interrupted upgrade.
-            if (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= now() ||
+            if isSkipped(activity.attributes) || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= now() ||
                 activity.attributes.protocolVersion != 2 || activity.attributes.scheduleScope != display.scope {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
@@ -350,15 +460,27 @@ final class NativeLiveActivityController: ObservableObject {
         defer { announceTokens() }
         guard valid(generation) else { return }
         guard reminderAllowed else {
-            coverage = "需要登录或订阅"
-            status = .unavailable("实时活动需要登录；使用日用完后需要订阅。")
+            coverage = "需要订阅"
+            status = .unavailable("实时活动需要订阅。")
             return
         }
-        if isForeground {
+        if canStartForegroundActivity {
             let instant = now()
             for occurrence in display.occurrences where occurrence.reminder <= instant.timeIntervalSince1970 && instant.timeIntervalSince1970 < occurrence.end {
-                // A server activity (including a reservation) already covering
-                // this course takes precedence over a foreground fallback.
+                guard !isSkipped(scope: display.scope, dateKey: occurrence.dateKey, start: occurrence.start, end: occurrence.end),
+                      dismissalWindow?.overlaps(scope: display.scope, dateKey: occurrence.dateKey, start: occurrence.start, end: occurrence.end) != true else { continue }
+                // On explicit restore a pending reservation is not a visible
+                // activity. Retire it first so it cannot block an immediate start.
+                if restoringDismissedReminder {
+                    for activity in courseActivities where Self.isPending(activity) &&
+                        activity.attributes.scheduleScope == display.scope && activity.attributes.dateKey == occurrence.dateKey &&
+                        (activity.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
+                        (activity.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) > occurrence.start {
+                        await activity.end(nil, dismissalPolicy: .immediate)
+                    }
+                    guard valid(generation), canStartForegroundActivity else { return }
+                }
+                // Outside an explicit restore, keep the server reservation.
                 guard !courseActivities.contains(where: {
                     $0.attributes.scheduleScope == display.scope && $0.attributes.dateKey == occurrence.dateKey &&
                     ($0.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
@@ -380,15 +502,15 @@ final class NativeLiveActivityController: ObservableObject {
                         content: ActivityContent(state: state, staleDate: staleDate(attributes, in: display)),
                         pushType: channel.map { .channel($0) } ?? .token)
                     observeTokens(of: activity)
-                    dismissalDefaults.set(true, forKey: Self.hadActivityKey)
                 } catch {
                     status = Self.isCapacityError(error)
                         ? .limited("系统暂无可用的实时活动名额，请稍后重试。")
-                        : .failed("实时通知没能启动，请稍后重新进入 App 重试。")
+                        : .failed("实时通知没能启动：\(error.localizedDescription)")
                     return
                 }
             }
         }
+        observeDismissals()
         let running = courseActivities.filter { $0.activityState == .active || $0.activityState == .stale }
         for activity in running {
             if let state = display.resolve(attributes: activity.attributes, at: now()) {
@@ -433,6 +555,7 @@ final class NativeLiveActivityController: ObservableObject {
                 break
             }
             let attributes = claim.attributes(semester: semester)
+            if isSkipped(attributes) { release.append(claim.occurrenceId); continue }
             if courseActivities.contains(where: { $0.attributes.occurrenceId == claim.occurrenceId }) { continue }
             // Already started (or dismissed): nothing left to reserve.
             guard claim.reminder > current else { continue }
@@ -449,7 +572,6 @@ final class NativeLiveActivityController: ObservableObject {
                 _ = try Activity<ScheduleLiveActivityAttributes>.request(attributes: attributes, content: ActivityContent(state: state, staleDate: Date(timeIntervalSince1970: claim.end)),
                     pushType: pushType, style: .standard, alertConfiguration: AlertConfiguration(title: "课程提醒", body: "即将上课", sound: .default),
                     start: Date(timeIntervalSince1970: claim.reminder))
-                dismissalDefaults.set(true, forKey: Self.hadActivityKey)
             } catch {
                 release.append(claim.occurrenceId)
                 if Self.isCapacityError(error) { quotaReached = true } else { failure = "部分提醒暂时没能安排，稍后会自动重试。" }
@@ -476,6 +598,9 @@ final class NativeLiveActivityController: ObservableObject {
         return error == .targetMaximumExceeded || error == .globalMaximumExceeded
     }
     func end() {
+        clearDismissalNotice()
+        restoringDismissedReminder = false
+        restorationWindow = nil
         epoch += 1
         task?.cancel()
         isPreviewActive = false
@@ -533,7 +658,7 @@ final class NativeLiveActivityController: ObservableObject {
         observeTokenActivities()
         let stored = display ?? LiveActivityDisplaySnapshot.load()
         for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.activityState != .ended && activity.activityState != .dismissed {
-            if !isEnabled || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= current {
+            if !isEnabled || isSkipped(activity.attributes) || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= current {
                 await activity.end(nil, dismissalPolicy: .immediate)
             } else if !Self.isPending(activity), let state = stored?.resolve(attributes: activity.attributes, at: current) {
                 await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, in: stored)))

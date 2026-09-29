@@ -73,8 +73,7 @@ struct NativeScheduleMonthView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 8)
-        .background(Color.appSecondaryGroupedBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background { ScheduleSurface(cornerRadius: 16, isCard: true) }
     }
 
     private func dayCell(_ day: Day) -> some View {
@@ -219,8 +218,7 @@ struct NativeScheduleMonthView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appSecondaryGroupedBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background { ScheduleSurface(cornerRadius: 16, isCard: true) }
     }
 
     private func agendaRow(_ block: NativeScheduleCourseBlock) -> some View {

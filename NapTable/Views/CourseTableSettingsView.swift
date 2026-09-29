@@ -24,6 +24,7 @@ struct CourseTableSettingsView: View {
         }
         .navigationTitle(table?.name ?? "课表")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
         .alert("重命名课表", isPresented: $renaming) {
             TextField("", text: $renameText, prompt: Text("课表名称"))
                 .labelsHidden()
@@ -48,6 +49,7 @@ struct CourseTableSettingsView: View {
             scheduleSection(table)
             dangerSection(table)
         }
+        .appListBackground()
     }
 
     // MARK: 概览
@@ -319,8 +321,10 @@ private struct ClassTimesEditor: View {
                 }
             }
         }
+        .appListBackground()
         .navigationTitle("节次时间")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
     }
 
     private func timeBinding(_ index: Int, _ keyPath: WritableKeyPath<ClassTime, String>) -> Binding<String> {
@@ -356,7 +360,9 @@ private struct CalendarAdjustmentsList: View {
                 }
             }
         }
+        .appListBackground()
         .navigationTitle("调休安排")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
     }
 }

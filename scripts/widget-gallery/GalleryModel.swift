@@ -14,7 +14,7 @@ struct GalleryJob: Codable {
     // 编辑小组件
     var afterClass: String?
     var courseCount: Int?
-    /// 显示方式：timeline / list。不给就是这个小组件的默认（两日课表列表，今日课表时间线）。
+    /// 显示方式：timeline / list。不给就是这个小组件的默认（两日课表列表，今日课程大号时间线）。
     var layout: String?
     /// 画放烟花那一刻（按了放假祝福上的彩炮）。
     var celebrating: Bool?
@@ -126,18 +126,17 @@ struct GalleryWidgetInfo: Codable {
     let kind: String
     let title: String
     let families: [String]
-    /// 这个小组件「编辑小组件」里有的选项。临近课程的「显示课程数」只在小号上出现。
+    /// 这个小组件「编辑小组件」里有的选项。今日课程的「显示课程数」只在小号上出现，「显示方式」只在大号上出现。
     let options: [String]
 }
 
 enum GalleryCatalog {
     static let widgets: [GalleryWidgetInfo] = [
         GalleryWidgetInfo(
-            kind: "upcoming", title: "临近课程",
-            families: ["systemSmall", "systemMedium", "accessoryInline", "accessoryCircular", "accessoryRectangular"],
-            options: ["afterClass", "courseCount"]
+            kind: "upcoming", title: "今日课程",
+            families: ["systemSmall", "systemMedium", "systemLarge", "accessoryInline", "accessoryCircular", "accessoryRectangular"],
+            options: ["afterClass", "courseCount", "layout"]
         ),
-        GalleryWidgetInfo(kind: "today", title: "今日课表", families: ["systemMedium", "systemLarge"], options: ["afterClass", "layout"]),
         GalleryWidgetInfo(kind: "twoday", title: "两日课表", families: ["systemLarge"], options: ["layout"]),
     ]
 
@@ -316,7 +315,8 @@ enum GalleryPayload {
         (25...27).map { PublishedHoliday(date: String(format: "2026-09-%02d", $0), name: "中秋节") }
         + (1...7).map { PublishedHoliday(date: String(format: "2026-10-%02d", $0), name: "国庆节") }
 
-    /// 和 App 写进 App Group 的形状一样：今天、本周七天、之后三周。
+    /// 和 App 写进 App Group 的形状一样：今天、本周七天、之后的日子。App 带到学期结束，
+    /// 画廊只带三周：「最近有课的一天」最多往后找三周，再多画出来也一样。
     static func make(job: GalleryJob, now: Date) -> WidgetSchedulePayload {
         let scenario = GalleryScenarios.named(job.scenario)
         // 下面按日期查节假日，要先换上放假安排。

@@ -7,7 +7,7 @@
     --schemes    light,dark（默认两个都出）
     --times      快捷时刻 id，逗号分隔；all（默认）
     --scenarios  课表场景 id，逗号分隔；默认 normal，all 是全部
-    --widgets    只出这些：upcoming,today,twoday,activity（默认全部）
+    --widgets    只出这些：upcoming,twoday,activity（默认全部）
     --date       哪一天，YYYY-MM-DD；默认今天，周末换成下周一
     --zip        另外打一个 zip 发给别人：里面是离线版的画廊网页（单个 HTML，图片内嵌），
                  和原网页一样操作，只是只能在导出过的组合之间切换；解不解压都能直接打开
@@ -53,7 +53,7 @@ def intents(kind, family):
     base = [({"afterClass": v}, t) for v, t in AFTER]
     if kind == "upcoming" and family == "systemSmall":
         return [({**job, "courseCount": c}, f"{t} · {'两节' if c == 2 else '一节'}") for job, t in base for c in (1, 2)]
-    if kind == "today" and family == "systemLarge":
+    if kind == "upcoming" and family == "systemLarge":
         return [({**job, "layout": v}, f"{t} · {lt}") for job, t in base for v, lt in LAYOUTS]
     return base
 
@@ -200,7 +200,7 @@ def layout_of(job):
     """有「显示方式」的画面才有值；没选就是这个小组件的默认。和 web/index.html 的 layoutOf 一致。"""
     if job.get("kind") == "twoday":
         return job.get("layout") or "list"
-    if job.get("kind") == "today" and job.get("family") == "systemLarge":
+    if job.get("kind") == "upcoming" and job.get("family") == "systemLarge":
         return job.get("layout") or "timeline"
     return None
 

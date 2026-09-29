@@ -16,7 +16,7 @@ import Foundation
 @MainActor
 final class LiveActivityBackgroundRefresh {
     static let shared = LiveActivityBackgroundRefresh()
-    static let identifier = "me.mom0ka27.naptable.liveactivity.refresh"
+    static let identifier = "com.niyiwei.naptable.liveactivity.refresh"
 
     /// `BGTaskScheduler` rejects a request that is due immediately, and the
     /// in-process timer already covers the next few seconds.

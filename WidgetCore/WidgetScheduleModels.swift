@@ -6,7 +6,7 @@ import Foundation
 /// The identifier is read from `CPUAppGroupIdentifier` so a developer with a
 /// different team prefix only edits build settings.
 nonisolated enum AppGroupIdentifier {
-    static let fallback = "group.me.mom0ka27.naptable"
+    static let fallback = "group.com.niyiwei.naptable"
 
     static func resolved(bundle: Bundle = .main) -> String {
         let configured = bundle.object(forInfoDictionaryKey: "CPUAppGroupIdentifier") as? String
@@ -255,8 +255,9 @@ struct WidgetSchedulePayload: Codable, Equatable {
     let today: WidgetDay?
     let days: [WidgetDay]?
     let weekDays: [WidgetDay]?
-    /// `weekDays` 之外、今天所在这一周和之后三周的日子。周日晚上的「明天」、
-    /// 「最近有课的一天」（最多往后三周）都在这里找。名字沿用最早只带下一周时的叫法。
+    /// `weekDays` 之外、今天所在这一周到学期结束的日子。周日晚上的「明天」、
+    /// 「最近有课的一天」（最多往后三周）都在这里找。名字沿用最早只带下一周时的叫法；
+    /// 旧版本 App 只写了这一周和之后三周。
     /// 旧版本写的 payload 没有这个字段，解码成 `nil` 即可。
     let nextWeekDays: [WidgetDay]?
     /// 服务端下发的法定放假日（国务院放假安排，含连休里的周末），节假日提示按它算。
@@ -313,7 +314,8 @@ struct WidgetSchedulePayload: Codable, Equatable {
     }
 
     /// 今天不能照常列课的原因：放假了，或者课表过期（学期内、带日期的数据里却没有今天，
-    /// 一般是四周多没打开 App）。两种情况都不显示任何一天的课。
+    /// 现在的 App 带满整个学期，一般是学期中途换了课表、App 又一直没打开；旧版本只带四周，
+    /// 四周多没打开 App 也会这样）。两种情况都不显示任何一天的课。
     func notice(now: Date) -> WidgetScheduleNotice? {
         let date = Self.dateString(now)
         if let vacation = vacation(on: date) { return .vacation(vacation) }

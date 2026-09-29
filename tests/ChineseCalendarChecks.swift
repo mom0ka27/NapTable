@@ -142,12 +142,16 @@ struct ChineseCalendarChecks {
         let decoded = try! JSONDecoder().decode(ScheduleWidgetDisplayOptions.self, from: legacy)
         expect(!decoded.showRoom && !decoded.showTeacher, "旧设置里的开关要保留")
         expect(decoded.showLunarDate && decoded.showHoliday, "新开关缺字段时用默认值")
-        // 旧版本还存着已经去掉的「课后显示」「节假日常驻」，解码时忽略
+        expect(decoded.holidayAlwaysVisible && decoded.showsResidentHoliday, "节假日常驻默认开启")
+        // 旧版本还存着已经去掉的「课后显示」，解码时忽略；当时关掉的常驻要照旧关着
         let removedFields = Data("""
-        {"showCourseName":true,"showRoom":true,"showTeacher":true,"showTime":true,"showHoliday":false,"holidayAlwaysVisible":true,"afterClass":"tomorrow"}
+        {"showCourseName":true,"showRoom":true,"showTeacher":true,"showTime":true,"showHoliday":true,"holidayAlwaysVisible":false,"afterClass":"tomorrow"}
         """.utf8)
         let withRemoved = try! JSONDecoder().decode(ScheduleWidgetDisplayOptions.self, from: removedFields)
-        expect(!withRemoved.showHoliday, "带着旧字段的设置照样解得出来")
+        expect(withRemoved.showHoliday && !withRemoved.holidayAlwaysVisible, "带着旧字段的设置照样解得出来，关掉的常驻不会被打开")
+        var holidayOff = ScheduleWidgetDisplayOptions.default
+        holidayOff.showHoliday = false
+        expect(!holidayOff.showsResidentHoliday, "关掉节假日提示后常驻也不生效")
 
         // 「明天」跨周：周日晚上的明天在下一周里
         func course(_ name: String) -> WidgetCourse {

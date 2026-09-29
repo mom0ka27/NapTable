@@ -228,8 +228,23 @@ enum ScheduleServiceError: LocalizedError {
         await makeService(controller).refreshStatus()
         precondition(calls("/devices", "POST").count == registrations, "A cold start with the same token does not register the device again")
         precondition(defaults.string(forKey: "naptable.liveActivity.v2.registeredTokenDigest")?.isEmpty == true, "Only a digest is kept, empty without a token")
-        controller.setEnabled(false)
-        for _ in 0..<2 { await settle() }
+        shareGone = false
+        controller.accept(own)
+        controller.continueDismissedReminder()
+        for _ in 0..<3 { await settle() }
+        let current = Activity<ScheduleLiveActivityAttributes>.activities.first {
+            $0.attributes.scheduleScope == "own" && $0.activityState == .active
+        }!
+        current.dismiss(); await settle()
+        controller.foreground(); await settle()
+        controller.suppressDismissal(for: controller.dismissedOccurrence!, permanently: false)
+        for _ in 0..<3 { await settle() }
+        let skipped = body(calls("/timetable").last!)["skippedOccurrences"] as! [[String: Any]]
+        precondition(skipped.count == 1 && skipped[0]["scope"] as? String == "own",
+                     "Skipping a reminder uploads its window through the normal revision/retry flow")
+        controller.suppressDismissal(for: "", permanently: true)
+        await service.refreshStatus()
+        precondition(!controller.isEnabled && service.deviceID == nil, "Never remind revokes the server device")
     }
     @MainActor static func pending(_ scope: String) -> [Activity<ScheduleLiveActivityAttributes>] {
         Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.attributes.scheduleScope == scope && $0.activityState == .pending }

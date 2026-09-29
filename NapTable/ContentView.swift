@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showLiveActivityDismissal = false
     @State private var dismissalOccurrence = ""
+    @State private var restorationFailure: String?
 
     var body: some View {
         Group {
@@ -66,25 +67,46 @@ struct ContentView: View {
             // is a small meta request unless the share actually moved.
             Task { await ScheduleSharingService.shared.refreshFollowed() }
         }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            NativeLiveActivityController.shared.resumeReminderRestoration()
+        }
+        #endif
         .onReceive(NativeLiveActivityController.shared.$dismissedOccurrence) { occurrence in
-            guard let occurrence else { return }
+            guard let occurrence else {
+                showLiveActivityDismissal = false
+                dismissalOccurrence = ""
+                return
+            }
             dismissalOccurrence = occurrence
             showLiveActivityDismissal = true
         }
         .alert("实时通知似乎被关闭了", isPresented: $showLiveActivityDismissal) {
-            Button("永不提醒") {
-                NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: true)
+            Button("继续提醒") {
+                NativeLiveActivityController.shared.continueDismissedReminder()
             }
-            Button("本节课不再提醒") {
+            .keyboardShortcut(.defaultAction)
+            // Supply the alert's cancel action so SwiftUI does not add an English Cancel button.
+            Button("本节课不再提醒", role: .cancel) {
                 NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: false)
             }
-            Button("继续提醒") {
-                NativeLiveActivityController.shared.clearDismissalNotice()
-                NativeLiveActivityController.shared.foreground()
+            Button("永不提醒", role: .destructive) {
+                NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: true)
             }
         } message: {
-            Text("实时通知可以在锁定屏幕上显示课程进度。需要我在课程提醒时再次为你打开吗？")
+            Text("实时通知可以在锁定屏幕上显示课程进度。是否继续显示？选择“本节课不再提醒”会跳过本次课程；选择“永不提醒”会关闭实时通知，可在设置中重新开启。")
         }
+        .onReceive(NativeLiveActivityController.shared.$restorationFailure) { restorationFailure = $0 }
+        .alert("未能恢复实时通知", isPresented: Binding(
+            get: { restorationFailure != nil },
+            set: { if !$0 { restorationFailure = nil; NativeLiveActivityController.shared.clearRestorationFailure() } }
+        )) {
+            Button("知道了", role: .cancel) { NativeLiveActivityController.shared.clearRestorationFailure() }
+        } message: {
+            Text(restorationFailure ?? "")
+        }
+        // 深色页面底色按主题色调，挂在最外层，弹出的页面也拿得到。
+        .environment(\.appThemeBrand, themeSettings.brandRGB)
     }
 
     /// The surface brings its own header, so it only has to be told about the

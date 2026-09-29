@@ -1,11 +1,14 @@
 import SwiftUI
 
-// The glass surface treatment the CpuTime schedule UI is built from. Kept in its
-// own file so the import and settings screens can use the same material instead
-// of falling back to stock list chrome.
+// Surface styles for the schedule UI, kept in one file so the import and
+// settings screens can use the same treatment instead of stock list chrome.
+//
+// Liquid Glass is a control layer: it belongs to the few buttons that float
+// above the timetable, never to the timetable itself. Cells, cards and course
+// blocks are flat fills, so the grid reads as content and scrolling does not
+// create dozens of live blur surfaces.
 
-/// Native Liquid Glass is confined to controls. Course grids retain lightweight
-/// gradients so scrolling does not create dozens of live blur surfaces.
+/// Native Liquid Glass for a floating control (or one group of them).
 struct ScheduleGlassControl: ViewModifier {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -74,50 +77,74 @@ extension EnvironmentValues {
     @Entry var scheduleHasBackgroundImage = false
 }
 
-extension ShapeStyle where Self == Color {
-    /// 格子、表头这类小块表面的底色。数量多，不用实时模糊的材质。
-    static func scheduleCellSurface(hasBackground: Bool, dark: Bool) -> Color {
-        guard hasBackground else { return Color.appSecondaryGroupedBackground.opacity(0.86) }
-        return dark ? Color.appSecondaryGroupedBackground.opacity(0.5) : Color.white.opacity(0.5)
+/// 课表页的底色。浅色是一层带点冷调的近白，白色的格子和卡片靠一圈细边浮
+/// 出来（学的是网页版课表）；深色是主题色的深色版本，不用纯黑。
+struct ScheduleCanvasStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        #if canImport(UIKit)
+        let dark = appDarkCanvas(brand: environment.appThemeBrand)
+        return Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? dark
+                : UIColor(red: 0.965, green: 0.971, blue: 0.984, alpha: 1)
+        })
+        #else
+        return Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor.windowBackgroundColor
+                : NSColor(red: 0.965, green: 0.971, blue: 0.984, alpha: 1)
+        })
+        #endif
     }
 }
 
-/// 学期选择器、自由时间入口这类单个的实心卡片：有背景图时换成磨砂材质。
+extension ShapeStyle where Self == ScheduleCanvasStyle {
+    static var scheduleCanvas: ScheduleCanvasStyle { ScheduleCanvasStyle() }
+}
+
+extension ShapeStyle where Self == Color {
+    /// 空格子、表头这类小块表面的底色。数量多，只用平涂，不加渐变和高光。
+    static func scheduleCellSurface(hasBackground: Bool, dark: Bool) -> Color {
+        if hasBackground { return dark ? Color.white.opacity(0.08) : Color.white.opacity(0.55) }
+        return dark ? Color.white.opacity(0.05) : Color.white
+    }
+
+    /// 格子和卡片外面那圈细边：浅色是带一点蓝的浅灰，深色是一层淡白。
+    static func scheduleCellBorder(dark: Bool) -> Color {
+        dark ? Color.white.opacity(0.1) : Color(red: 0.16, green: 0.22, blue: 0.36).opacity(0.1)
+    }
+}
+
+/// 自由时间入口、月历这类单个卡片的底色：平时和格子一样是白底，有背景图时换成
+/// 磨砂材质，文字才压得住图。
 struct ScheduleCardSurface: ShapeStyle {
     var hasBackground: Bool
 
     func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
-        hasBackground ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(Color.appSecondaryGroupedBackground)
+        if hasBackground { return AnyShapeStyle(.regularMaterial) }
+        return AnyShapeStyle(environment.colorScheme == .dark ? Color.white.opacity(0.07) : Color.white)
     }
 }
 
-struct ScheduleGlassBackground: View {
+/// 课表上的一块内容表面：平涂加一圈细边。格子、表头、周次导航和卡片都用它，
+/// 整页只有这一种描边语言，不再叠渐变、高光和投影。
+struct ScheduleSurface: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
     let cornerRadius: CGFloat
-    var colors: [Color] = [.clear, .clear]
-    var border: Color = Color.appSeparator.opacity(0.12)
-    var lineWidth: CGFloat = 0.7
+    /// 单独的一块卡片。有背景图时用磨砂材质；成片的格子不用实时模糊。
+    var isCard = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        shape
-            .fill(.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark))
-            .overlay {
-                shape.fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+        Group {
+            if isCard {
+                shape.fill(ScheduleCardSurface(hasBackground: hasBackground))
+            } else {
+                shape.fill(.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark))
             }
-            .overlay {
-                shape.fill(LinearGradient(
-                    stops: [
-                        .init(color: .white.opacity(colorScheme == .dark ? 0.08 : 0.32), location: 0),
-                        .init(color: .white.opacity(0.02), location: 0.45),
-                        .init(color: .clear, location: 1),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ))
-            }
-            .overlay { shape.strokeBorder(border, lineWidth: lineWidth) }
-            .allowsHitTesting(false)
+        }
+        .overlay { shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1) }
+        .allowsHitTesting(false)
     }
 }

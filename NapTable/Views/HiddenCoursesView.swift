@@ -41,8 +41,10 @@ struct HiddenCoursesView: View {
                 Text("恢复后，课程将回到原时段，与替换它的课程并排显示。左滑可彻底删除。")
             }
         }
+        .appListBackground()
         .navigationTitle("收起的课程")
         .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
     }
 
     private func slotText(_ course: Course) -> String {

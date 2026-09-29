@@ -2,9 +2,10 @@ import SwiftUI
 
 // Ported from ../CPU-Web/ios_next (CpuTime) `NativeScheduleView.swift`.
 //
-// The layout, spacing, glass styling and interaction model are kept as close to
-// the original as possible; only the platform-shim spellings were changed so the
-// same file builds on iOS and macOS. Data comes from `NativeScheduleStore`,
+// The layout and interaction model are kept close to the original; the surface
+// styling has since moved to flat content with glass only on the floating header
+// controls (see `ScheduleGlass.swift`). Platform-shim spellings let the same file
+// build on iOS and macOS. Data comes from `NativeScheduleStore`,
 // which `ScheduleStore.swift` implements on top of NapTable's AppStore.
 
 import SwiftUI
@@ -73,9 +74,9 @@ struct NativeScheduleView: View {
     }
 
     /// 顶栏和课表区域自己的底色。有背景图片时必须透明，否则整张图会被这层
-    /// 底色盖住；图片下面那层 `appGroupedBackground` 由 `body` 的背景统一铺满全屏。
-    private var chromeBackground: Color {
-        displayedBackground == nil ? Color.appGroupedBackground : .clear
+    /// 底色盖住；图片下面那层 `scheduleCanvas` 由 `body` 的背景统一铺满全屏。
+    private var chromeBackground: AnyShapeStyle {
+        displayedBackground == nil ? AnyShapeStyle(.scheduleCanvas) : AnyShapeStyle(.clear)
     }
 
     private var showsFreeTimeEntry: Bool {
@@ -147,7 +148,7 @@ struct NativeScheduleView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(chromeBackground.ignoresSafeArea(.container, edges: [.horizontal, .bottom]))
+                .background(chromeBackground, ignoresSafeAreaEdges: [.horizontal, .bottom])
             }
             // Keep slot heights stable when the pinned free-time entry changes.
             // Smaller screens scroll to the final period instead of squeezing text.
@@ -156,7 +157,7 @@ struct NativeScheduleView: View {
         .environment(\.scheduleHasBackgroundImage, displayedBackground != nil)
         .background {
             ZStack {
-                Color.appGroupedBackground
+                Rectangle().fill(.scheduleCanvas)
                 if let image = displayedBackground {
                     Image(platformImage: image)
                         .resizable()
@@ -181,9 +182,6 @@ struct NativeScheduleView: View {
                 applyDebugSheetIfNeeded()
             }
             #endif
-        }
-        .refreshable {
-            await store.refresh()
         }
         .onChange(of: store.result?.currentSemester) { _, _ in
             adoptSelectionIfNeeded()
@@ -305,29 +303,23 @@ struct NativeScheduleView: View {
         Button {
             freeCoursesPresented = true
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "clock.badge.questionmark")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.cpuBrand)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("有 \(courses.count) 门自由时间课程")
-                        .font(.subheadline.weight(.semibold))
-                    Text("点击查看安排")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("有 \(courses.count) 门自由时间课程")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // A plain card, not glass: this row is a NapTable addition, and the
-            // glass material belongs to the CpuTime controls around the grid.
-            .background(ScheduleCardSurface(hasBackground: displayedBackground != nil))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+            // A slim outlined row, not glass: it is content next to the
+            // timetable, and glass belongs to the floating controls.
+            .background { ScheduleSurface(cornerRadius: 12, isCard: true) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -367,6 +359,7 @@ struct NativeScheduleView: View {
                     Text("这些课程没有固定星期，不会出现在课表网格里。")
                 }
             }
+            .appListBackground()
             .navigationTitle("自由时间课程")
             .appInlineNavigationTitle()
             .toolbar {
@@ -382,25 +375,12 @@ struct NativeScheduleView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center, spacing: 10) {
                 semesterMenu(result)
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if isLoading {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("正在更新课表")
-                }
-
-                if showsWatch {
-                    Button(action: onWatch) {
-                        Image(systemName: "applewatch")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 34, height: 34)
-                            .modifier(ScheduleGlassControl(cornerRadius: 17))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.primary)
-                    .accessibilityLabel("Apple Watch 课表同步")
                 }
 
                 Picker("课表视图", selection: $viewMode) {
@@ -412,28 +392,10 @@ struct NativeScheduleView: View {
                 .pickerStyle(.segmented)
                 .controlSize(.small)
                 .labelsHidden()
-                .frame(width: 120)
+                .frame(width: 112)
                 .accessibilityLabel("切换课表视图")
 
-                Button {
-                    switch viewMode {
-                    case .day: jumpToCurrentDay(result)
-                    case .week: jumpToCurrentWeek(result)
-                    case .month: jumpToCurrentMonth()
-                    }
-                } label: {
-                    Image(systemName: "location.north.line")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .modifier(ScheduleGlassControl(cornerRadius: 17))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.primary)
-                .accessibilityLabel(jumpButtonLabel)
-                .disabled(isViewingCurrentPosition(result))
-
-                scheduleToolsMenu(result)
+                headerActions(result)
             }
 
             // 月视图翻的是月份，周导航在这里换成月份导航。
@@ -454,7 +416,7 @@ struct NativeScheduleView: View {
     }
 
     private func weekNavigator(_ result: NativeScheduleResult) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             weekStepButton(
                 systemName: "chevron.left",
                 label: "上一周",
@@ -466,18 +428,19 @@ struct NativeScheduleView: View {
             Button {
                 weekPickerPresented = true
             } label: {
-                VStack(spacing: 2) {
+                VStack(spacing: 1) {
                     Text(weekTitle(result))
                         .font(.headline)
                         .lineLimit(1)
                     if let range = weekRange(result), !range.isEmpty {
                         Text(range)
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                .frame(maxWidth: .infinity, minHeight: 42)
+                .frame(maxWidth: .infinity, minHeight: 46)
+                .background { NavigatorTitleBackground() }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -494,23 +457,24 @@ struct NativeScheduleView: View {
     }
 
     private func monthNavigator() -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             weekStepButton(systemName: "chevron.left", label: "上一月", enabled: true) {
                 moveMonth(-1)
             }
 
-            VStack(spacing: 2) {
+            VStack(spacing: 1) {
                 Text(monthTitle)
                     .font(.headline)
                     .lineLimit(1)
                 if let lunar = ChineseCalendarInfo.info(forDate: monthAnchor)?.lunar.yearLabel {
                     Text("农历\(lunar)")
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 42)
+            .frame(maxWidth: .infinity, minHeight: 46)
+            .background { NavigatorTitleBackground() }
 
             weekStepButton(systemName: "chevron.right", label: "下一月", enabled: true) {
                 moveMonth(1)
@@ -548,27 +512,31 @@ struct NativeScheduleView: View {
             Divider()
             Button("添加课表", systemImage: "plus", action: onAddTable)
         } label: {
+            // A title with a disclosure chevron, like a navigation title menu.
+            // It is the page's heading, so it gets no pill or glass of its own:
+            // 标题字号撑起这一行，箭头放进主题色小圆里，一看就知道能点开切换。
             HStack(spacing: 6) {
                 if selected?.isShared == true {
                     Image(systemName: "person.2.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.cpuBrand)
                 }
                 Text(semesterTitle(result))
-                    .font(.subheadline.weight(.semibold))
+                    .font(.title3.weight(.bold))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
                     .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9, weight: .heavy))
+                    .foregroundStyle(Color.cpuBrand)
+                    .frame(width: 18, height: 18)
+                    .background(Color.cpuBrand.opacity(0.12), in: Circle())
             }
             .foregroundStyle(.primary)
-            .padding(.horizontal, 12)
-            // Reserve the available header width regardless of the selected name.
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background(ScheduleCardSurface(hasBackground: displayedBackground != nil), in: Capsule())
+            .frame(minHeight: 36)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         // A source change may also animate the free-time entry below the header.
         // Keep the menu's anchor and label out of that layout animation.
         .transaction { $0.animation = nil }
@@ -606,15 +574,48 @@ struct NativeScheduleView: View {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 34, height: 34)
-                .modifier(ScheduleGlassControl(cornerRadius: 17))
-                .clipShape(Circle())
+            headerIcon("ellipsis")
+        }
+        .accessibilityLabel("更多课表操作")
+    }
+
+    /// The header's icon buttons share one glass capsule, the way a toolbar
+    /// groups its items. Glass is the floating control layer, so this is the
+    /// only glass on the page besides the system tab bar and segmented control.
+    private func headerActions(_ result: NativeScheduleResult) -> some View {
+        HStack(spacing: 0) {
+            if showsWatch {
+                Button(action: onWatch) {
+                    headerIcon("applewatch")
+                }
+                .accessibilityLabel("Apple Watch 课表同步")
+            }
+
+            Button {
+                switch viewMode {
+                case .day: jumpToCurrentDay(result)
+                case .week: jumpToCurrentWeek(result)
+                case .month: jumpToCurrentMonth()
+                }
+            } label: {
+                headerIcon("location.north.line")
+            }
+            .accessibilityLabel(jumpButtonLabel)
+            .disabled(isViewingCurrentPosition(result))
+
+            scheduleToolsMenu(result)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .accessibilityLabel("更多课表操作")
+        .padding(.horizontal, 2)
+        .modifier(ScheduleGlassControl(cornerRadius: 18))
+    }
+
+    private func headerIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 16, weight: .medium))
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
     }
 
     private func weekStepButton(
@@ -633,10 +634,11 @@ struct NativeScheduleView: View {
                     Text(label)
                 }
             }
-            .font(.caption.weight(.medium))
+            .font(.subheadline.weight(.medium))
             .lineLimit(1)
             .minimumScaleFactor(0.8)
-            .frame(minWidth: 68, minHeight: 42)
+            .frame(width: 88, height: 46)
+            .background { ScheduleSurface(cornerRadius: 14, isCard: true) }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1202,15 +1204,9 @@ struct NativeScheduleView: View {
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: Self.slotAxisWidth, height: rowHeight)
-                    .overlay(alignment: .trailing) {
-                        Rectangle()
-                            .fill(Color.appSeparator.opacity(0.5))
-                            .frame(width: 0.5)
-                    }
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     /// 日视图显示当天的调休详情；周、月视图只保留日期角标。
@@ -1373,12 +1369,18 @@ struct NativeScheduleView: View {
                                     .frame(maxWidth: .infinity, minHeight: 40)
                                 .foregroundStyle(isSelected ? Color.white : (isCurrent ? Color.cpuBrand : .primary))
                                     .background {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(isSelected ? Color.cpuBrand : Color.appSecondaryGroupedBackground)
+                                        if isSelected {
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(Color.cpuBrand)
+                                        } else {
+                                            ScheduleSurface(cornerRadius: 10)
+                                        }
                                     }
                                     .overlay {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .stroke(isCurrent && !isSelected ? Color.cpuBrand : Color.appSeparator.opacity(0.35), lineWidth: 1)
+                                        if isCurrent && !isSelected {
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .strokeBorder(Color.cpuBrand.opacity(0.6), lineWidth: 1)
+                                        }
                                     }
                             }
                             .buttonStyle(.plain)
@@ -1396,6 +1398,8 @@ struct NativeScheduleView: View {
                 }
             }
             .scrollIndicators(.hidden)
+            // The sheet sits on its own background, never on the photo.
+            .environment(\.scheduleHasBackgroundImage, false)
             .navigationTitle("选择周次")
             .appInlineNavigationTitle()
             .toolbar {
@@ -1517,7 +1521,7 @@ struct NativeScheduleView: View {
         }
         .padding(24)
         .frame(width: canvasWidth, alignment: .leading)
-        .background(Color.appGroupedBackground)
+        .background(.scheduleCanvas)
 
         guard let data = content.platformRenderedImageData() else { return }
         let suffix = isDayView ? "日课表" : "周课表"
@@ -2052,8 +2056,41 @@ private struct StateCard: View {
         }
         .frame(maxWidth: .infinity, minHeight: 250)
         .padding(24)
-        .background(Color.appSecondaryGroupedBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background { ScheduleSurface(cornerRadius: 16, isCard: true) }
+    }
+}
+
+/// The week (or month) title between the two step buttons: the one soft
+/// accent in the header, a pale pink-to-lavender wash with the same hairline
+/// every other surface uses.
+private struct NavigatorTitleBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let strength = colorScheme == .dark ? 0.1 : 0.32
+        shape
+            .fill(Color.scheduleCellSurface(hasBackground: false, dark: colorScheme == .dark))
+            .overlay {
+                shape.fill(LinearGradient(
+                    colors: [
+                        Color(hue: 0.93, saturation: 0.35, brightness: 0.98).opacity(strength),
+                        Color(hue: 0.6, saturation: 0.18, brightness: 0.98).opacity(strength),
+                        Color(hue: 0.68, saturation: 0.3, brightness: 0.97).opacity(strength),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ))
+            }
+            .overlay {
+                shape.strokeBorder(
+                    colorScheme == .dark
+                        ? Color.white.opacity(0.12)
+                        : Color(hue: 0.67, saturation: 0.3, brightness: 0.8).opacity(0.28),
+                    lineWidth: 1
+                )
+            }
+            .allowsHitTesting(false)
     }
 }
 

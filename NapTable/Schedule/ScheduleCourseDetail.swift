@@ -14,6 +14,7 @@ struct SharedCourseDetailView: View {
                 LabeledContent("备注", value: course.slotNote ?? "—")
                 Text("共享课表只读").foregroundStyle(.secondary)
             }
+            .appListBackground()
             .navigationTitle("课程详情")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }

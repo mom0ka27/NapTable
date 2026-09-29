@@ -38,7 +38,6 @@ struct NativeCourseEditorSheet: View {
     @State private var selectedWeeks: Set<Int>
     @State private var saving = false
     @State private var errorMessage: String?
-    @State private var hiddenCourses: [(String, String)] = []
     @State private var confirmingDelete = false
 
     init(selection: SelectedCourse?, store: NativeScheduleStore, defaultDay: Int = 1, defaultWeek: Int = 1, defaultStartSlot: Int = 1) {
@@ -171,21 +170,6 @@ struct NativeCourseEditorSheet: View {
                         }
                     }
 
-                    if !hiddenCourses.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("已编辑课程")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            editorCard {
-                                ForEach(hiddenCourses, id: \.0) { item in
-                                    Button("恢复：\(item.1)") { restoreHiddenCourse(item.0) }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .disabled(saving)
-                                }
-                            }
-                        }
-                    }
-
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.caption)
@@ -199,7 +183,6 @@ struct NativeCourseEditorSheet: View {
             .scrollIndicators(.hidden)
             .navigationTitle(selection == nil ? "添加课程" : "编辑课程")
             .appInlineNavigationTitle()
-            .task { await loadHiddenCourses() }
             .onChange(of: weekMode) { _, mode in
                 if mode == "all" {
                     selectedWeeks = Set(weekNumberOptions)
@@ -230,9 +213,9 @@ struct NativeCourseEditorSheet: View {
                             Button("删除", role: .destructive) { deleteCourse() }
                             Button("取消", role: .cancel) {}
                         } message: {
-                            Text(selection?.course.customId != nil
-                                 ? "这门自定义课程会被移除。"
-                                 : "这门教务课程会从课表中隐藏，之后可以在“已编辑课程”里恢复。")
+                            // NapTable 的课都在本机，删除就是真删；导入时收起的课在
+                            // 「课表设置 → 收起的课程」里恢复，编辑器里没有恢复区。
+                            Text("这门课会从课表中删除。")
                         }
                     }
                     Button { saveCourse() } label: {
@@ -442,26 +425,6 @@ struct NativeCourseEditorSheet: View {
         }
     }
 
-    private func loadHiddenCourses() async {
-        guard selection == nil || selection?.course.customId == nil else { return }
-        guard let result = store.result else { return }
-        do {
-            let edits = try await store.loadScheduleEdits()
-            var values: [(String, String)] = []
-            for cell in result.cells {
-            for course in cell.courses {
-                    let key = nativeCourseEditKey(day: cell.day, bigSlot: cell.bigSlot, course: course)
-                    if edits.hidden.contains(key) {
-                        values.append((key, course.name))
-                    }
-                }
-            }
-            hiddenCourses = values
-        } catch {
-            hiddenCourses = []
-        }
-    }
-
     private func deleteCourse() {
         guard let source = selection?.course else { return }
         saving = true
@@ -477,21 +440,6 @@ struct NativeCourseEditorSheet: View {
                 }
                 try await store.saveScheduleEdits(edits)
                 dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            saving = false
-        }
-    }
-
-    private func restoreHiddenCourse(_ key: String) {
-        saving = true
-        Task { @MainActor in
-            do {
-                var edits = try await store.loadScheduleEdits()
-                edits.hidden.removeAll { $0 == key }
-                try await store.saveScheduleEdits(edits)
-                hiddenCourses.removeAll { $0.0 == key }
             } catch {
                 errorMessage = error.localizedDescription
             }

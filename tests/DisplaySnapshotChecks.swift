@@ -40,16 +40,26 @@ struct DisplaySnapshotChecks {
         expect(fresh.backgroundEnabled, "默认显示背景图片")
 
         // 隐藏第 N 节之后的行：默认第 9 节，有更晚的课就画到那节课
-        expect(fresh.hideSlotsAfter == 9, "默认隐藏第 9 节之后")
+        expect(fresh.hideLateSlots && fresh.hideSlotsAfter == 9, "默认打开，隐藏第 9 节之后")
         expect(fresh.visibleSlotCount(total: 11, lastOccupiedSlot: 0) == 9, "没课时画到第 9 节")
         expect(fresh.visibleSlotCount(total: 11, lastOccupiedSlot: 6) == 9, "早于第 9 节的课不影响")
         expect(fresh.visibleSlotCount(total: 11, lastOccupiedSlot: 10) == 10, "有第 10 节的课就画到第 10 节")
         expect(fresh.visibleSlotCount(total: 8, lastOccupiedSlot: 0) == 8, "课表只有 8 节时全部画出")
-        fresh.hideSlotsAfter = 0
+        fresh.hideLateSlots = false
         expect(fresh.visibleSlotCount(total: 11, lastOccupiedSlot: 0) == 11, "关掉后全部显示")
+        expect(fresh.hideSlotsAfter == 9, "关掉开关不改节数")
         fresh.hideSlotsAfter = 7
-        expect(NativeSchedulePreferences(defaults: UserDefaults(suiteName: "naptable.checks.fresh")!).hideSlotsAfter == 7,
-               "隐藏节次持久化")
+        let freshReloaded = NativeSchedulePreferences(defaults: UserDefaults(suiteName: "naptable.checks.fresh")!)
+        expect(freshReloaded.hideSlotsAfter == 7 && !freshReloaded.hideLateSlots, "隐藏节次与开关持久化")
+        fresh.hideLateSlots = true
+
+        // 旧版本存的 0 表示不隐藏：升级后开关关着，节数回到默认
+        let legacySuite = "naptable.checks.legacyHide"
+        UserDefaults.standard.removePersistentDomain(forName: legacySuite)
+        let legacyDefaults = UserDefaults(suiteName: legacySuite)!
+        legacyDefaults.set(0, forKey: "nativeSchedule.hideSlotsAfter")
+        let legacyHide = NativeSchedulePreferences(defaults: legacyDefaults)
+        expect(!legacyHide.hideLateSlots && legacyHide.hideSlotsAfter == 9, "旧版 0 迁移为关闭、第 9 节")
         expect(fresh.visibleDays(pinnedDays: [6]) == Array(1...7), "显示周末时仍保留七天")
 
         // 隐藏周末只剩周一到周五
@@ -79,7 +89,7 @@ struct DisplaySnapshotChecks {
 
         let target = makePreferences("target")
         target.apply(restored)
-        expect(target.hideSlotsAfter == 6, "隐藏节次已还原")
+        expect(target.hideLateSlots && target.hideSlotsAfter == 6, "隐藏节次已还原")
         expect(!target.showWeekend && !target.showDateHeader, "周末与日期栏开关已还原")
         expect(!target.showFreeTimeCourses, "自由时间开关已还原")
         expect(target.defaultView == "day" && target.density == "compact", "视图与密度已还原")
@@ -108,7 +118,17 @@ struct DisplaySnapshotChecks {
         expect(clamped.makeSnapshot().rowHeight == 44, "旧备份行高不会改变固定布局")
         expect(clamped.backgroundOpacity == 1, "不透明度被夹到上限")
         expect(clamped.backgroundOpacityDark == 1, "旧备份没有深色值时按浅色推算并夹到上限")
-        expect(clamped.hideSlotsAfter == 0, "负数节次回落到不隐藏")
+        expect(!clamped.hideLateSlots && clamped.hideSlotsAfter == 9, "负数节次回落到不隐藏")
+
+        // 关着开关导出：旧字段写 0 给旧版本看，节数另存，恢复后原样回来
+        let off = makePreferences("hideOff")
+        off.hideSlotsAfter = 5
+        off.hideLateSlots = false
+        let offSnapshot = off.makeSnapshot()
+        expect(offSnapshot.hideSlotsAfter == 0 && offSnapshot.hideSlotsAfterCount == 5, "关闭时备份字段")
+        let offTarget = makePreferences("hideOffTarget")
+        offTarget.apply(try! decoder.decode(NativeSchedulePreferences.DisplaySnapshot.self, from: try! encoder.encode(offSnapshot)))
+        expect(!offTarget.hideLateSlots && offTarget.hideSlotsAfter == 5, "关闭状态与节数已还原")
 
         // 宽松档能存能读
         let relaxed = makePreferences("relaxed")
@@ -125,13 +145,14 @@ struct DisplaySnapshotChecks {
         var oldBackup = try! JSONSerialization.jsonObject(with: json) as! [String: Any]
         oldBackup.removeValue(forKey: "showFreeTimeCourses")
         oldBackup.removeValue(forKey: "hideSlotsAfter")
+        oldBackup.removeValue(forKey: "hideSlotsAfterCount")
         let oldSnapshot = try! decoder.decode(
             NativeSchedulePreferences.DisplaySnapshot.self,
             from: JSONSerialization.data(withJSONObject: oldBackup)
         )
         target.apply(oldSnapshot)
         expect(target.showFreeTimeCourses, "旧显示设置备份默认显示自由时间课程")
-        expect(target.hideSlotsAfter == 9, "旧显示设置备份默认隐藏第 9 节之后")
+        expect(target.hideLateSlots && target.hideSlotsAfter == 9, "旧显示设置备份默认隐藏第 9 节之后")
 
         // 备份里没有背景图时，保留本机现有的那张
         let keeper = makePreferences("keeper")

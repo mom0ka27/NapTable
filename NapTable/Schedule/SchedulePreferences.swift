@@ -25,7 +25,9 @@ final class NativeSchedulePreferences: ObservableObject {
     @Published var showFreeTimeCourses: Bool { didSet { persist() } }
     @Published var defaultView: String { didSet { persist() } }
     @Published var density: String { didSet { persist() } }
-    /// 第几节之后的空行不画；0 表示全部显示。那一周有更晚的课就一直画到那节课。
+    /// 是否收起晚间的空行。关掉时 `hideSlotsAfter` 仍保留，再打开还是原来的节数。
+    @Published var hideLateSlots: Bool { didSet { persist() } }
+    /// 第几节之后的空行不画（至少 1）。那一周有更晚的课就一直画到那节课。
     @Published var hideSlotsAfter: Int { didSet { persist() } }
     @Published var backgroundPath: String { didSet { loadBackgroundImage(); persist() } }
     /// 关掉只是不在课表上显示，图片、摆放和不透明度都留着，打开就回来。
@@ -51,6 +53,7 @@ final class NativeSchedulePreferences: ObservableObject {
         static let defaultView = "nativeSchedule.defaultView"
         static let density = "nativeSchedule.density"
         static let hideSlotsAfter = "nativeSchedule.hideSlotsAfter"
+        static let hideLateSlots = "nativeSchedule.hideLateSlots"
         static let backgroundPath = "nativeSchedule.backgroundPath"
         static let backgroundOpacity = "nativeSchedule.backgroundOpacity"
         static let backgroundOpacityDark = "nativeSchedule.backgroundOpacityDark"
@@ -77,7 +80,10 @@ final class NativeSchedulePreferences: ObservableObject {
         defaultView = Self.viewOptions.contains(savedView) ? savedView : "week"
         let savedDensity = defaults.string(forKey: Key.density) ?? "comfortable"
         density = Self.densityOptions.contains(savedDensity) ? savedDensity : "comfortable"
-        hideSlotsAfter = Self.clampedHideSlotsAfter(defaults.object(forKey: Key.hideSlotsAfter) as? Int ?? Self.defaultHideSlotsAfter)
+        // 旧版本用 hideSlotsAfter = 0 表示不隐藏，还没有单独的开关。
+        let savedHideAfter = defaults.object(forKey: Key.hideSlotsAfter) as? Int ?? Self.defaultHideSlotsAfter
+        hideLateSlots = defaults.object(forKey: Key.hideLateSlots) as? Bool ?? (savedHideAfter > 0)
+        hideSlotsAfter = savedHideAfter > 0 ? Self.clampedHideSlotsAfter(savedHideAfter) : Self.defaultHideSlotsAfter
         backgroundPath = defaults.string(forKey: Key.backgroundPath) ?? ""
         backgroundPathDark = defaults.string(forKey: Key.backgroundPathDark) ?? ""
         backgroundEnabled = defaults.object(forKey: Key.backgroundEnabled) as? Bool ?? true
@@ -139,13 +145,13 @@ final class NativeSchedulePreferences: ObservableObject {
     static let defaultHideSlotsAfter = 9
 
     static func clampedHideSlotsAfter(_ value: Int) -> Int {
-        max(0, min(30, value))
+        max(1, min(30, value))
     }
 
     /// 网格画几行：默认画到第 `hideSlotsAfter` 节；这一周最晚的课比它晚，就画到那节课。
     /// `lastOccupiedSlot` 按整周算，所以同一周里每一天、周视图和日视图的行数都一样。
     func visibleSlotCount(total: Int, lastOccupiedSlot: Int) -> Int {
-        guard hideSlotsAfter > 0 else { return total }
+        guard hideLateSlots else { return total }
         return min(total, max(hideSlotsAfter, lastOccupiedSlot))
     }
 
@@ -175,7 +181,10 @@ final class NativeSchedulePreferences: ObservableObject {
         var defaultView: String
         var density: String
         /// Optional so backups made before this preference existed still decode.
+        /// 沿用旧含义：0 表示不隐藏，旧版本 App 读新备份时行为一致。
         var hideSlotsAfter: Int? = nil
+        /// 开关关着时 `hideSlotsAfter` 写 0，节数另存在这里，恢复后再打开还是原来的值。
+        var hideSlotsAfterCount: Int? = nil
         // Retained for decoding older backups; fixed grid heights ignore it.
         var rowHeight: Double
         var backgroundOpacity: Double
@@ -195,7 +204,8 @@ final class NativeSchedulePreferences: ObservableObject {
             showFreeTimeCourses: showFreeTimeCourses,
             defaultView: defaultView,
             density: density,
-            hideSlotsAfter: hideSlotsAfter,
+            hideSlotsAfter: hideLateSlots ? hideSlotsAfter : 0,
+            hideSlotsAfterCount: hideSlotsAfter,
             rowHeight: 44,
             backgroundOpacity: backgroundOpacity,
             backgroundOpacityDark: backgroundOpacityDark,
@@ -217,7 +227,11 @@ final class NativeSchedulePreferences: ObservableObject {
         showFreeTimeCourses = snapshot.showFreeTimeCourses ?? true
         defaultView = Self.viewOptions.contains(snapshot.defaultView) ? snapshot.defaultView : "week"
         density = Self.densityOptions.contains(snapshot.density) ? snapshot.density : "comfortable"
-        hideSlotsAfter = Self.clampedHideSlotsAfter(snapshot.hideSlotsAfter ?? Self.defaultHideSlotsAfter)
+        let hideAfter = snapshot.hideSlotsAfter ?? Self.defaultHideSlotsAfter
+        hideLateSlots = hideAfter > 0
+        hideSlotsAfter = Self.clampedHideSlotsAfter(
+            snapshot.hideSlotsAfterCount ?? (hideAfter > 0 ? hideAfter : Self.defaultHideSlotsAfter)
+        )
         backgroundEnabled = snapshot.backgroundEnabled ?? true
         backgroundOpacity = Self.clampedOpacity(snapshot.backgroundOpacity)
         backgroundOpacityDark = Self.clampedOpacity(
@@ -269,6 +283,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showFreeTimeCourses = true
         defaultView = "week"
         density = "comfortable"
+        hideLateSlots = true
         hideSlotsAfter = Self.defaultHideSlotsAfter
         backgroundPath = ""
         backgroundPathDark = ""
@@ -348,6 +363,7 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(showFreeTimeCourses, forKey: Key.showFreeTimeCourses)
         defaults.set(Self.viewOptions.contains(defaultView) ? defaultView : "week", forKey: Key.defaultView)
         defaults.set(Self.densityOptions.contains(density) ? density : "comfortable", forKey: Key.density)
+        defaults.set(hideLateSlots, forKey: Key.hideLateSlots)
         defaults.set(Self.clampedHideSlotsAfter(hideSlotsAfter), forKey: Key.hideSlotsAfter)
         defaults.set(backgroundPath, forKey: Key.backgroundPath)
         defaults.set(backgroundPathDark, forKey: Key.backgroundPathDark)

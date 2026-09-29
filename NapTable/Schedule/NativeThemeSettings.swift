@@ -19,7 +19,7 @@ final class NativeThemeSettings: ObservableObject {
         solidCourseColors = NextWidgetConfiguration.solidCourseColors
     }
 
-    private var brandRGB: ScheduleLiveActivityRGB {
+    var brandRGB: ScheduleLiveActivityRGB {
         theme == .custom ? customColor : theme.brandColor
     }
 
