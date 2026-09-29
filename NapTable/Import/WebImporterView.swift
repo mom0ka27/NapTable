@@ -338,6 +338,10 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     private var observation: NSKeyValueObservation?
     private var isExtracting = false
     private var lastPageFacts: String?
+    /// 最近几次主框架跳转经过的地址（去掉查询参数，ticket 不外露），跳转失败时附在提示里。
+    private var redirectTrail: [String] = []
+    /// 遇到重定向循环时只自动清一次登录记录，避免清了还循环时无限重试。
+    private var clearedLoopCookies = false
     /// 从创建时传入的值开始：coordinator 重建时（比如视图被重新创建）如果从 0
     /// 开始，第一次 `update` 就会误以为有新的重载 / 提取请求。
     private var lastReloadToken: Int
@@ -368,6 +372,8 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         if tokens.reload != lastReloadToken {
             lastReloadToken = tokens.reload
             didStartExtraction.wrappedValue = false
+            clearedLoopCookies = false
+            redirectTrail = []
             if let url = URL(string: school.initialURL) {
                 webView.load(URLRequest(url: url))
             }
@@ -476,14 +482,70 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         statusMessage.wrappedValue = "页面加载失败：\(error.localizedDescription)"
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        recordHop(webView.url)
+    }
+
+    func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        recordHop(webView.url)
+    }
+
+    private func recordHop(_ url: URL?) {
+        guard let url, let host = url.host else { return }
+        let hop = "\(url.scheme ?? "")://\(host)\(url.path)"
+        if redirectTrail.last != hop { redirectTrail.append(hop) }
+        if redirectTrail.count > 6 { redirectTrail.removeFirst(redirectTrail.count - 6) }
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        // 统一认证的登录 Cookie 还在、业务系统却不认它的 ticket 时，两边会来回 302
+        // 直到 WebKit 放弃。清掉这所学校的网页数据、从入口页重来一次。
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorHTTPTooManyRedirects, !clearedLoopCookies {
+            clearedLoopCookies = true
+            statusMessage.wrappedValue = "登录跳转出现循环，正在清除学校网站的登录记录后重试…"
+            clearSchoolWebsiteData { [weak self, weak webView] in
+                guard let self, let webView, let url = URL(string: self.school.initialURL) else { return }
+                self.redirectTrail = []
+                self.state.wrappedValue = .loading
+                webView.load(URLRequest(url: url))
+            }
+            return
+        }
+        var message = "无法打开页面：\(error.localizedDescription)"
+        if nsError.code == NSURLErrorHTTPTooManyRedirects, !redirectTrail.isEmpty {
+            message += "\n已清除过学校网站的登录记录仍然循环，请把以下跳转地址反馈给我们：\n"
+                + redirectTrail.joined(separator: "\n")
+        }
         // 已经打开过的页面上某次跳转失败，页面本身还在，别让重试把人带回入口页。
         guard webView.url == nil || state.wrappedValue == .loading else {
-            statusMessage.wrappedValue = "无法打开页面：\(error.localizedDescription)"
+            statusMessage.wrappedValue = message
             return
         }
         state.wrappedValue = .loadFailed
-        statusMessage.wrappedValue = "无法打开页面：\(error.localizedDescription)"
+        statusMessage.wrappedValue = message
+    }
+
+    /// 只清这所学校域名下的网页数据（Cookie、缓存等），别的学校的登录状态不动。
+    private func clearSchoolWebsiteData(then completion: @escaping @MainActor () -> Void) {
+        let domains = Set([school.initialURL, school.targetURL].compactMap(Self.host(of:)).map(Self.siteDomain(of:)))
+        let store = WKWebsiteDataStore.default()
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        store.fetchDataRecords(ofTypes: types) { records in
+            let matching = records.filter { record in
+                domains.contains { record.displayName == $0 || record.displayName.hasSuffix("." + $0) }
+            }
+            store.removeData(ofTypes: types, for: matching) {
+                Task { @MainActor in completion() }
+            }
+        }
+    }
+
+    /// `jwxt.njfu.edu.cn` -> `njfu.edu.cn`，`xk.nju.edu.cn` -> `nju.edu.cn`。
+    static func siteDomain(of host: String) -> String {
+        let labels = host.split(separator: ".")
+        let keep = host.hasSuffix(".edu.cn") || host.hasSuffix(".ac.cn") || host.hasSuffix(".com.cn") ? 3 : 2
+        return labels.suffix(keep).joined(separator: ".")
     }
 
     // MARK: WKUIDelegate

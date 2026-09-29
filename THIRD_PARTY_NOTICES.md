@@ -33,6 +33,30 @@ NapTable 的课表界面和部分小组件/实时活动实现还注明移植自 
 
 截至 2026 年 9 月 18 日，`CPU-web` 当前 `main` 分支 README 将代码许可证声明为 `AGPL-3.0-or-later`。NapTable 对其中移植内容按该许可证保留来源和许可证义务；根目录 [LICENSE](LICENSE) 提供对应的 AGPL v3 正文。`CPU-web` README 同时明确品牌、官方构建、在线服务、生产资源和第三方素材不包含在代码许可中，NapTable 不会将这些内容一并再分发。
 
+## sysukcb
+
+- 项目：<https://github.com/pipidu/sysukcb>
+- 上游许可证：截至 2026 年 9 月 28 日，该仓库未附 LICENSE 文件，README 中也未声明许可证
+
+NapTable 的中山大学教务导入参照了该项目的教务接口调用流程（`JwxtImportService`）和周次字符串展开规则（`WeekMask.parse`），并以 JavaScript 重新实现：
+
+- `NapTable/Import/SysuExtractor.swift`
+- `tests/SysuExtractorChecks.mjs` 中模拟的教务响应格式
+
+在上游明确许可证之前，NapTable 仅在此注明来源与致谢，不将上游代码本身纳入本仓库或重新授权。
+
+## NJFU-schedule
+
+- 项目：<https://github.com/keggin-CHN/NJFU-schedule>
+- 上游许可证：截至 2026 年 9 月 29 日，该仓库 README 声明为 MIT，但仓库未附 LICENSE 文件
+
+NapTable 的南京林业大学教务导入参照了该项目 `NjfuImporter` 的登录入口（`jwxt.njfu.edu.cn/sso.jsp` 经统一认证回到教务）、课表页面（`/jsxsd/xskb/xskb_list.do`）和 `table#timetable` 的解析规则（`div.kbcontent` 分隔、`<font title>` 字段、按大节兜底节次），并以 JavaScript 在 App 内置网页中重新实现，不移植其原生登录与密码加密流程：
+
+- `NapTable/Import/NjfuExtractor.swift`
+- `tests/NjfuExtractorChecks.mjs` 中模拟的课表页面结构
+
+NapTable 仅在此注明来源与致谢，不将上游代码本身纳入本仓库或重新授权。
+
 ## 许可证适用范围
 
 第三方许可证只适用于相应的第三方代码、资源及其衍生部分。所有贡献者仍应在新增或改编第三方文件时保留来源、版权和许可证声明，并在本文件中补充记录。

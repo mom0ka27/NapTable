@@ -27,7 +27,7 @@ struct SchoolConfig: Identifiable, Equatable, Hashable {
     /// All login/import routes of one university share its server configuration.
     var serviceSchoolID: String {
         let host = URL(string: initialURL)?.host?.lowercased() ?? ""
-        for id in ["nju", "seu", "ucas", "sysu"] {
+        for id in ["nju", "seu", "ucas", "sysu", "njfu"] {
             if host == "\(id).edu.cn" || host.hasSuffix(".\(id).edu.cn") { return id }
         }
         return pinyin
@@ -41,7 +41,7 @@ struct SchoolConfig: Identifiable, Equatable, Hashable {
 /// the binary keeps first-run imports working offline and removes the only
 /// network dependency of the import screen.
 enum SchoolCatalog {
-    static let all: [SchoolConfig] = builtIn.filter { ["nju", "sysu"].contains($0.serviceSchoolID) }
+    static let all: [SchoolConfig] = builtIn.filter { ["nju", "sysu", "njfu"].contains($0.serviceSchoolID) }
 
     // Keep other importers available for future re-enabling.
     private static let builtIn: [SchoolConfig] = [
@@ -315,6 +315,25 @@ enum SchoolCatalog {
             delayTime: 1,
             extractJS: SchoolCatalog.sysuExtractJS,
             bannerContent: nil,
+            bannerAction: nil,
+            bannerURL: nil,
+            classTimeList: nil,
+            semesterStartMonday: nil
+        ),
+        SchoolConfig(
+            title: "南京林业大学本科生教务系统",
+            pinyin: "nanjinglinyedaxuebenkejiaowu",
+            summary: "统一认证登录后读取当前学期课表",
+            pageTitle: "统一身份认证",
+            // 教务入口会跳到统一认证；CAS 里登记的回调就是这个入口。
+            initialURL: "https://jwxt.njfu.edu.cn/sso.jsp",
+            redirectURL: "",
+            // 登录后回到教务系统任意页面即可，脚本自己去读课表。
+            targetURL: "https://jwxt.njfu.edu.cn/jsxsd/*",
+            preExtractJS: "",
+            delayTime: 1,
+            extractJS: SchoolCatalog.njfuExtractJS,
+            bannerContent: "导入方式：统一认证登录后自动读取当前学期课表\n校外访问失败时，请连接学校 VPN。",
             bannerAction: nil,
             bannerURL: nil,
             classTimeList: nil,
