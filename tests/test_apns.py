@@ -283,7 +283,7 @@ class MultiplexAPNs(FakeAPNs):
 class HTTP2Tests(unittest.TestCase):
     def _client(self, server):
         key = apns.ES256Key(VECTOR_KEY)
-        return apns.APNsClient(key, "KEYID", "TEAMID", "me.mom0ka27.naptable",
+        return apns.APNsClient(key, "KEYID", "TEAMID", "com.niyiwei.naptable",
                                port=server.port, hosts={"production": "127.0.0.1", "sandbox": "127.0.0.1"},
                                channel_hosts={"production": "127.0.0.1", "sandbox": "127.0.0.1"},
                                channel_ports={"production": server.port, "sandbox": server.port})
@@ -312,7 +312,7 @@ class HTTP2Tests(unittest.TestCase):
         self.assertEqual(request["headers"][":path"], "/3/device/a1b2c3")
         self.assertEqual(request["headers"][":method"], "POST")
         self.assertEqual(request["headers"]["apns-push-type"], "liveactivity")
-        self.assertEqual(request["headers"]["apns-topic"], "me.mom0ka27.naptable.push-type.liveactivity")
+        self.assertEqual(request["headers"]["apns-topic"], "com.niyiwei.naptable.push-type.liveactivity")
         self.assertEqual(request["headers"]["apns-priority"], "10")
         self.assertEqual(request["headers"]["apns-expiration"], "1700000000")
         self.assertEqual(request["headers"]["apns-collapse-id"], "abc-start")
@@ -339,7 +339,7 @@ class HTTP2Tests(unittest.TestCase):
         client.close()
         self.assertEqual(result, {"ok": True, "status": 200, "reason": "", "certainty": "accepted"})
         request = server.requests[0]
-        self.assertEqual(request["headers"][":path"], "/4/broadcasts/apps/me.mom0ka27.naptable")
+        self.assertEqual(request["headers"][":path"], "/4/broadcasts/apps/com.niyiwei.naptable")
         self.assertEqual(request["headers"]["apns-channel-id"], "dHN0LXNyY2gtY2hubA==")
         self.assertEqual(request["headers"]["apns-push-type"], "liveactivity")
         self.assertEqual(request["headers"]["apns-expiration"], "0")
@@ -354,7 +354,7 @@ class HTTP2Tests(unittest.TestCase):
         client.close()
         request = server.requests[0]
         self.assertEqual(request["headers"][":method"], "GET")
-        self.assertEqual(request["headers"][":path"], "/1/apps/me.mom0ka27.naptable/all-channels")
+        self.assertEqual(request["headers"][":path"], "/1/apps/com.niyiwei.naptable/all-channels")
         self.assertEqual(request["body"], b"")
 
     def test_transport_failure_is_reported_not_raised(self):

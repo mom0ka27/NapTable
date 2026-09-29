@@ -27,7 +27,7 @@
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
     const response = await fetch(path, { credentials: "same-origin", ...options, headers });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { status: response.status });
+    if (!response.ok) throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { status: response.status, data });
     return data;
   };
 
@@ -36,13 +36,26 @@
     $("schoolListCount").textContent = state.schools.length;
     $("termCount").textContent = state.schools.reduce((sum, school) => sum + (school.terms?.length || 0), 0);
     $("periodCount").textContent = state.schools.reduce((sum, school) => sum + (school.periods?.length || 0), 0);
+    // Clients follow each school's current term: one that does not cover today is usually a term to roll over.
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(new Date());
+    const covers = term => {
+      if (!term?.semesterStartMonday) return false;
+      const end = new Date(Date.parse(`${term.semesterStartMonday}T00:00:00Z`) + term.weekCount * 7 * 86400000).toISOString().slice(0, 10);
+      return term.semesterStartMonday <= today && today < end;
+    };
+    const outside = state.schools.filter(school => !covers((school.terms || []).find(term => term.current)));
+    $("activeTermCount").textContent = state.schools.length - outside.length;
+    $("activeTermDetail").textContent = !state.schools.length ? "尚未配置学校"
+      : outside.length ? `${outside.map(school => school.name).slice(0, 3).join("、")}${outside.length > 3 ? ` 等 ${outside.length} 所` : ""}的当前学期不含今天`
+      : "所有学校的当前学期都覆盖今天";
+    $("activeTermCard").classList.toggle("needs-attention", outside.length > 0);
   };
   const updateConnectionUI = connected => {
     $("authView").hidden = connected;
     $("connectionStatus").classList.toggle("connected", connected);
     $("connectionStatus").innerHTML = `<span></span>${connected ? "已连接" : "未连接"}`;
     $("sessionIndicator").classList.toggle("connected", connected);
-    $("sidebarSessionText").textContent = connected ? "已安全连接" : "尚未连接";
+    $("sidebarSessionText").textContent = connected ? (state.admin ? `${state.admin} · 已连接` : "已安全连接") : "尚未连接";
     $("disconnectButton").hidden = !connected;
     document.querySelectorAll(".nav-item").forEach(item => { item.disabled = !connected; });
     if (connected) showView(state.view);
@@ -58,8 +71,10 @@
     schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
     stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
-    accounts: ["账户与订阅", "查看账户额度与订阅，设置收费规则，给账户增加使用日。"],
-    apns: ["APNs 推送", "配置实况通知的推送凭据。"]
+    shares: ["分享课表", "查找用户分享到服务端的课表，删除不该公开的分享。"],
+    subscriptions: ["订阅", "设置实时活动是否需要订阅，查看已订阅的设备数。"],
+    apns: ["APNs 推送", "配置实况通知的推送凭据。"],
+    audit: ["操作记录", "谁在什么时候改了什么。"]
   };
   const mobileNavigation = window.matchMedia("(max-width: 760px)");
   const setNavigation = open => {
@@ -83,6 +98,7 @@
     $("pageTitle").textContent = viewCopy[view][0];
     $("breadcrumbCurrent").textContent = viewCopy[view][0];
     $("pageSubtitle").textContent = viewCopy[view][1];
+    if (view === "audit" && state.authenticated) loadAudit().catch(error => notice(error.message, "error"));
     const wasOpen = document.body.classList.contains("nav-open");
     setNavigation(false);
     if (wasOpen) $("menuButton").focus();
@@ -91,6 +107,24 @@
     const [hours, mins] = String(time || "00:00").split(":").map(Number);
     const total = Math.min((hours * 60) + mins + minutes, (24 * 60) - 1);
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  };
+
+  // What each form looked like when it was last loaded or saved; a form that
+  // differs has edits a switch or a reload would silently throw away.
+  const forms = {
+    school: () => state.school ? JSON.stringify({ name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), periods: periodRows() }) : "",
+    term: () => state.term ? JSON.stringify(formTerm()) : "",
+    calendar: () => JSON.stringify(adjustmentRows()),
+    apns: () => JSON.stringify(formApns())
+  };
+  const formNames = { school: "学校信息", term: "学期", calendar: "统一调休", apns: "APNs 配置" };
+  const savedForms = {};
+  const markClean = (...keys) => keys.forEach(key => { savedForms[key] = forms[key](); });
+  // A form with nothing loaded ("") has nothing to lose.
+  const unsaved = (keys = Object.keys(forms)) => keys.filter(key => key in savedForms && forms[key]() !== "" && savedForms[key] !== forms[key]());
+  const confirmDiscard = keys => {
+    const changed = unsaved(keys);
+    return !changed.length || confirm(`${changed.map(key => formNames[key]).join("、")}有未保存的修改，确定放弃吗？`);
   };
 
   const renderSchools = () => {
@@ -111,7 +145,7 @@
       button.className = `school-item ${state.school?.id === school.id ? "active" : ""}`;
       button.setAttribute("aria-pressed", String(state.school?.id === school.id));
       button.innerHTML = `<span class="school-avatar">${escapeHTML(school.name.slice(0, 1) || school.id.slice(0, 1))}</span><span><strong>${escapeHTML(school.name)}</strong><small>${escapeHTML(school.id)} · ${(school.terms || []).length} 个学期</small></span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>`;
-      button.onclick = () => selectSchool(school.id);
+      button.onclick = () => { if (school.id !== state.school?.id && confirmDiscard(["school", "term"])) selectSchool(school.id); };
       list.append(button);
     });
   };
@@ -127,7 +161,7 @@
       button.setAttribute("aria-selected", String(state.term?.id === term.id));
       button.className = `term-item ${state.term?.id === term.id ? "active" : ""}`;
       button.innerHTML = `<strong>${escapeHTML(term.id)}${term.current ? '<span class="current-mark">当前</span>' : ""}</strong><small>v${term.version} · ${term.weekCount} 周</small>`;
-      button.onclick = () => selectTerm(term.id);
+      button.onclick = () => { if (term.id !== state.term?.id && confirmDiscard(["term"])) selectTerm(term.id); };
       list.append(button);
     });
   };
@@ -151,7 +185,7 @@
       list.append(row);
     });
   };
-  const fillSchool = () => {
+  const fillSchool = ({ keepTerm = false } = {}) => {
     $("editorTitle").textContent = state.school.name;
     $("editorEyebrow").textContent = state.school.id;
     $("schoolId").value = state.school.id;
@@ -161,7 +195,8 @@
     $("newTermButton").disabled = false;
     $("editorEmpty").hidden = true;
     $("editor").hidden = false;
-    renderSchools(); renderSchoolPeriods(); renderTerms(); fillTerm();
+    renderSchools(); renderSchoolPeriods(); markClean("school"); renderTerms();
+    if (!keepTerm) fillTerm();
   };
   const emptyTerm = () => ({
     id: "", version: 0, semesterStartMonday: "", weekCount: 18,
@@ -178,9 +213,13 @@
     $("termWeeks").value = term?.weekCount || 18;
     $("termCurrent").checked = Boolean(term?.current);
     $("termNote").value = term?.note || "";
+    $("deleteTermButton").disabled = !term?.version || Boolean(term.current);
+    $("deleteTermButton").title = !term?.version ? "学期尚未保存" : term.current ? "当前学期不能删除，请先把另一个学期设为当前" : "删除这个学期";
+    markClean("term");
   };
   const selectSchool = id => {
-    state.school = state.schools.find(school => school.id === id);
+    // A copy: unsaved period edits must not leak into the catalogue list.
+    state.school = structuredClone(state.schools.find(school => school.id === id));
     const current = state.school?.terms?.find(term => term.current) || state.school?.terms?.[0];
     state.term = current ? structuredClone(current) : emptyTerm();
     fillSchool();
@@ -426,6 +465,7 @@
     $("apnsStatus").className = `badge ${configured ? "configured" : ""}`;
     $("apnsNavDot").classList.toggle("configured", configured);
     $("apnsNavDot").setAttribute("aria-label", configured ? "已配置" : "未配置");
+    markClean("apns");
 
   };
   const formApns = () => ({
@@ -434,107 +474,135 @@
     tickSeconds: Number($("apnsTickSeconds").value)
   });
 
-  const accountStatus = { trial: "免费额度中", subscribed: "订阅中", expired: "额度已用完" };
-  const stamp = value => value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(value * 1000)) : "—";
-  const fillAccounts = summary => {
-    state.accountSummary = summary;
-    $("accountTotal").textContent = summary.accounts;
-    $("accountTrial").textContent = summary.trial;
-    $("accountSubscribed").textContent = summary.subscribed;
-    $("accountExpired").textContent = summary.expired;
-    $("accountNewDetail").textContent = `近 7 天新增 ${summary.newLast7Days}`;
-    $("accountChargedDetail").textContent = `近 7 天扣费账户 ${summary.chargedLast7Days}`;
-    const settings = summary.settings;
-    $("accountEnforceAfter").value = settings.enforceAfter || "";
-    $("accountTrialDays").value = settings.trialDays;
-    $("accountKeyPath").value = settings.keyPath || "";
-    $("accountKeyID").value = settings.keyID || "";
-    $("accountTeamID").value = settings.teamID || "";
-    $("accountBundleID").value = settings.bundleID || "";
-    $("accountSignInStatus").textContent = settings.signInConfigured ? "已配置密钥" : "未配置密钥";
-    $("accountSignInStatus").className = `badge ${settings.signInConfigured ? "configured" : ""}`;
+  const fillSubscriptions = summary => {
+    state.subscriptionSummary = summary;
+    const required = summary.settings.requireSubscription;
+    $("subscribedDevices").textContent = summary.subscribedDevices;
+    $("subscriptionMode").textContent = required ? "需订阅" : "Beta 免费";
+    $("subscriptionModeDetail").textContent = required ? "未订阅的设备收不到提醒" : "所有设备都能收到提醒";
+    $("requireSubscription").checked = required;
   };
-  const renderAccountList = list => {
-    const body = $("accountTable");
-    body.replaceChildren();
-    $("accountListSummary").textContent = list.total > list.accounts.length ? `共 ${list.total} 个账户，显示最近注册的 ${list.accounts.length} 个` : `共 ${list.total} 个账户`;
-    for (const account of list.accounts) {
-      const row = document.createElement("tr");
-      row.tabIndex = 0;
-      row.innerHTML = `<td><code>${escapeHTML(account.code)}</code>${account.name ? ` ${escapeHTML(account.name)}` : ""}</td><td>${escapeHTML(accountStatus[account.status])}</td><td>${account.creditDays}</td><td>${account.usedDays}</td><td>${escapeHTML(account.lastChargedDay || "—")}</td><td>${stamp(account.subscriptionExpiresAt)}</td><td>${account.devices}</td><td>${stamp(account.createdAt)}</td>`;
-      const open = () => showAccount(account.code);
-      row.onclick = open;
-      row.onkeydown = event => { if (event.key === "Enter") open(); };
-      body.append(row);
-    }
-    if (!list.accounts.length) body.innerHTML = '<tr><td colspan="8">还没有账户</td></tr>';
-  };
-  const loadAccounts = async () => {
-    const [summary, list] = await Promise.all([
-      request("/v1/admin/accounts/summary"), request(`/v1/admin/accounts?q=${encodeURIComponent($("accountSearch").value.trim())}`)
-    ]);
-    fillAccounts(summary); renderAccountList(list);
-  };
-  const showAccount = async code => {
-    try {
-      const account = await request(`/v1/admin/accounts/${encodeURIComponent(code)}`);
-      const reasons = { trial: "新账户免费", grant: "管理员发放" };
-      const ledger = account.ledger.map(item => `<li><b>${item.days > 0 ? "+" : ""}${item.days}</b> ${escapeHTML(reasons[item.reason] || item.reason)}${item.note ? ` · ${escapeHTML(item.note)}` : ""}<small>${stamp(item.createdAt)}</small></li>`).join("");
-      const detail = $("accountDetail");
-      const avatar = account.avatar ? `<div class="account-avatar"><img src="${escapeAttr(account.avatar)}" alt="账户头像" width="56" height="56"><button id="clearAvatarButton" class="button danger" type="button">清除头像</button></div>` : "";
-      detail.innerHTML = `${avatar}<h3>账户 <code>${escapeHTML(account.code)}</code> · ${escapeHTML(accountStatus[account.status])}</h3><p>剩余 ${account.creditDays} 个使用日，已用 ${account.usedDays} 天；最近扣费：${escapeHTML(account.chargedDays.slice(0, 7).join("、") || "无")}</p><ul>${ledger}</ul>`;
-      detail.hidden = false;
-      if (account.avatar) $("clearAvatarButton").onclick = () => clearAvatar(account.code);
-      $("grantTarget").value = "account"; $("grantCode").value = account.code;
-    } catch (error) { notice(error.message, "error"); }
-  };
-  const clearAvatar = async code => {
-    // The avatar is shown to everyone following this account's shares.
-    if (!confirm(`清除账户 ${code} 的头像？关注其分享课表的人将不再看到它。`)) return;
-    try {
-      await request(`/v1/admin/accounts/${encodeURIComponent(code)}/avatar`, { method: "DELETE" });
-      await showAccount(code);
-      notice("头像已清除", "success");
-    } catch (error) { notice(error.message, "error"); }
-  };
-  const saveAccountSettings = async () => {
-    const button = $("saveAccountSettingsButton");
+  const loadSubscriptions = async () => fillSubscriptions(await request("/v1/admin/subscriptions"));
+  const saveSubscriptionSettings = async () => {
+    const button = $("saveSubscriptionSettingsButton");
+    // Turning it on stops reminders for every device without a subscription.
+    if ($("requireSubscription").checked && !state.subscriptionSummary?.settings.requireSubscription
+        && !confirm(`打开后，未订阅的设备不再收到实时活动提醒（目前 ${state.subscriptionSummary?.subscribedDevices ?? 0} 台设备在订阅）。确定开始收费？`)) return;
     setLoading(button, true);
     try {
-      await request("/v1/admin/accounts/settings", { method: "POST", body: JSON.stringify({
-        enforceAfter: $("accountEnforceAfter").value, trialDays: Number($("accountTrialDays").value),
-        keyPath: $("accountKeyPath").value.trim(), keyID: $("accountKeyID").value.trim(),
-        teamID: $("accountTeamID").value.trim(), bundleID: $("accountBundleID").value.trim()
-      }) });
-      await loadAccounts();
+      await request("/v1/admin/subscriptions/settings", { method: "POST", body: JSON.stringify({ requireSubscription: $("requireSubscription").checked }) });
+      await loadSubscriptions();
       notice("收费规则已保存", "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
-  const grantValue = dryRun => {
-    const value = { target: $("grantTarget").value, days: Number($("grantDays").value), note: $("grantNote").value.trim(), dryRun };
-    if (value.target === "account") value.code = $("grantCode").value.trim().toUpperCase();
-    return value;
+  const publisherKinds = { device: "设备", ip: "IP" };
+  const publisherCell = publisher => publisher
+    ? `${escapeHTML(publisherKinds[publisher.kind] || publisher.kind)} <code>${escapeHTML(publisher.id)}</code>` : "—";
+  const dateTime = value => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
-  const previewGrant = async () => {
-    try {
-      const result = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(true)) });
-      $("grantPreview").textContent = `将发给 ${result.accounts} 个账户`;
-    } catch (error) { notice(error.message, "error"); }
+  const renderShareList = list => {
+    const body = $("shareTable");
+    body.replaceChildren();
+    $("shareDetail").hidden = true;
+    $("shareListSummary").textContent = list.total > list.shares.length ? `共 ${list.total} 份，显示最近更新的 ${list.shares.length} 份` : `共 ${list.total} 份分享`;
+    for (const share of list.shares) {
+      const row = document.createElement("tr");
+      row.tabIndex = 0;
+      row.innerHTML = `<td><code>${escapeHTML(share.code)}</code></td><td>${escapeHTML(share.owner)}</td><td>${publisherCell(share.publisher)}</td><td>${escapeHTML(share.schoolName)} · ${escapeHTML(share.termID)}</td><td>${share.courseCount}</td><td>${dateTime(share.updatedAt)}</td><td><button class="button danger" type="button">删除</button></td>`;
+      const open = () => showShare(share.code);
+      row.onclick = open;
+      row.onkeydown = event => { if (event.key === "Enter" && event.target === row) open(); };
+      row.querySelector("button").onclick = event => { event.stopPropagation(); deleteShare(share, event.currentTarget); };
+      body.append(row);
+    }
+    if (!list.shares.length) body.innerHTML = `<tr><td colspan="7">${$("shareSearch").value.trim() ? "没有匹配的分享" : "还没有分享"}</td></tr>`;
   };
-  const grant = async () => {
-    const button = $("grantButton");
+  const attestEndpoints = { "share.publish": "发布分享", "share.update": "更新分享", "liveActivity.register": "注册实时活动设备",
+    "liveActivity.timetable": "上传实时活动课表", "usage.report": "使用统计上报" };
+  const renderAbuse = abuse => {
+    const shares = abuse.shares;
+    $("shareTotal").textContent = shares.total;
+    $("shareBytes").textContent = `课程数据 ${Math.round(shares.payloadBytes / 1024)} KB`;
+    $("shareToday").textContent = shares.createdToday;
+    $("shareUnidentified").textContent = `其中仅凭 IP 识别 ${shares.unidentifiedToday}`;
+    $("shareRules").textContent = `每人 ${shares.maxActivePerPublisher} 个`;
+    $("shareRulesDetail").textContent = `${shares.idleDays} 天无人读取或更新即删除`;
+    const attest = abuse.appAttest;
+    const modes = { off: "关闭", log: "只记录", enforce: "拦截伪造" };
+    $("attestMode").textContent = attest ? modes[attest.mode] : "—";
+    const keys = attest ? Object.values(attest.keys).reduce((sum, count) => sum + count, 0) : 0;
+    $("attestKeys").textContent = attest && !attest.configured ? "未配置 Team ID，无法认证" : `已认证设备 ${keys}`;
+    const byEndpoint = {};
+    for (const row of attest ? attest.outcomes : []) {
+      const entry = byEndpoint[row.endpoint] ||= { valid: 0, missing: 0, invalid: 0, reasons: {} };
+      if (row.outcome === "valid" || row.outcome === "missing") entry[row.outcome] += row.count;
+      else { entry.invalid += row.count; entry.reasons[row.outcome] = (entry.reasons[row.outcome] || 0) + row.count; }
+    }
+    const body = $("attestTable");
+    body.replaceChildren();
+    for (const [endpoint, entry] of Object.entries(byEndpoint)) {
+      const row = document.createElement("tr");
+      const reasons = Object.entries(entry.reasons).map(([reason, count]) => `${reason} ${count}`).join("、") || "—";
+      row.innerHTML = `<td>${escapeHTML(attestEndpoints[endpoint] || endpoint)}</td><td>${entry.valid}</td><td>${entry.missing}</td><td>${entry.invalid}</td><td>${escapeHTML(reasons)}</td>`;
+      body.append(row);
+    }
+    if (!body.children.length) body.innerHTML = '<tr><td colspan="5">近 7 天没有记录</td></tr>';
+  };
+  const loadShares = async () => {
+    const [list, abuse] = await Promise.all([
+      request(`/v1/admin/shares?q=${encodeURIComponent($("shareSearch").value.trim())}`), request("/v1/admin/abuse")
+    ]);
+    renderShareList(list); renderAbuse(abuse);
+  };
+  const showShare = async code => {
     try {
-      const preview = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(true)) });
-      if (!confirm(`给 ${preview.accounts} 个账户各增加 ${preview.days} 个使用日？`)) return;
-      setLoading(button, true);
-      const result = await request("/v1/admin/accounts/grants", { method: "POST", body: JSON.stringify(grantValue(false)) });
-      $("grantPreview").textContent = "";
-      await loadAccounts();
-      if (result.accounts && $("grantTarget").value === "account") showAccount($("grantCode").value.trim());
-      notice(`已给 ${result.accounts} 个账户各增加 ${result.days} 个使用日`, "success");
-    } catch (error) { notice(error.message, "error"); }
-    finally { setLoading(button, false); }
+      // The public read: exactly what a follower installs.
+      const share = await request(`/v1/shares/${encodeURIComponent(code)}`);
+      const names = [...new Set(share.courses.map(course => course.name))];
+      const detail = $("shareDetail");
+      detail.innerHTML = `<h3>分享 <code>${escapeHTML(share.id)}</code> · ${escapeHTML(share.name)}</h3><p>第一周周一 ${escapeHTML(share.semester_start_monday || "—")} · ${share.term_week_count} 周 · ${share.courseCount} 条课程记录 · 创建于 ${dateTime(share.createdAt)}</p><ul class="share-courses">${names.map(name => `<li>${escapeHTML(name)}</li>`).join("")}</ul>`;
+      detail.hidden = false;
+    } catch (error) {
+      notice(error.status === 404 ? "该分享已不存在" : error.message, "error");
+      if (error.status === 404) loadShares().catch(() => {});
+    }
+  };
+  const deleteShare = async (share, button) => {
+    if (!confirm(`删除 ${share.owner} 的分享 ${share.code}？\n\n分享码立即失效，已导入的人保留本机副本但不再收到更新。此操作无法恢复。`)) return;
+    setLoading(button, true);
+    try {
+      await request(`/v1/admin/shares/${encodeURIComponent(share.code)}`, { method: "DELETE" });
+      notice(`分享 ${share.code} 已删除`, "success");
+    } catch (error) {
+      if (error.status !== 404) { setLoading(button, false); return notice(error.message, "error"); }
+      notice(`分享 ${share.code} 已不存在`, "error");
+    }
+    await loadShares().catch(error => notice(error.message, "error"));
+  };
+
+  const auditActions = {
+    "school.create": "新增学校", "school.save": "保存学校", "school.rename": "修改学校 ID", "school.delete": "删除学校",
+    "term.save": "保存学期", "term.delete": "删除学期", "calendar.save": "保存调休", "share.delete": "删除分享",
+    "subscription.settings": "保存收费规则",
+    "apns.save": "保存 APNs", "session.signIn": "登录", "session.signOut": "退出", "session.failed": "登录失败"
+  };
+  const loadAudit = async () => {
+    const { entries } = await request(`/v1/admin/audit?action=${encodeURIComponent($("auditFilter").value)}`);
+    const body = $("auditTable");
+    body.replaceChildren();
+    for (const entry of entries) {
+      const row = document.createElement("tr");
+      const detail = Object.entries(entry.detail || {}).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`).join("，");
+      for (const value of [dateTime(entry.at), entry.admin || "—", auditActions[entry.action] || entry.action, entry.target || "—", detail || "—"]) {
+        const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+      }
+      if (entry.action === "session.failed") row.classList.add("is-failed");
+      body.append(row);
+    }
+    if (!entries.length) body.innerHTML = '<tr><td colspan="5">还没有操作记录</td></tr>';
   };
 
   const saveSchool = async () => {
@@ -544,13 +612,12 @@
       if (!value.id || !value.name) throw new Error("学校 ID 和名称不能为空");
       validatePeriods(value.periods);
       setLoading(button, true);
-      const saved = await request(`/v1/schools/${encodeURIComponent(value.id)}`, { method: "POST", body: JSON.stringify(value) });
+      const saved = await request(`/v1/admin/schools/${encodeURIComponent(value.id)}`, { method: "POST", body: JSON.stringify(value) });
       const index = state.schools.findIndex(item => item.id === saved.id);
       if (index >= 0) state.schools[index] = saved; else state.schools.push(saved);
-      state.school = saved;
-      const termID = state.term?.id;
-      state.term = saved.terms.find(term => term.id === termID) || saved.terms.find(term => term.current) || saved.terms[0] || emptyTerm();
-      updateMetrics(); fillSchool();
+      state.school = structuredClone(saved);
+      // The term form may hold its own unsaved edits: leave it as it is.
+      updateMetrics(); fillSchool({ keepTerm: true });
       notice("学校配置已保存", "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
@@ -568,10 +635,12 @@
         method: "POST", body: JSON.stringify({ id: newID })
       });
       state.schools = state.schools.map(school => school.id === oldID ? saved : school);
-      state.school = saved;
-      const termID = state.term?.id;
-      state.term = saved.terms.find(term => term.id === termID) || saved.terms.find(term => term.current) || saved.terms[0] || emptyTerm();
-      updateMetrics(); fillSchool();
+      // Keep unsaved name, note and period edits: only the ID changed.
+      const draft = { name: $("schoolName").value, note: $("schoolNote").value, periods: periodRows() };
+      state.school = { ...structuredClone(saved), periods: draft.periods };
+      updateMetrics(); fillSchool({ keepTerm: true });
+      $("schoolName").value = draft.name; $("schoolNote").value = draft.note;
+      savedForms.school = JSON.stringify({ name: saved.name, note: saved.note || "", periods: saved.periods });
       notice(`学校 ID 已更新为 ${saved.id}`, "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
@@ -585,12 +654,32 @@
       await request(`/v1/admin/schools/${encodeURIComponent(state.school.id)}/terms`, { method: "POST", body: JSON.stringify(term) });
       const data = await request("/v1/schools");
       state.schools = data.schools || [];
-      state.school = state.schools.find(school => school.id === state.school.id);
-      state.term = structuredClone(state.school.terms.find(item => item.id === term.id));
-      updateMetrics(); fillSchool();
+      const fresh = state.schools.find(school => school.id === state.school.id);
+      // Only the terms are new: the school form may hold its own unsaved edits.
+      state.school.terms = structuredClone(fresh.terms);
+      state.term = structuredClone(fresh.terms.find(item => item.id === term.id));
+      updateMetrics(); renderSchools(); renderTerms(); fillTerm();
       notice(`学期 ${state.term.id} 已保存，服务端版本 v${state.term.version}`, "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
+  };
+  const deleteTerm = async () => {
+    const school = state.school, term = state.term;
+    if (!school || !term?.version || term.current) return;
+    if (!confirm(`删除“${school.name}”的学期 ${term.id}？\n\n客户端只跟随当前学期，不受影响；绑定这个学期的分享保留发布时的时间，但不能再“同步最新配置”。此操作无法恢复。`)) return;
+    const button = $("deleteTermButton");
+    setLoading(button, true);
+    try {
+      await request(`/v1/admin/schools/${encodeURIComponent(school.id)}/terms/${encodeURIComponent(term.id)}`, { method: "DELETE" });
+      const fresh = ((await request("/v1/schools")).schools || []);
+      state.schools = fresh;
+      state.school.terms = structuredClone(fresh.find(item => item.id === school.id)?.terms || []);
+      const current = state.school.terms.find(item => item.current) || state.school.terms[0];
+      state.term = current ? structuredClone(current) : emptyTerm();
+      updateMetrics(); renderSchools(); renderTerms(); fillTerm();
+      notice(`学期 ${term.id} 已删除`, "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); $("deleteTermButton").disabled = !state.term?.version || Boolean(state.term.current); }
   };
   const saveCalendar = async () => {
     const button = $("saveCalendarButton");
@@ -599,7 +688,7 @@
       validateAdjustments(adjustments);
       setLoading(button, true);
       state.calendar = await request("/v1/admin/calendar", { method: "POST", body: JSON.stringify({ adjustments }) });
-      renderCalendar();
+      renderCalendar(); markClean("calendar");
       const data = await request("/v1/schools");
       state.schools = data.schools || [];
       updateMetrics(); renderSchools();
@@ -639,7 +728,20 @@
     const button = $("saveApnsButton");
     setLoading(button, true);
     try {
-      const saved = await request("/v1/admin/apns", { method: "POST", body: JSON.stringify(formApns()) });
+      const save = extra => request("/v1/admin/apns", { method: "POST", body: JSON.stringify({ ...formApns(), ...extra }) });
+      let saved;
+      try { saved = await save({}); }
+      catch (error) {
+        // Another Bundle ID while the current app's devices still get broadcasts:
+        // switching gives them up, so it takes an explicit confirmation.
+        const impact = error.status === 409 && error.data?.retire;
+        if (!impact) throw error;
+        const ok = confirm(`旧 Bundle ID（${impact.bundles.join("、")}）还有未到期的广播。\n\n`
+          + `切换到新 Bundle ID 会放弃旧 App：${impact.devices} 台设备不再收到实时活动，`
+          + `${impact.channels} 个广播频道会被删除。新 App 的设备不受影响。\n\n确定切换吗？`);
+        if (!ok) { notice("已取消，APNs 配置未改动"); return; }
+        saved = await save({ retireOtherBundles: true });
+      }
       fillApns(saved);
       notice("APNs 配置已保存", "success");
     } catch (error) { notice(error.message, "error"); }
@@ -656,6 +758,7 @@
   };
 
   const openNewSchool = () => {
+    if (!confirmDiscard(["school", "term"])) return;
     $("newSchoolForm").reset(); $("newSchoolDialog").showModal();
     requestAnimationFrame(() => $("newSchoolId").focus());
   };
@@ -668,7 +771,7 @@
     setLoading(button, true);
     try {
       // create: true 让服务端在 ID 已被占用时返回 409，而不是覆盖别人刚建好的学校。
-      const school = await request(`/v1/schools/${encodeURIComponent(id)}`, {
+      const school = await request(`/v1/admin/schools/${encodeURIComponent(id)}`, {
         method: "POST", body: JSON.stringify({ create: true, name, note: "", periods: [{ id: 1, name: "第1节", start: "08:00", end: "08:50" }] })
       });
       state.schools.push(school); updateMetrics(); $("newSchoolDialog").close();
@@ -687,11 +790,11 @@
   };
   const deleteSchool = async () => {
     const school = state.school;
-    if (!school || !confirm(`确定删除“${school.name}”及其全部学期配置？已有分享快照会保留。`)) return;
+    if (!school || !confirm(`确定删除“${school.name}”及其全部学期配置？已有分享快照会保留。${unsaved(["school", "term"]).length ? "\n\n表单里未保存的修改也会一并丢弃。" : ""}`)) return;
     const button = $("deleteSchoolButton");
     setLoading(button, true);
     try {
-      await request(`/v1/schools/${encodeURIComponent(school.id)}`, { method: "DELETE" });
+      await request(`/v1/admin/schools/${encodeURIComponent(school.id)}`, { method: "DELETE" });
       state.schools = state.schools.filter(item => item.id !== school.id);
       if (state.school?.id === school.id) {
         state.school = null; state.term = null;
@@ -703,21 +806,29 @@
     finally { setLoading(button, false); }
   };
   const loadConsole = async () => {
-    const [catalogue, apns, calendar, stats] = await Promise.all([
-      request("/v1/schools"), request("/v1/admin/apns"), request("/v1/admin/calendar"), request("/v1/admin/stats")
-    ]);
+    const catalogue = await request("/v1/schools");
     state.authenticated = true;
     state.schools = catalogue.schools || [];
-    state.school = null; state.term = null; state.calendar = calendar; state.stats = stats;
-    $("saveApnsButton").disabled = false; $("saveCalendarButton").disabled = false;
-    fillApns(apns); renderCalendar(); renderStats(); renderSchools(); updateMetrics(); updateConnectionUI(true);
-    // Accounts load on their own: a server without them still opens the console.
-    loadAccounts().catch(error => notice(error.message, "error"));
+    state.school = null; state.term = null;
+    renderSchools(); updateMetrics(); updateConnectionUI(true);
     if (state.schools.length) selectSchool(state.schools[0].id);
     else { $("editor").hidden = true; $("editorEmpty").hidden = false; }
+    // Every other section loads on its own: one that fails reports itself and
+    // leaves the rest usable. A save button opens only once its data is in,
+    // so a failed load can never be saved over the real configuration.
+    const section = (load, show) => load().then(show).catch(error => notice(error.message, "error"));
+    section(() => request("/v1/admin/apns"), apns => { fillApns(apns); $("saveApnsButton").disabled = false; });
+    section(() => request("/v1/admin/calendar"), calendar => {
+      state.calendar = calendar; renderCalendar(); markClean("calendar"); $("saveCalendarButton").disabled = false;
+    });
+    section(() => request("/v1/admin/stats"), stats => { state.stats = stats; renderStats(); });
+    section(loadSubscriptions, () => {});
+    section(loadShares, () => {});
+    if (state.view === "audit") section(loadAudit, () => {});
   };
   const signedOut = () => {
-    state.authenticated = false; state.schools = []; state.school = null; state.term = null;
+    state.authenticated = false; state.admin = null; state.schools = []; state.school = null; state.term = null;
+    Object.keys(savedForms).forEach(key => delete savedForms[key]);
     $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
     updateConnectionUI(false);
   };
@@ -730,18 +841,18 @@
     try {
       // The token is exchanged for an HttpOnly session cookie and then dropped,
       // so a reload restores the console without asking for it again.
-      await request("/v1/admin/session", { method: "POST", body: JSON.stringify({ token }) });
+      state.admin = (await request("/v1/admin/session", { method: "POST", body: JSON.stringify({ token }) })).admin;
       $("adminToken").value = "";
       await loadConsole();
       notice(`已读取 ${state.schools.length} 所学校`, "success");
     } catch (error) {
       signedOut();
-      notice(error.message === "admin token required" ? "管理员令牌无效" : error.message, "error");
+      notice(error.status === 429 ? "错误次数过多，请 15 分钟后再试" : error.message === "admin token required" ? "管理员令牌无效" : error.message, "error");
     } finally { setLoading(button, false); }
   };
   const restore = async () => {
     try {
-      await request("/v1/admin/session");
+      state.admin = (await request("/v1/admin/session")).admin;
     } catch { return signedOut(); }
     try {
       await loadConsole();
@@ -751,6 +862,7 @@
     }
   };
   const disconnect = async () => {
+    if (!confirmDiscard()) return;
     try { await request("/v1/admin/session", { method: "DELETE" }); } catch { /* the cookie is dropped either way */ }
     $("adminToken").value = "";
     signedOut(); notice("管理会话已断开", "success"); $("adminToken").focus();
@@ -763,7 +875,7 @@
   $("newSchoolForm").onsubmit = createSchool;
   $("closeSchoolDialog").onclick = () => $("newSchoolDialog").close();
   $("cancelSchoolDialog").onclick = () => $("newSchoolDialog").close();
-  $("newTermButton").onclick = () => { state.term = emptyTerm(); renderTerms(); fillTerm(); $("termId").focus(); };
+  $("newTermButton").onclick = () => { if (!confirmDiscard(["term"])) return; state.term = emptyTerm(); renderTerms(); fillTerm(); $("termId").focus(); };
   $("saveTermButton").onclick = saveTerm;
   $("saveSchoolButton").onclick = saveSchool;
   $("renameSchoolButton").onclick = renameSchool;
@@ -772,14 +884,14 @@
   $("importCalendarButton").onclick = importCalendar;
   $("saveApnsButton").onclick = saveApns;
   $("deleteSchoolButton").onclick = deleteSchool;
+  $("deleteTermButton").onclick = deleteTerm;
+  $("auditFilter").onchange = () => loadAudit().catch(error => notice(error.message, "error"));
+  window.addEventListener("beforeunload", event => { if (state.authenticated && unsaved().length) event.preventDefault(); });
   $("refreshStatsButton").onclick = refreshStats;
   $("statsSchoolFilter").onchange = renderDeviceStats;
-  $("saveAccountSettingsButton").onclick = saveAccountSettings;
-  $("previewGrantButton").onclick = previewGrant;
-  $("grantButton").onclick = grant;
-  $("grantTarget").onchange = () => { $("grantCode").disabled = $("grantTarget").value !== "account"; $("grantPreview").textContent = ""; };
-  let accountSearchTimer;
-  $("accountSearch").oninput = () => { clearTimeout(accountSearchTimer); accountSearchTimer = setTimeout(() => loadAccounts().catch(error => notice(error.message, "error")), 250); };
+  $("saveSubscriptionSettingsButton").onclick = saveSubscriptionSettings;
+  let shareSearchTimer;
+  $("shareSearch").oninput = () => { clearTimeout(shareSearchTimer); shareSearchTimer = setTimeout(() => loadShares().catch(error => notice(error.message, "error")), 250); };
   $("schoolSearch").oninput = renderSchools;
   $("addSchoolPeriodButton").onclick = () => {
     state.school.periods = periodRows();

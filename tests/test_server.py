@@ -1,4 +1,4 @@
-import http.client, json, os, sqlite3, tempfile, threading, unittest
+import http.client, json, os, re, sqlite3, tempfile, threading, unittest
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -56,7 +56,7 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(Exception): self.req('POST','/v1/admin/schools/nju/terms',value)
         old=os.environ.get('NAPTABLE_ADMIN_TOKEN'); os.environ['NAPTABLE_ADMIN_TOKEN']='admin-test'
         try:
-            self.req('POST','/v1/schools/nju',{'name':'南京大学','periods':periods},{'X-Admin-Token':'admin-test'})
+            self.req('POST','/v1/admin/schools/nju',{'name':'南京大学','periods':periods},{'X-Admin-Token':'admin-test'})
             self.req('POST','/v1/admin/schools/nju/terms',value,{'X-Admin-Token':'admin-test'})
             school=self.req('GET','/v1/schools')['schools'][0]
             term=next(item for item in school['terms'] if item['id']=='2027-spring')
@@ -84,24 +84,6 @@ class ServerTests(unittest.TestCase):
         finally:
             if old is None: os.environ.pop('NAPTABLE_ADMIN_TOKEN',None)
             else: os.environ['NAPTABLE_ADMIN_TOKEN']=old
-    def test_apns_reconcile_creates_both_environments_once_per_school(self):
-        class Client:
-            def __init__(self): self.environments=[]; self.channels={'production':set(),'sandbox':set()}
-            def list_channels(self, environment='production'):
-                return sorted(self.channels[environment])
-            def create_channel(self, environment='production'):
-                self.environments.append(environment)
-                channel=f'{environment}-{len(self.environments)}'
-                self.channels[environment].add(channel)
-                return channel
-        self.store.save_apns_config({'tickSeconds':5})
-        client=Client()
-        first=self.store.reconcile_apns_channels(client)
-        self.assertEqual(len(first['created']),2)
-        self.assertEqual(set(first['config']['channels']), {
-            'production:nju','sandbox:nju'})
-        second=self.store.reconcile_apns_channels(client)
-        self.assertEqual(second['created'],[]); self.assertEqual(len(client.environments),2)
     def test_apns_bundle_change_discards_channels_from_the_old_app(self):
         self.store.save_apns_config({
             'keyPath':'/key.p8','keyID':'K','teamID':'T','bundleID':'old.app',
@@ -142,6 +124,10 @@ class ServerTests(unittest.TestCase):
         self.assertIn('隐私政策', self.req_text('GET','/privacy'))
         self.assertIn('text/css', self.req_headers('GET','/site/site.css')['Content-Type'])
         self.assertEqual(self.req_headers('GET','/site/img/week-view.jpg')['Content-Type'], 'image/jpeg')
+        # Every asset the pages link to is on the fixed list and present on disk.
+        for page in ('/', '/privacy'):
+            for path in set(re.findall(r'"(/site/[^"]+)"', self.req_text('GET', page))):
+                self.assertTrue(self.req_headers('GET', path)['Content-Type'], path)
         for path in ('/site/../naptable_server.py', '/site/index.html', '/site/img/missing.jpg'):
             with self.assertRaises(HTTPError) as caught: self.req_text('GET', path)
             self.assertEqual(caught.exception.code, 404)

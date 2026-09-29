@@ -5,7 +5,7 @@ FastAPI on uvicorn, in one process. Intended for a LAN or private deployment;
 put it behind TLS/authentication at the edge for a public deployment.
 """
 from __future__ import annotations
-import argparse, hashlib, html, json, os, secrets, sqlite3, threading, re
+import argparse, functools, hashlib, html, json, os, secrets, sqlite3, threading, time, re
 from contextlib import asynccontextmanager
 from email.utils import formatdate
 from datetime import datetime, timedelta, timezone
@@ -19,18 +19,21 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import accounts, holidays, live_activity
+    from . import app_attest, holidays, live_activity, subscriptions
     from .live_activity_timeline import ProtocolError, identifier
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import accounts, holidays, live_activity
+    import app_attest, holidays, live_activity, subscriptions
     from live_activity_timeline import ProtocolError, identifier
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 SITE_ROOT = STATIC_ROOT / "site"
 # The public website: a fixed list, so no request path ever reaches the filesystem.
-SITE_ASSETS = {"site.css": "text/css; charset=utf-8", "img/icon.png": "image/png", "img/favicon.png": "image/png",
-               **{f"img/{name}.jpg": "image/jpeg" for name in ("week-view", "month-view", "onboarding-import",
-                                                                 "device-settings", "today-widget", "two-day-widget")}}
+SITE_ASSETS = {"site.css": "text/css; charset=utf-8",
+               **{f"img/{name}.jpg": "image/jpeg" for name in ("week-view", "week-view-dark", "day-view", "month-view",
+                                                                 "onboarding-import")},
+               **{f"img/{name}.png": "image/png" for name in ("icon", "favicon", "upcoming-widget", "two-day-widget",
+                                                                "live-lock-screen", "live-island-expanded",
+                                                                "live-island-compact")}}
 # Usage days follow the school clock, not UTC: "today" starts at 00:00 UTC+8.
 USAGE_ZONE = timezone(timedelta(hours=8))
 
@@ -72,6 +75,11 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
  token_hash TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
  created_at TEXT NOT NULL, expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_audit (
+ id INTEGER PRIMARY KEY, at TEXT NOT NULL, admin TEXT NOT NULL,
+ action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS admin_audit_at ON admin_audit(at);
 CREATE TABLE IF NOT EXISTS shares (
  code TEXT PRIMARY KEY, write_token_hash TEXT NOT NULL, owner TEXT NOT NULL,
  school_id TEXT NOT NULL, school_name TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -86,9 +94,94 @@ def _usage_day(stamp): return stamp.astimezone(USAGE_ZONE).date().isoformat()
 
 # The console keeps its session in a cookie so a page reload does not ask for
 # the token again. It is bound to the admin token in force when it was issued,
-# so rotating NAPTABLE_ADMIN_TOKEN signs every console out.
+# so rotating an admin's token signs that admin's consoles out.
 ADMIN_COOKIE = "naptable_admin"
 ADMIN_SESSION_TTL = timedelta(hours=12)
+ADMIN_NAME = re.compile(r"[A-Za-z0-9._-]{1,40}")
+# Wrong tokens, from the login form or the X-Admin-Token header, per client.
+LOGIN_FAILURES = 10
+LOGIN_WINDOW = timedelta(minutes=15)
+# The audit log keeps this long; nothing in it is needed to run the service.
+AUDIT_RETENTION = timedelta(days=365)
+
+def admin_tokens():
+    """Admin name -> token. NAPTABLE_ADMIN_TOKEN is the admin named "admin";
+    NAPTABLE_ADMIN_TOKENS adds named ones, "alice=token1,bob=token2", so the
+    audit log can say who did what and one person's token can be rotated alone."""
+    return dict(_parse_admin_tokens(os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip(),
+                                    os.environ.get("NAPTABLE_ADMIN_TOKENS", "")))
+
+@functools.lru_cache(maxsize=8)
+def _parse_admin_tokens(single, named):
+    """Read once per value, so a bad entry is reported once, not per request."""
+    tokens = {"admin": single} if single else {}
+    for entry in named.split(","):
+        name, separator, token = entry.strip().partition("=")
+        name, token = name.strip(), token.strip()
+        if not separator or not token or not ADMIN_NAME.fullmatch(name):
+            if entry.strip(): print("NAPTABLE_ADMIN_TOKENS: ignoring an entry that is not name=token")
+            continue
+        tokens[name] = token
+    return tuple(tokens.items())
+
+def token_owner(supplied, tokens):
+    """The name whose token `supplied` is, or None. Every token is compared,
+    so the time taken does not say which name came closest."""
+    found = None
+    for name, token in tokens.items():
+        if _same_secret(supplied, token) and found is None: found = name
+    return found
+
+class LoginThrottle:
+    """Refuses a client after LOGIN_FAILURES wrong tokens within LOGIN_WINDOW.
+    In memory: a restart forgets it, and nginx limits the rate in front."""
+    def __init__(self, now=lambda: datetime.now(timezone.utc)):
+        self.now, self.lock, self.failures = now, threading.Lock(), {}
+    def _recent(self, client):
+        cutoff = self.now() - LOGIN_WINDOW
+        kept = [stamp for stamp in self.failures.get(client, ()) if stamp > cutoff]
+        if kept: self.failures[client] = kept
+        else: self.failures.pop(client, None)
+        return kept
+    def retry_after(self, client):
+        """Seconds until `client` may try again; 0 when it may now."""
+        with self.lock:
+            recent = self._recent(client)
+            if len(recent) < LOGIN_FAILURES: return 0
+            # Open again once the oldest of the last LOGIN_FAILURES leaves the window.
+            return max(1, int((recent[-LOGIN_FAILURES] + LOGIN_WINDOW - self.now()).total_seconds()) + 1)
+    def fail(self, client):
+        with self.lock:
+            self.failures.setdefault(client, []).append(self.now())
+            if len(self.failures) > 10000:  # a flood of addresses cannot grow this without bound
+                for key in list(self.failures)[:5000]: self.failures.pop(key, None)
+
+class PublishLimiter:
+    """At most `limit(key)` publishes per key in the last hour. In memory, like
+    LoginThrottle: a restart forgets it."""
+    def __init__(self, now=time.time):
+        self.now, self.lock, self.stamps = now, threading.Lock(), {}
+    def retry_after(self, key, limit):
+        """Seconds until `key` may publish again, counting this one when it may now."""
+        with self.lock:
+            cutoff = self.now() - 3600
+            recent = [stamp for stamp in self.stamps.get(key, ()) if stamp > cutoff]
+            if len(recent) >= limit:
+                self.stamps[key] = recent
+                return max(1, int(recent[-limit] + 3600 - self.now()) + 1)
+            self.stamps[key] = recent + [self.now()]
+            if len(self.stamps) > 20000:  # a flood of keys cannot grow this without bound
+                for stale in list(self.stamps)[:10000]: self.stamps.pop(stale, None)
+            return 0
+
+def publisher_label(publisher):
+    """A share's publisher as the admin sees it: the kind and the first
+    characters of the hashed device id or address."""
+    kind, _, digest = (publisher or "").partition(":")
+    return {"kind": kind, "id": digest[:8]} if digest else None
+
+class ShareQuotaError(ValueError):
+    """A publish refused for a quota: answered 429, not 400."""
 
 # A share is handed back in one response and installed as one table, so the
 # payload is bounded here rather than left to whatever a client uploads.
@@ -96,6 +189,21 @@ MAX_COURSES = 600
 MAX_COURSE_BYTES = 256 * 1024
 MAX_OWNER_LENGTH = 40
 MAX_REQUEST_BYTES = 1024 * 1024
+# Anti-abuse. A publisher known by its App Attest key holds at most this
+# many shares; anyone publishes at most PUBLISH_PER_HOUR new or replaced shares
+# an hour (a bare address, often a whole campus behind one NAT, gets more); a
+# share nobody reads or updates for SHARE_IDLE_DAYS is deleted.
+MAX_ACTIVE_SHARES = 10
+PUBLISH_PER_HOUR = 20
+PUBLISH_PER_HOUR_BY_ADDRESS = 120
+# New shares a day from publishers known only by address, across everyone:
+# past it only attested devices may publish.
+UNIDENTIFIED_SHARES_PER_DAY = 3000
+SHARE_IDLE_DAYS = 180
+# Writes an hour from one address without App Attest (simulators, older apps,
+# scripts), per endpoint. Publishing has its own, stricter quotas below.
+UNATTESTED_PER_HOUR = {"share.update": 600, "liveActivity.register": 300, "liveActivity.timetable": 600, "usage.report": 600}
+SHARE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 MAX_ADJUSTMENTS = 200
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -240,11 +348,18 @@ class Store:
             if "term_id" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_id TEXT NOT NULL DEFAULT ''")
             if "term_version" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_version INTEGER NOT NULL DEFAULT 0")
             if "term_snapshot_json" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN term_snapshot_json TEXT NOT NULL DEFAULT '{}'")
-            # The signed-in account that published it, whose avatar readers see; '' when anonymous.
-            if "account" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN account TEXT NOT NULL DEFAULT ''")
+            # The Sign in with Apple account that published it, from before accounts were removed.
+            if "account" in columns: self.db.execute("ALTER TABLE shares DROP COLUMN account")
+            # Who publishes it, for quotas and the admin: a hash of its App Attest key, else of its address.
+            if "publisher" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN publisher TEXT NOT NULL DEFAULT ''")
+            # When someone last downloaded it (at most daily): a share nobody reads or updates expires.
+            if "last_read_at" not in columns: self.db.execute("ALTER TABLE shares ADD COLUMN last_read_at TEXT NOT NULL DEFAULT ''")
+            self.db.execute("CREATE INDEX IF NOT EXISTS shares_publisher ON shares(publisher)")
             # Revoking or replacing a share used to only flag the row.
             self.db.execute("DELETE FROM shares WHERE revoked!=0")
             self.db.commit(); self.seed(); self._migrate_configuration_model()
+        self.expired_at = 0.0
+        self.expire_shares()
     def close(self):
         with self.lock: self.db.close()
     @staticmethod
@@ -257,20 +372,39 @@ class Store:
             self.db.execute("INSERT INTO admin_sessions (token_hash,secret_hash,created_at,expires_at) VALUES (?,?,?,?)",
                             (self._digest(raw), self._digest(secret), stamp.isoformat(), (stamp + ttl).isoformat()))
         return raw
-    def admin_session_valid(self, raw, secret, ttl=ADMIN_SESSION_TTL):
-        """Accept a console session cookie, sliding its expiry so an admin who
-        keeps working is not signed out mid-edit."""
-        if not raw or not secret: return False
+    def admin_session_valid(self, raw, tokens, ttl=ADMIN_SESSION_TTL):
+        """The admin a console session cookie belongs to, or None. Its expiry
+        slides, so an admin who keeps working is not signed out mid-edit."""
+        if not raw or not tokens: return None
         digest = self._digest(raw)
         stamp = datetime.now(timezone.utc)
         with self.lock, self.db:
             row = self.db.execute("SELECT secret_hash,expires_at FROM admin_sessions WHERE token_hash=?", (digest,)).fetchone()
-            if not row: return False
-            if row["expires_at"] <= stamp.isoformat() or not secrets.compare_digest(row["secret_hash"], self._digest(secret)):
+            if not row: return None
+            name = next((name for name, token in tokens.items()
+                         if secrets.compare_digest(row["secret_hash"], self._digest(token))), None)
+            if row["expires_at"] <= stamp.isoformat() or name is None:
                 self.db.execute("DELETE FROM admin_sessions WHERE token_hash=?", (digest,))
-                return False
+                return None
             self.db.execute("UPDATE admin_sessions SET expires_at=? WHERE token_hash=?", ((stamp + ttl).isoformat(), digest))
-        return True
+        return name
+    def audit(self, admin, action, target="", detail=None):
+        stamp = datetime.now(timezone.utc)
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM admin_audit WHERE at<?", ((stamp - AUDIT_RETENTION).isoformat(),))
+            self.db.execute("INSERT INTO admin_audit (at,admin,action,target,detail) VALUES (?,?,?,?,?)",
+                            (stamp.isoformat(), admin or "", action, str(target or ""),
+                             json.dumps(detail or {}, ensure_ascii=False)))
+    def audit_log(self, action="", limit=200):
+        """The newest entries, optionally of one action or one action family
+        ("school" matches school.save, school.delete…)."""
+        where, params = "", ()
+        if action:
+            where, params = "WHERE action=? OR action LIKE ?", (action, action.replace("%", "").replace("_", "") + ".%")
+        with self.lock:
+            rows = self.db.execute(f"SELECT * FROM admin_audit {where} ORDER BY id DESC LIMIT ?", (*params, limit)).fetchall()
+        return {"entries": [{"at": r["at"], "admin": r["admin"], "action": r["action"], "target": r["target"],
+                             "detail": json.loads(r["detail"] or "{}")} for r in rows]}
     def delete_admin_session(self, raw):
         if not raw: return
         with self.lock, self.db:
@@ -324,37 +458,6 @@ class Store:
                 (fields["keyPath"], fields["keyID"], fields["teamID"], fields["bundleID"], tick,
                  json.dumps(clean_channels, ensure_ascii=False), stamp))
         return self.apns_config()
-    def save_apns_channels(self, channels):
-        config = self.apns_config()
-        if not config: return None
-        with self.lock, self.db:
-            self.db.execute("UPDATE apns_config SET channels_json=?,updated_at=? WHERE id=1",
-                            (json.dumps(channels, ensure_ascii=False), now()))
-        return self.apns_config()
-    def reconcile_apns_channels(self, client):
-        config = self.apns_config()
-        if not config or client is None: return {"created": [], "errors": [], "config": config}
-        channels = dict(config.get("channels", {}))
-        created, errors = [], []
-        school_ids = [row[0] for row in self.db.execute("SELECT id FROM school_configs ORDER BY id")]
-        for environment in ("production", "sandbox"):
-            try:
-                remote_channels = set(client.list_channels(environment=environment))
-            except Exception as error:
-                errors.append({"key": f"{environment}:*", "error": str(error)})
-                continue
-            for school_id in school_ids:
-                key = f"{environment}:{school_id}"
-                if channels.get(key) in remote_channels: continue
-                try:
-                    channel_id = client.create_channel(environment=environment)
-                    channels[key] = channel_id
-                    remote_channels.add(channel_id)
-                    self.save_apns_channels(channels)
-                    created.append(key)
-                except Exception as error:
-                    errors.append({"key": key, "error": str(error)})
-        return {"created": created, "errors": errors, "config": self.apns_config()}
     def seed(self):
         if self.db.execute("SELECT 1 FROM configuration_migrations WHERE name='editable-school-catalog'").fetchone():
             return
@@ -602,6 +705,16 @@ class Store:
             if make_current: self.db.execute("UPDATE school_terms SET is_current=0 WHERE school_id=?", (school_id,))
             self.db.execute("INSERT INTO school_terms (school_id,term_id,version,semester_start_monday,week_count,periods_json,timezone,note,updated_at,adjustments_json,is_current) VALUES (?,?,1,?,?,'[]',?,?,?,'[]',?) ON CONFLICT(school_id,term_id) DO UPDATE SET version=version+1,semester_start_monday=excluded.semester_start_monday,week_count=excluded.week_count,timezone=excluded.timezone,note=excluded.note,updated_at=excluded.updated_at,is_current=excluded.is_current",(school_id,value["id"],value["semesterStartMonday"],value["weekCount"],value["timezone"],note,stamp,int(make_current)))
             return self.term(self.db.execute("SELECT * FROM school_terms WHERE school_id=? AND term_id=?",(school_id,value["id"])).fetchone())
+    def delete_term(self, school_id, term_id):
+        """Remove a term that is not the school's current one: clients only
+        follow the current term, and shares keep their frozen copy."""
+        with self.lock, self.db:
+            row = self.db.execute("SELECT is_current FROM school_terms WHERE school_id=? AND term_id=?",
+                                  (school_id, term_id)).fetchone()
+            if row is None: return False
+            if row["is_current"]: raise ValueError("不能删除当前学期，请先把另一个学期设为当前")
+            self.db.execute("DELETE FROM school_terms WHERE school_id=? AND term_id=?", (school_id, term_id))
+        return True
     def report_usage(self, installation_id, secret, value):
         if not re.fullmatch(r"[a-fA-F0-9-]{36}", installation_id):
             raise ValueError("invalid installation ID")
@@ -696,14 +809,20 @@ class Store:
         with self.lock:
             r=self.db.execute("SELECT name FROM school_configs WHERE id=?",(school_id,)).fetchone()
         return r["name"] if r else school_id
-    def create(self, value, previous_code=None, write_token=None, account=""):
+    def create(self, value, previous_code=None, write_token=None, publisher=""):
+        """`publisher` is who asks, as `publisher_key` made it: one that is not
+        a bare address may hold at most MAX_ACTIVE_SHARES shares at a time."""
         term = self.find_term(value.get("schoolID", ""), value.get("termID", ""))
         if not term: raise ValueError("unknown schoolID/termID")
         _, payload = normalize_courses(value.get("courses"))
         owner = str(value.get("owner") or "匿名").strip()[:MAX_OWNER_LENGTH] or "匿名"
-        code=secrets.token_urlsafe(6).replace("-", "").replace("_", "").upper()[:8]
         token=secrets.token_urlsafe(24); stamp=now()
+        if time.time() - self.expired_at > 3600: self.expire_shares()
         with self.lock, self.db:
+            code = self._new_share_code()
+            if previous_code is None and publisher and not publisher.startswith("ip:"):
+                held = self.db.execute("SELECT COUNT(*) FROM shares WHERE publisher=? AND revoked=0", (publisher,)).fetchone()[0]
+                if held >= MAX_ACTIVE_SHARES: raise ShareQuotaError(f"最多同时保留 {MAX_ACTIVE_SHARES} 个分享码，请先撤销不用的分享")
             obsolete_codes = []
             if previous_code is not None:
                 previous = self.authorize(previous_code, write_token)
@@ -739,14 +858,50 @@ class Store:
                 if unchanged: raise ValueError("课表没有变更，请继续使用现有分享码")
             self.db.execute("INSERT INTO shares (code,write_token_hash,owner,school_id,school_name,payload_json,semester_start_monday,class_time_list_json,adjustments_json,term_id,term_version,term_snapshot_json,created_at,updated_at,revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", (code,hashlib.sha256(token.encode()).hexdigest(),owner,value["schoolID"],self.school_name(value["schoolID"]),payload,term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp,stamp))
             scope = previous["schedule_scope"] if previous_code is not None else secrets.token_hex(16)
-            # A replacement keeps its publisher unless it is republished signed in.
-            owner_account = account or (previous["account"] if previous_code is not None else "")
-            self.db.execute("UPDATE shares SET schedule_scope=?,account=? WHERE code=?", (scope, owner_account, code))
+            publisher = publisher or (previous["publisher"] if previous_code is not None else "")
+            self.db.execute("UPDATE shares SET schedule_scope=?,publisher=?,last_read_at=? WHERE code=?", (scope, publisher, stamp, code))
             for obsolete_code in obsolete_codes:
                 self.db.execute("DELETE FROM shares WHERE code=?", (obsolete_code,))
         return self.get(code, include_token=True, token=token)
+    def _new_share_code(self):
+        while True:
+            code = "".join(secrets.choice(SHARE_CODE_ALPHABET) for _ in range(8))
+            if not self.db.execute("SELECT 1 FROM shares WHERE code=?", (code,)).fetchone(): return code
+    def _read(self, code):
+        """The live share row, marking it read (once a day at most)."""
+        with self.lock:
+            r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
+            stamp = datetime.now(timezone.utc)
+            if r is not None and r["last_read_at"] < (stamp - timedelta(days=1)).isoformat():
+                self.db.execute("UPDATE shares SET last_read_at=? WHERE code=?", (stamp.isoformat(), r["code"]))
+                self.db.commit()
+        return r
+    def expire_shares(self):
+        """Delete shares nobody downloaded or updated for SHARE_IDLE_DAYS, unless a
+        device still follows them for Live Activity reminders. Their readers see
+        them as revoked."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=SHARE_IDLE_DAYS)).isoformat()
+        with self.lock, self.db:
+            followed = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='la_timetables'").fetchone()
+            keep = " AND schedule_scope NOT IN (SELECT follow_scope FROM la_timetables WHERE follow_scope!='')" if followed else ""
+            gone = self.db.execute(f"DELETE FROM shares WHERE MAX(updated_at,last_read_at)<?{keep}", (cutoff,)).rowcount
+        self.expired_at = time.time()
+        if gone: print(f"expired {gone} idle shares")
+        return gone
+    def share_stats(self):
+        """For the admin: how many shares exist and were made today (UTC+8)."""
+        start = datetime.now(USAGE_ZONE).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+        with self.lock:
+            row = self.db.execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(payload_json)),0), SUM(created_at>=?), SUM(created_at>=? AND publisher LIKE 'ip:%') FROM shares",
+                                  (start, start)).fetchone()
+        return {"total": row[0], "payloadBytes": row[1], "createdToday": row[2] or 0, "unidentifiedToday": row[3] or 0,
+                "maxActivePerPublisher": MAX_ACTIVE_SHARES, "idleDays": SHARE_IDLE_DAYS}
+    def unidentified_today(self):
+        return self.share_stats()["unidentifiedToday"]
     def get(self, code, include_token=False, token=None):
-        with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
+        if include_token:
+            with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
+        else: r=self._read(code)
         if not r: return None
         snapshot=json.loads(r["term_snapshot_json"] or "{}")
         courses=json.loads(r["payload_json"])
@@ -757,13 +912,10 @@ class Store:
         return out
     def meta(self, code):
         """Everything a follower needs to decide whether to download again."""
-        with self.lock: r=self.db.execute("SELECT * FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
+        r=self._read(code)
         if not r: return None
         snapshot=json.loads(r["term_snapshot_json"] or "{}")
         return {"id":r["code"],"scheduleScope":r["schedule_scope"],"timeZone":snapshot.get("timezone"),"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"courseCount":len(json.loads(r["payload_json"])),"semester_start_monday":r["semester_start_monday"],"term_week_count":snapshot.get("weekCount",0),"adjustmentCount":len(json.loads(r["adjustments_json"] or "[]")),"updatedAt":r["updated_at"]}
-    def share_account(self, code):
-        with self.lock: r=self.db.execute("SELECT account FROM shares WHERE code=? AND revoked=0",(code.upper(),)).fetchone()
-        return r["account"] if r else ""
     def authorize(self, code, token):
         """The share row when `token` is its write token, otherwise None.
 
@@ -816,6 +968,29 @@ class Store:
             if not self.authorize(code, token): return False
             self.db.execute("DELETE FROM shares WHERE code=?",(code.upper(),))
         return True
+    def admin_shares(self, query=""):
+        """The newest 200 shares matching `query`: a code prefix, part of the
+        owner's name, or the start of the publisher's device id."""
+        query = str(query or "").strip()[:MAX_OWNER_LENGTH]
+        with self.lock:
+            where, params = "", ()
+            if query:
+                pattern = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                where = "WHERE s.code LIKE ? ESCAPE '\\' OR s.owner LIKE ? ESCAPE '\\' OR s.publisher LIKE ? ESCAPE '\\'"
+                params = (pattern.upper() + "%", f"%{pattern}%", f"%:{pattern.lower()}%")
+            total = self.db.execute(f"SELECT COUNT(*) FROM shares s {where}", params).fetchone()[0]
+            rows = self.db.execute(
+                f"SELECT s.code,s.owner,s.school_id,s.school_name,s.term_id,s.payload_json,s.created_at,s.updated_at,s.publisher "
+                f"FROM shares s {where} ORDER BY s.updated_at DESC LIMIT 200", params).fetchall()
+        return {"total": total, "shares": [{
+            "code": r["code"], "owner": r["owner"], "schoolID": r["school_id"], "schoolName": r["school_name"],
+            "termID": r["term_id"], "courseCount": len(json.loads(r["payload_json"])),
+            "publisher": publisher_label(r["publisher"]), "createdAt": r["created_at"], "updatedAt": r["updated_at"]} for r in rows]}
+    def admin_delete_share(self, code):
+        """Delete a share without its write token. Followers see it as revoked
+        by its owner: they keep their copy and stop receiving updates."""
+        with self.lock, self.db:
+            return bool(self.db.execute("DELETE FROM shares WHERE code=?", (code.upper(),)).rowcount)
 
 def _same_secret(supplied, secret):
     """`compare_digest` refuses non-ASCII str; bytes compare whatever was sent."""
@@ -845,13 +1020,19 @@ class Exchange:
     def __init__(self, request):
         self.store = request.app.state.store
         self.live_activity = request.app.state.live_activity
-        self.accounts = request.app.state.accounts
+        self.subscriptions = request.app.state.subscriptions
+        self.throttle = request.app.state.throttle
+        self.attest = request.app.state.attest
+        self.publishes = request.app.state.publishes
+        self.peer = request.client.host if request.client else ""
+        self.admin = None  # the signed-in admin's name, once `require_admin` passed
         self.headers = request.headers
         self.command = request.method
         self.target = request.scope["naptable.target"]
         self.path = urlparse(self.target).path
         self.response = None
         self._raw, self._error = b"", None
+        self.extra_headers = []  # added to whatever response goes out
     async def receive(self, request):
         """Read the body before the route runs, so no worker thread waits on a
         slow client. A problem with it is raised by `body()`, where the route
@@ -879,10 +1060,42 @@ class Exchange:
         return value
     def send(self, status, data, content_type, headers=()):
         if self.response is not None: return  # the first answer is the one the client got
-        self.response = _response(status, data, [("Content-Type", content_type), ("Content-Length", str(len(data))), *headers])
+        self.response = _response(status, data, [("Content-Type", content_type), ("Content-Length", str(len(data))), *headers, *self.extra_headers])
     def send_json(self, status, value, headers=()):
         self.send(status, json.dumps(value,ensure_ascii=False).encode(), "application/json; charset=utf-8", headers)
-    def admin_secret(self): return os.environ.get("NAPTABLE_ADMIN_TOKEN", "").strip()
+    def client_address(self):
+        """Who is asking, for the sign-in throttle: nginx on this host appends
+        the real address to X-Forwarded-For; anyone else is taken as seen."""
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded and self.peer in ("127.0.0.1", "::1"):
+            return forwarded.rsplit(",", 1)[-1].strip() or self.peer
+        return self.peer
+    def refuse_throttled(self):
+        """Answer 429 when this client has used up its wrong tokens."""
+        wait = self.throttle.retry_after(self.client_address())
+        if wait: self.send_json(429, {"error": "too many failed sign-ins, try again later"}, [("Retry-After", str(wait))])
+        return bool(wait)
+    def audit(self, action, target="", detail=None):
+        self.store.audit(self.admin, action, target, detail)
+    def attested(self, endpoint):
+        """Check this write's App Attest assertion. Returns (key id or None,
+        answered): answered means a refusal went out, for a forged assertion
+        (401) or an unattested writer over its address's hourly limit (429).
+        Unattested writes are otherwise let through: a simulator cannot sign."""
+        if self.attest is None: return None, False
+        key, refuse, outcome = self.attest.check(self.headers, self.command, self.path, self._raw, endpoint)
+        # A key we lost (the database was reset): the app attests a new one.
+        if outcome == "unknownKey": self.extra_headers.append(("X-App-Attest-Status", "unknownKey"))
+        if refuse:
+            self.send_json(401, {"error": "invalid app attest assertion"}, [("X-App-Attest-Status", "invalid")])
+            return None, True
+        limit = UNATTESTED_PER_HOUR.get(endpoint)
+        if key is None and limit:
+            wait = self.publishes.retry_after(f"unattested:{endpoint}:{self.client_address()}", limit)
+            if wait:
+                self.send_json(429, {"error": "请求太频繁，请稍后再试"}, [("Retry-After", str(wait))])
+                return None, True
+        return key, False
     def cookie(self, name):
         jar = SimpleCookie()
         try: jar.load(self.headers.get("Cookie", ""))
@@ -898,10 +1111,18 @@ class Exchange:
         if not origin: return True  # not a browser request
         return urlparse(origin).netloc == self.headers.get("Host", "")
     def require_admin(self):
-        secret = self.admin_secret()
-        if not secret: return False
-        if _same_secret(self.headers.get("X-Admin-Token", ""), secret): return True
-        return self.same_origin() and self.store.admin_session_valid(self.cookie(ADMIN_COOKIE), secret)
+        tokens = admin_tokens()
+        if not tokens: return False
+        supplied = self.headers.get("X-Admin-Token")
+        if supplied is not None:
+            # A header is a sign-in on every request: it shares the form's throttle.
+            client = self.client_address()
+            if self.refuse_throttled(): return False
+            self.admin = token_owner(supplied, tokens)
+            if self.admin is None: self.throttle.fail(client)
+        elif self.same_origin():
+            self.admin = self.store.admin_session_valid(self.cookie(ADMIN_COOKIE), tokens)
+        return self.admin is not None
     def session_cookie(self, value, max_age):
         parts = [f"{ADMIN_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Strict", f"Max-Age={max_age}"]
         if self.headers.get("X-Forwarded-Proto", "").lower() == "https": parts.append("Secure")
@@ -950,6 +1171,7 @@ def route(methods, *paths):
 
 def admin_only(x):
     if x.require_admin(): return False
+    # A throttled header already has its 429; `send_json` keeps the first answer.
     x.send_json(403, {"error": "admin token required"}); return True
 
 # Live Activity answers first, as `live_activity.handle` always did; with no
@@ -958,6 +1180,11 @@ def admin_only(x):
 def live_activity_route(x):
     # HEAD is GET without the body.
     method = "GET" if x.command == "HEAD" else x.command
+    # The writes that add a device or a timetable to plan for.
+    if method == "POST" and x.path == "/v2/live-activity/devices":
+        if x.attested("liveActivity.register")[1]: return
+    elif method == "PUT" and x.path.startswith("/v2/live-activity/devices/") and x.path.endswith("/timetable"):
+        if x.attested("liveActivity.timetable")[1]: return
     if not live_activity.handle(x, x.live_activity, method, x.path): x.send_json(404, {"error": "not found"})
 
 @route("GET HEAD", "/")
@@ -987,7 +1214,7 @@ def health(x): x.send_json(200,{"ok":True})
 @route("GET HEAD", "/v1/admin/session")
 def admin_session(x):
     if admin_only(x): return
-    x.send_json(200, {"authenticated": True})
+    x.send_json(200, {"authenticated": True, "admin": x.admin})
 
 @route("GET HEAD", "/v1/admin/apns")
 def admin_apns(x):
@@ -1003,6 +1230,16 @@ def admin_calendar(x):
 def admin_stats(x):
     if admin_only(x): return
     x.send_json(200, x.store.usage_stats())
+
+@route("GET HEAD", "/v1/admin/audit")
+def admin_audit(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.audit_log(parse_qs(urlparse(x.target).query).get("action", [""])[0][:40]))
+
+@route("GET HEAD", "/v1/admin/shares")
+def admin_shares(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.admin_shares(parse_qs(urlparse(x.target).query).get("q", [""])[0]))
 
 @route("GET HEAD", "/v1/schools")
 def schools(x): x.send_json(200,{"schools":x.store.schools()})
@@ -1020,35 +1257,56 @@ def share(x):
     elif parts[1:]==["meta"]: value=x.store.meta(parts[0])
     else: return x.send_json(404,{"error":"not found"})
     if not value: return x.send_json(404,{"error":"share not found"})
-    x.send_json(200,with_avatar(x,value))
+    x.send_json(200,value)
 
 @route("POST", "/v1/usage/devices/{installation:path}")
 def report_usage(x):
+    if x.attested("usage.report")[1]: return
     accepted = x.store.report_usage(x.path.removeprefix("/v1/usage/devices/"),
                                     x.headers.get("X-Device-Secret", ""), x.body())
     x.send_json(200, {"accepted": True}) if accepted else x.send_json(403, {"error": "invalid device secret"})
 
 @route("POST", "/v1/admin/session")
 def sign_in(x):
-    secret = x.admin_secret()
+    if x.refuse_throttled(): return
+    tokens = admin_tokens()
     supplied = str(x.body().get("token", ""))
-    if not secret or not _same_secret(supplied, secret):
+    x.admin = token_owner(supplied, tokens)
+    if x.admin is None:
+        client = x.client_address()
+        x.throttle.fail(client)
+        if tokens: x.audit("session.failed", client)
         return x.send_json(403, {"error": "admin token required"})
-    cookie = x.session_cookie(x.store.create_admin_session(secret), int(ADMIN_SESSION_TTL.total_seconds()))
-    x.send_json(200, {"authenticated": True}, [("Set-Cookie", cookie)])
+    cookie = x.session_cookie(x.store.create_admin_session(tokens[x.admin]), int(ADMIN_SESSION_TTL.total_seconds()))
+    x.audit("session.signIn", x.client_address())
+    x.send_json(200, {"authenticated": True, "admin": x.admin}, [("Set-Cookie", cookie)])
 
 @route("POST", "/v1/admin/apns")
 def save_apns(x):
     if admin_only(x): return
     candidate = x.body()
+    # Moving to another app gives up the devices of the old one: only on
+    # the admin's explicit confirmation, after a 409 listing what is dropped.
+    retire = candidate.pop("retireOtherBundles", False) is True
     # Parse the key before writing, so a typo cannot replace a
     # working configuration with one that the dispatcher cannot use.
     # The client checked here is the one the dispatcher then uses.
     client = live_activity._client_from_config(candidate)
+    v2 = getattr(x.live_activity, "v2", None) if x.live_activity is not None else None
+    retiring = False
     try:
-        if x.live_activity is not None and hasattr(x.live_activity, "v2"):
-            x.live_activity.v2.validate_client(client)
+        if v2 is not None:
+            try: v2.validate_client(client)
+            except ProtocolError as error:
+                if error.status != 409: raise
+                if not retire:
+                    client.close()
+                    return x.send_json(409, {"error": str(error), "retire": v2.retired_impact(client.bundle_id)})
+                retiring = True
         value = x.store.save_apns_config(candidate)
+        if retiring: v2.retire_bundles(client)
+        x.audit("apns.save", value["bundleID"], {"keyID": value["keyID"], "teamID": value["teamID"],
+                                                  "tickSeconds": value["tickSeconds"], "retiredOtherBundles": retiring})
     except BaseException:
         if client is not None: client.close()
         raise
@@ -1057,15 +1315,12 @@ def save_apns(x):
     elif client is not None: client.close()
     x.send_json(200, x.apns_status())
 
-@route("POST", "/v1/admin/apns/reconcile")
-def reconcile_apns(x):
-    if admin_only(x): return
-    x.send_json(200, {"config": x.apns_status(), "created": [], "errors": []})
-
 @route("POST", "/v1/admin/calendar")
 def save_calendar(x):
     if admin_only(x): return
-    x.send_json(200, x.store.save_global_calendar(x.body()))
+    saved = x.store.save_global_calendar(x.body())
+    x.audit("calendar.save", f"v{saved['version']}", {"adjustments": len(saved["adjustments"])})
+    x.send_json(200, saved)
 
 @route("POST", "/v1/admin/calendar/import")
 def import_calendar(x):
@@ -1076,78 +1331,113 @@ def import_calendar(x):
 def rename_school(x):
     if admin_only(x): return
     new_id = x.body().get("id")
-    saved = x.store.rename_school(x.path.split("/")[4], new_id)
+    old_id = x.path.split("/")[4]
+    saved = x.store.rename_school(old_id, new_id)
     if not saved: return x.send_json(404, {"error": "school not found"})
+    if saved["id"] != old_id: x.audit("school.rename", saved["id"], {"from": old_id})
     if x.live_activity is not None:
         config = x.store.apns_config()
         x.live_activity.channels = live_activity._channels_from_value(config.get("channels", {}) if config else {})
     x.send_json(200, saved)
 
-def publisher(x):
-    """The account publishing a share: '' when anonymous, None (answered 401)
-    when the app sent a session that is no longer valid."""
-    if not x.headers.get("Authorization") or x.accounts is None: return ""
-    try: return x.accounts.authenticate(x.headers["Authorization"])
-    except accounts.AccountError as error: x.send_json(error.status, {"error": str(error)})
 
-def with_avatar(x, value):
-    """A share as readers get it: with its publisher's avatar, or null."""
-    account = x.store.share_account(value["id"]) if x.accounts is not None else ""
-    return {**value, "ownerAvatar": x.accounts.avatar_path(account) if account else None}
+def publisher_key(x, key):
+    """Who publishes, for quotas and the admin: the device's App Attest key,
+    else its address (a simulator, an old app); hashed, so the table keeps
+    neither."""
+    kind, value = ("device", key) if key else ("ip", x.client_address())
+    return f"{kind}:{hashlib.sha256(value.encode()).hexdigest()[:32]}"
+
+def publish(x, previous_code=None):
+    """Create or replace a share within the quotas."""
+    key, refused = x.attested("share.publish")
+    if refused: return
+    who = publisher_key(x, key)
+    anonymous = who.startswith("ip:")
+    wait = x.publishes.retry_after(who, PUBLISH_PER_HOUR_BY_ADDRESS if anonymous else PUBLISH_PER_HOUR)
+    if wait: return x.send_json(429, {"error": "发布太频繁，请稍后再试"}, [("Retry-After", str(wait))])
+    if anonymous and previous_code is None and x.store.unidentified_today() >= UNIDENTIFIED_SHARES_PER_DAY:
+        return x.send_json(429, {"error": "今天的分享已达上限，请更新到最新版 App 或明天再试"})
+    try:
+        value = x.store.create(x.body(), previous_code=previous_code, write_token=x.headers.get("X-Write-Token", ""), publisher=who)
+    except ShareQuotaError as error: return x.send_json(429, {"error": str(error)})
+    x.send_json(201, value) if value else x.send_json(403, {"error": "invalid write token"})
 
 @route("POST", "/v1/shares")
-def create_share(x):
-    account = publisher(x)
-    if account is None: return
-    x.send_json(201,with_avatar(x,x.store.create(x.body(),account=account)))
+def create_share(x): publish(x)
 
 @route("POST", "/v1/shares/{rest:path}")
 def share_action(x):
     path = x.path
     if path.endswith("/replace"):
-        code = path[len("/v1/shares/"):-len("/replace")]
-        account = publisher(x)
-        if account is None: return
-        value = x.store.create(x.body(), previous_code=code, write_token=x.headers.get("X-Write-Token", ""), account=account)
-        return x.send_json(201, with_avatar(x, value)) if value else x.send_json(403, {"error": "invalid write token"})
+        return publish(x, previous_code=path[len("/v1/shares/"):-len("/replace")])
     if path.endswith("/resync"):
         code=path[len("/v1/shares/"):-len("/resync")]
         value=x.store.resync(code,x.headers.get("X-Write-Token",""))
         return x.send_json(200,value) if value else x.send_json(403,{"error":"invalid write token"})
     x.send_json(404,{"error":"not found"})
 
-@route("POST", "/v1/schools/{rest:path}")
+# Every write to the catalogue lives under /v1/admin, so the edge can guard
+# that one prefix; /v1/schools itself is only read.
+@route("POST", "/v1/admin/schools/{school_id:school}")
 def save_school(x):
-    if not x.require_admin():
-        return x.send_json(403,{"error":"school template is read-only without admin token"})
+    if admin_only(x): return
     value=x.body(); value["id"]=x.path.rsplit("/",1)[-1]
     # A contract with admin.js: `"create": true` adds a school and
     # never overwrites one that already has this id.
-    try: saved = x.store.save_school(value, create=value.pop("create", False) is True)
+    create = value.pop("create", False) is True
+    try: saved = x.store.save_school(value, create=create)
     except SchoolExists: return x.send_json(409, {"error": "school exists"})
+    x.audit("school.create" if create else "school.save", saved["id"], {"name": saved["name"], "periods": len(saved["periods"])})
     x.send_json(200, saved)
 
-@route("POST", "/v1/admin/schools/{rest:path}")
+@route("POST", "/v1/admin/schools/{school_id:school}/terms")
 def save_term(x):
-    if not x.path.endswith("/terms"): return x.send_json(404,{"error":"not found"})
     if admin_only(x): return
-    x.send_json(200, x.store.save_term(x.path.split("/")[4], x.body()))
+    school_id = x.path.split("/")[4]
+    saved = x.store.save_term(school_id, x.body())
+    x.audit("term.save", f"{school_id}/{saved['id']}", {"version": saved["version"], "current": saved["current"],
+                                                        "semesterStartMonday": saved["semesterStartMonday"], "weekCount": saved["weekCount"]})
+    x.send_json(200, saved)
 
 @route("PUT", "/v1/shares/{rest:path}")
 def update_share(x):
+    if x.attested("share.update")[1]: return
     value=x.store.update(x.path.rsplit("/",1)[-1],x.headers.get("X-Write-Token",""),x.body())
     x.send_json(200,value) if value else x.send_json(403,{"error":"invalid write token"})
 
 @route("DELETE", "/v1/admin/session")
 def sign_out(x):
+    if x.require_admin(): x.audit("session.signOut")
     x.store.delete_admin_session(x.cookie(ADMIN_COOKIE))
     x.send_json(200, {"authenticated": False}, [("Set-Cookie", x.session_cookie("", 0))])
 
-@route("DELETE", "/v1/schools/{school_id:school}")
+@route("DELETE", "/v1/admin/schools/{school_id:school}")
 def delete_school(x):
     if admin_only(x): return
-    if not x.store.delete_school(x.path.rsplit("/", 1)[-1]):
+    school_id = x.path.rsplit("/", 1)[-1]
+    if not x.store.delete_school(school_id):
         return x.send_json(404, {"error": "school not found"})
+    x.audit("school.delete", school_id)
+    x.send_json(200, {"deleted": True})
+
+@route("DELETE", "/v1/admin/schools/{school_id:school}/terms/{term_id:school}")
+def delete_term(x):
+    if admin_only(x): return
+    parts = x.path.split("/")
+    if not x.store.delete_term(parts[4], parts[6]):
+        return x.send_json(404, {"error": "term not found"})
+    x.audit("term.delete", f"{parts[4]}/{parts[6]}")
+    x.send_json(200, {"deleted": True})
+
+@route("DELETE", "/v1/admin/shares/{code}")
+def admin_delete_share(x):
+    if admin_only(x): return
+    code = x.path.rsplit("/", 1)[-1].upper()
+    share = x.store.meta(code)
+    if not x.store.admin_delete_share(code):
+        return x.send_json(404, {"error": "share not found"})
+    x.audit("share.delete", code, {"owner": share["owner"], "schoolID": share["schoolID"]} if share else {})
     x.send_json(200, {"deleted": True})
 
 @route("DELETE", "/v1/shares/{rest:path}")
@@ -1156,122 +1446,41 @@ def revoke_share(x):
     if revoked is None: return x.send_json(404,{"error":"share not found"})
     x.send_json(200,{"revoked":True}) if revoked else x.send_json(403,{"error":"invalid write token"})
 
-# MARK: Accounts
+# MARK: Subscriptions
 #
-# The app signs in with Apple and holds a session (`Authorization: Bearer`);
-# a Live Activity device joins the account with its own `X-Device-Secret`.
+# Subscriptions are per device: the admin only flips the switch and reads counts.
 
-def account_route(body):
-    """An account route: AccountError answers with its status."""
-    def run(x):
-        if x.accounts is None: return x.send_json(404, {"error": "not found"})
-        try: body(x)
-        except accounts.AccountError as error: x.send_json(error.status, {"error": str(error)})
-        except ProtocolError as error: x.send_json(error.status, {"error": str(error)})
-    run.__name__ = body.__name__
-    return run
-
-def signed_in(x): return x.accounts.authenticate(x.headers.get("Authorization", ""))
-
-def bound_device(x):
-    """The device in the path, proven by its own secret."""
-    service = getattr(x.live_activity, "v2", None)
-    if service is None: raise accounts.AccountError("live activity unavailable", 503)
-    device = identifier(x.path.rsplit("/", 1)[-1])
-    service.authenticate(device, x.headers.get("X-Device-Secret", ""))
-    return device
-
-@route("POST", "/v1/account/nonce")
-@account_route
-def account_nonce(x): x.send_json(200, x.accounts.nonce())
-
-@route("POST", "/v1/account/apple")
-@account_route
-def account_sign_in(x): x.send_json(200, x.accounts.sign_in(x.body()))
-
-@route("POST", "/v1/account/apple-events")
-@account_route
-def account_apple_event(x): x.send_json(200, x.accounts.apple_event(x.body()))
-
-@route("GET HEAD", "/v1/account")
-@account_route
-def account_summary(x): x.send_json(200, x.accounts.summary(signed_in(x)))
-
-@route("DELETE", "/v1/account")
-@account_route
-def account_delete(x): x.send_json(200, x.accounts.delete(signed_in(x)))
-
-@route("DELETE", "/v1/account/session")
-@account_route
-def account_sign_out(x): x.send_json(200, x.accounts.sign_out(x.headers.get("Authorization", "")))
-
-@route("PUT", "/v1/account/devices/{device}")
-@account_route
-def account_bind(x):
-    account = signed_in(x)
-    x.send_json(200, x.accounts.bind(account, bound_device(x)))
-
-@route("DELETE", "/v1/account/devices/{device}")
-@account_route
-def account_unbind(x):
-    account = signed_in(x)
-    x.send_json(200, x.accounts.unbind(account, identifier(x.path.rsplit("/", 1)[-1])))
-
-@route("PUT", "/v1/account/profile")
-@account_route
-def account_set_profile(x): x.send_json(200, x.accounts.set_profile(signed_in(x), x.body()))
-
-@route("PUT", "/v1/account/avatar")
-@account_route
-def account_set_avatar(x): x.send_json(200, x.accounts.set_avatar(signed_in(x), x.body()))
-
-@route("DELETE", "/v1/account/avatar")
-@account_route
-def account_clear_avatar(x): x.send_json(200, x.accounts.clear_avatar(signed_in(x)))
-
-@route("GET HEAD", "/v1/avatars/{version}")
-@account_route
-def avatar(x):
-    found = x.accounts.avatar(x.path.rsplit("/", 1)[-1])
-    if found is None: return x.send_json(404, {"error": "not found"})
-    # A new upload is a new path, so this one never changes.
-    x.send(200, found[1], found[0], [("Cache-Control", "public, max-age=31536000, immutable")])
-
-@route("DELETE", "/v1/admin/accounts/{code}/avatar")
-@account_route
-def admin_clear_avatar(x):
+@route("GET HEAD", "/v1/admin/subscriptions")
+def admin_subscriptions(x):
     if admin_only(x): return
-    x.send_json(200, x.accounts.admin_clear_avatar(x.path.split("/")[4]))
+    if x.subscriptions is None: return x.send_json(404, {"error": "not found"})
+    x.send_json(200, x.subscriptions.admin_summary())
 
-@route("GET HEAD", "/v1/admin/accounts")
-@account_route
-def admin_accounts(x):
+@route("POST", "/v1/admin/subscriptions/settings")
+def admin_subscription_settings(x):
     if admin_only(x): return
-    x.send_json(200, x.accounts.admin_list(parse_qs(urlparse(x.target).query).get("q", [""])[0]))
+    if x.subscriptions is None: return x.send_json(404, {"error": "not found"})
+    value = x.body()
+    try: saved = x.subscriptions.save_settings(value)
+    except subscriptions.SubscriptionError as error: return x.send_json(400, {"error": str(error)})
+    x.audit("subscription.settings", "", value)
+    x.send_json(200, saved)
 
-@route("GET HEAD", "/v1/admin/accounts/summary")
-@account_route
-def admin_accounts_summary(x):
-    if admin_only(x): return
-    x.send_json(200, x.accounts.admin_summary())
+@route("POST", "/v1/app-attest/challenge")
+def attest_challenge(x):
+    if x.attest is None: return x.send_json(404, {"error": "not found"})
+    x.send_json(200, x.attest.challenge())
 
-@route("POST", "/v1/admin/accounts/settings")
-@account_route
-def admin_accounts_settings(x):
-    if admin_only(x): return
-    x.send_json(200, x.accounts.save_settings(x.body()))
+@route("POST", "/v1/app-attest/keys")
+def attest_key(x):
+    if x.attest is None: return x.send_json(404, {"error": "not found"})
+    try: x.send_json(200, x.attest.register(x.body()))
+    except app_attest.AttestError as error: x.send_json(400, {"error": str(error)})
 
-@route("POST", "/v1/admin/accounts/grants")
-@account_route
-def admin_accounts_grant(x):
+@route("GET HEAD", "/v1/admin/abuse")
+def admin_abuse(x):
     if admin_only(x): return
-    x.send_json(200, x.accounts.grant(x.body()))
-
-@route("GET HEAD", "/v1/admin/accounts/{code}")
-@account_route
-def admin_account(x):
-    if admin_only(x): return
-    x.send_json(200, x.accounts.admin_detail(x.path.rsplit("/", 1)[-1]))
+    x.send_json(200, {"shares": x.store.share_stats(), "appAttest": x.attest.summary() if x.attest is not None else None})
 
 @route("GET HEAD POST PUT DELETE", "/{rest:path}")
 def not_found(x): x.send_json(404,{"error":"not found"})
@@ -1323,18 +1532,28 @@ def _response(status, data, headers):
         (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers]
     return response
 
-def wire_accounts(store, service=None):
-    """The accounts over `store`, gating the Live Activity `service`: an
-    entitlement it grants queues the devices' pending reminders again."""
+def wire_subscriptions(store, service=None):
+    """Subscriptions over `store`, gating the Live Activity `service`: a device
+    that becomes entitled (or the switch turning off) queues its pending
+    reminders again."""
     v2 = getattr(service, "v2", None)
     if store is None: return None
-    found = accounts.Accounts(store.db, store.lock, vault=getattr(v2, "vault", None))
+    found = subscriptions.Subscriptions(store.db, store.lock)
     if v2 is not None:
         found.now = v2.now
         v2.entitlement, found.on_change = found, v2.requeue
     return found
 
-def create_app(store, service=None, workers=True, account_store=None):
+def wire_attest(store):
+    """App Attest over `store`, for the App ID the APNs settings name."""
+    if store is None: return None
+    def app_id():
+        settings = store.apns_config() or {}
+        team, bundle = settings.get("teamID", ""), settings.get("bundleID", "")
+        return f"{team}.{bundle}" if team and bundle else ""
+    return app_attest.AppAttest(store.db, store.lock, app_id=app_id)
+
+def create_app(store, service=None, workers=True, subscription_store=None, attest_store=None):
     """The HTTP app over `store` and the Live Activity `service`. With
     `workers`, the service's dispatch threads run for the app's lifetime."""
     @asynccontextmanager
@@ -1345,7 +1564,10 @@ def create_app(store, service=None, workers=True, account_store=None):
             if workers and service is not None: await anyio.to_thread.run_sync(service.stop)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.store, app.state.live_activity = store, service
-    app.state.accounts = account_store if account_store is not None else wire_accounts(store, service)
+    app.state.throttle = LoginThrottle()
+    app.state.subscriptions = subscription_store if subscription_store is not None else wire_subscriptions(store, service)
+    app.state.attest = attest_store if attest_store is not None else wire_attest(store)
+    app.state.publishes = PublishLimiter()
     for methods, path, body in ROUTES:
         app.add_api_route(path, _endpoint(body), methods=methods, include_in_schema=False)
     app.add_middleware(RequestTarget)

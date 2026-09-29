@@ -41,9 +41,11 @@ curl --fail http://127.0.0.1:8787/health
 仓库的 `deploy/` 目录包含线上运行所需的固定配置：
 
 - `naptable.service`：以独立的 `naptable` 用户运行服务，只监听 `127.0.0.1:8787`；
-- `nginx.conf`：为 `naptable.mom0ka27.top` 提供 HTTPS、HTTP 跳转、请求限速和 1 MiB 请求体上限。限速按来源 IP 分三档：官网（`/`、`/privacy`、`/site/`）和公开接口（`/v1/schools`、`/v1/calendar`、`/v1/usage/`）放宽到每秒 30 次、突发 120 次，照顾校园网共用出口 IP；管理员登录（`POST /v1/admin/session`）每秒 1 次、突发 5 次；其余接口每秒 10 次、突发 30 次；
+- `nginx.conf`：为 `nap.qiuxieit.cn` 提供 HTTPS、HTTP 跳转、请求限速和 1 MiB 请求体上限。限速按来源 IP 分三档：官网（`/`、`/privacy`、`/site/`）和公开接口（`/v1/schools`、`/v1/calendar`、`/v1/usage/`）放宽到每秒 30 次、突发 120 次，照顾校园网共用出口 IP；管理员登录（`POST /v1/admin/session`）每秒 1 次、突发 5 次；其余接口每秒 10 次、突发 30 次；
 - `naptable-backup.service` / `.timer`：每天对 SQLite 做一致性备份，保留最近 14 份；
 - `reload-nginx-after-renewal.sh`：Let's Encrypt 证书更新后重新加载 Nginx。
+
+2026-09-29 已将生产域名切换为 `nap.qiuxieit.cn`。当前证书由服务器上的 `acme.sh` 使用 TLS-ALPN-01 签发，`acme-renew.timer` 每日检查续期，续期后安装至 `/etc/letsencrypt/live/nap.qiuxieit.cn/` 并重载 Nginx；该目录由 acme.sh 管理，不属于 Certbot 证书条目。验证期间会通过 pre/post hook 短暂停止并恢复 Nginx。公网 HTTP 当前返回阿里云备案拦截页，因此不能依赖 HTTP-01 签发或公网 HTTP 跳转，需另行处理域名备案接入。旧域名的兼容配置和证书自动续期已停用，App 需升级到使用新域名的版本。
 
 发布包包含 `server/` 下的 Python 代码、管理页和官网 `server/static/site/`，部署时会校验首页、隐私协议和 `site.css` 都在。
 
@@ -74,7 +76,7 @@ ln -s "$(dirname "$(dirname "$runtime")")" /opt/naptable/python
 
 数据库、`/etc/naptable/naptable.env` 与 `/etc/naptable/keys/` 均位于 release 目录之外，连续部署不会覆盖业务数据或 APNs 凭据。
 
-App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTable/Models/SchoolConfiguration.swift` 的 `serverURLString`，设置页只做展示，不可修改。调试本地服务端需要改这一行并重新编译。
+App 的服务地址固定为 `https://nap.qiuxieit.cn`，写死在 `NapTable/Models/SchoolConfiguration.swift` 的 `serverURLString`，设置页只做展示，不可修改。调试本地服务端需要改这一行并重新编译。
 
 分享码只在生成它的服务端有效，双方需要连接同一个服务端。
 
@@ -82,13 +84,16 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 启动服务后，浏览器打开 `http://127.0.0.1:8787/admin`。网页与 API 由同一个 Python 进程（FastAPI + uvicorn）提供，无需安装 Node.js 或运行前端构建命令。如果服务已在运行，更新代码后需重启服务进程。
 
-1. 在页面输入启动服务时设置的 `NAPTABLE_ADMIN_TOKEN`。
+1. 在页面输入启动服务时设置的 `NAPTABLE_ADMIN_TOKEN`，或 `NAPTABLE_ADMIN_TOKENS` 里自己的那个令牌（见「管理边界」）。
 2. 在「学校配置」点击「新增学校」即可创建并保存，随后维护该校共用的节次时间；「删除学校」会同时删除学期配置，已有分享快照保留。
 3. 新增学期，只填写第一周周一、总周数，并将正在使用的学期设为当前学期。
    已添加学校的 ID 可在「学校信息与节次」中修改，单独点击「更新 ID」确认；服务端会同步迁移学期、使用统计、分享关联和旧通知设备。已有分享的课程与时间快照不变；v2 已提交的通知与旧频道保持原标识直至自然排空，客户端需同步新学校 ID 后获取新的频道映射。
 4. 在「统一调休」维护所有学校共用的放假、补班日期；「导入国务院安排」可直接拉取当年的官方放假安排，补班日需要自己选定上哪天的课。
 5. 在「APNs 推送」保存凭据，服务端会按客户端签发的作息映射自动维护版本和最终节次频道。
-6. 在「使用统计」查看今日打开、近 7/30 天活跃设备、近 30 天每日打开趋势和各学校使用设备数，并选择学校查看系统版本、设备型号、App 版本分布。基础统计独立于实时通知注册，只有同意基础隐私协议的新版客户端才会上报。
+6. 在「分享课表」按分享码、分享者或发布者 ID 查找用户分享的课表，点开可看课程名，「删除」让分享码立即失效（已导入的人保留本机副本，不再收到更新，与分享者自己撤销相同）。
+7. 学期模板里非当前学期可以「删除学期」；当前学期不能删，先把另一个学期设为当前。
+8. 「操作记录」列出最近 200 条管理操作（谁、何时、改了什么），含登录与登录失败，保留一年。
+9. 在「使用统计」查看今日打开、近 7/30 天活跃设备、近 30 天每日打开趋势和各学校使用设备数，并选择学校查看系统版本、设备型号、App 版本分布。基础统计独立于实时通知注册，只有同意基础隐私协议的新版客户端才会上报。
 
 | 学校配置 | 使用统计 |
 | --- | --- |
@@ -102,7 +107,7 @@ App 的服务地址固定为 `https://naptable.mom0ka27.top`，写死在 `NapTab
 
 App 保存个人展示内容；服务器只接收课表的时间结构（星期、节次、周次、课程 ID，不含课程名）和提醒设置，由服务器计算每一节课的提醒（`PUT /v2/live-activity/devices/{id}/timetable`）。iOS 18 由服务器远程启动；iOS 26 用 `POST /devices/{id}/claims` 认领最近几节在本地预约，其余由服务器远程启动。iOS 17 只保留前台预览。设计与取舍见 [服务端排程的实时活动提醒](../docs/server-scheduled-reminders.md)。
 
-在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`me.mom0ka27.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。频道由后台自动创建与回收，无需填写 Apple channel ID，管理页不再展示频道列表。
+在管理页配置 APNs `.p8` 绝对路径、Key ID、Team ID 和 NapTable Bundle ID（`com.niyiwei.naptable`）。API 仅允许该配置中的 App；频道不跨 App 或 sandbox/production。频道由后台自动创建与回收，无需填写 Apple channel ID，管理页不再展示频道列表。
 
 远程 token 使用 Fernet 认证加密：在运行服务的虚拟环境中安装依赖，把独立 Fernet key 保存在 release/数据库目录之外，通过 `NAPTABLE_LA_TOKEN_KEY_PATH` 指定。文件仅供服务账号读取，并独立备份。未配置该密钥时远程 token 注册返回 503，本地预约设备不受此 token 存储要求影响。
 
@@ -121,21 +126,14 @@ APNs HTTP/2/JWT 连接实现在 `server/apns.py`；缺失 HTTP 状态视为结�
 
 关心共享课表时改用令牌模式：`PUT /v2/live-activity/devices/{id}/activities/{occurrenceId}` 只上传这个活动的推送令牌 `{"token": "…"}`，存入 `la_activity_tokens`（令牌以 Fernet 加密，需要 `NAPTABLE_LA_TOKEN_KEY_PATH`）；刷新和响铃时刻由服务器按排程计算，在内存中排队，`token-updates` 工作循环每秒按时推送 update/end，管理页健康数据里的 `tokenUpdates` 只给活动数和待发数，不含令牌。`DELETE` 同一路径停止刷新。容量：逐设备推送（start 与令牌 update）和公共广播各用一条连接，按 APNs 声明的并发上限（`SETTINGS_MAX_CONCURRENT_STREAMS`，封顶 1000）以多路复用并发发送；调度循环先把一批任务的提交意图落盘，再按环境整批发出，同一上下课时刻的一批约耗一个往返时延。每轮 start 最多 100 条、令牌 update 与广播各最多 200 条，更多的在下一秒继续。APNs 确定未处理的流（GOAWAY 之后的流、REFUSED_STREAM、未写完的请求）在新连接上重试一次；已写出但回应丢失的 start 仍记为结果不明、不重发，广播与 update 可重发。需先部署服务端再发布客户端；旧服务端会让客户端回落到公共广播。
 
-## 账户与订阅
+## 订阅
 
-实时通知的收费规则由 `server/accounts.py` 实现：
+没有账户，也没有登录：订阅是用户 Apple ID 上的 App Store 订阅，按实时活动设备 ID 记在 `device_subscriptions`（第 2 期由 StoreKit 交易校验写入，现在是空表）。实现在 `server/subscriptions.py`。
 
-- **登录**：App 通过 Apple 登录，只取 Apple 给的 `sub`，服务器也只保存它的哈希，不要邮箱和姓名。流程是先 `POST /v1/account/nonce` 取一次性随机串，App 把它的 SHA-256 交给 Apple；再 `POST /v1/account/apple`，提交 `identityToken`、`authorizationCode` 和 `nonce`，换回会话令牌。之后的请求带 `Authorization: Bearer <令牌>`。会话 180 天不用就失效。
-- **绑定设备**：`PUT /v1/account/devices/{id}` 同时带会话令牌和该设备的 `X-Device-Secret`，把实时通知设备绑到账户；`DELETE` 同一路径解绑。`GET /v1/account` 返回账户码和额度状态，`DELETE /v1/account` 删除账户，`DELETE /v1/account/session` 退出登录。
-- **Apple 通知**：`POST /v1/account/apple-events` 接收 Apple 的服务器通知，需要在开发者后台填这个地址。用户撤销授权时退出全部会话并解绑设备；用户删除 Apple 账户时删除本地账户。
-- **额度**：新账户送 `trialDays` 个使用日，默认 30。同一个 Apple ID 只送一次，删除账户后重新注册不再送。某个 UTC+8 自然日里，只要账户任意一台设备真正开始了一次提醒，这天就扣 1 个使用日，其中服务器远程启动的按发送计，手机本地预约的按提醒时间到了计。订阅有效期间不扣额度。
-- **开关**：`enforceAfter` 为空时，所有人免费、也不扣额度，行为和上线前一样。设了日期后，从这天起没登录或额度用完的设备，服务器不再远程启动、不再分配本地预约、不再接受进入 App 时开启的提醒，`GET /v2/live-activity/devices/{id}` 的 `entitled` 会变成 `false`。重新有了额度（登录、发放使用日、订阅）后，未开始的提醒会重新排队，正在上的课会立刻补发。
-- **管理页**："账户与订阅"页可以设置开始收费日期和免费天数，按账户码或分组（全部、免费额度中、订阅中、额度已用完）发放或扣减使用日，发放前可预览人数。每次操作写入 `account_audit`。
-- **撤销授权的密钥**：删除账户时要用 Sign in with Apple 密钥撤销 Apple 授权，路径、Key ID、Team ID 在同一页配置。可以和 APNs 共用一把同时启用了两项能力的 `.p8`。没配置时账户照常删除，但不会撤销授权，App 上架前必须配好。
-
-- **头像**：Apple 登录不提供头像，由用户在 App 里自选。App 先把图片缩到 256 像素，再用 `PUT /v1/account/avatar` 上传，请求体是 `{"image": "<base64>"}`，只接受 JPEG 或 PNG，最大 256 KB；`DELETE` 同一路径删除。图片公开放在 `/v1/avatars/{版本}`，每次上传都换一个随机地址，所以可以永久缓存。登录状态下发布或替换的分享会记住发布账户，读者拿到的分享和 `/meta` 里多一个 `ownerAvatar` 字段，值是头像地址，没有头像时为 `null`；不登录替换分享时，沿用原来的发布账户。管理页的账户详情里可以清除头像，清除操作会记入审计。
-
-App Store 订阅（第 2 期）会写入 `subscriptions` 表，现在这张表还是空的。
+- **开关**：`requireSubscription` 关闭时（Beta 阶段的默认值），所有设备都能免费收到提醒。打开后，只有订阅有效的设备才会收到：其余设备服务器不再远程启动、不再分配本地预约、不再接受进入 App 时开启的提醒，`GET /v2/live-activity/devices/{id}` 的 `entitled` 变成 `false`，`subscription` 为 `{required, subscriptionExpiresAt, source}`，其中 `source` 取 `subscription`、`free`（开关关闭）或 `null`。关掉开关或设备有了订阅后，未开始的提醒会重新排队，正在上的课会立刻补发。
+- **免费期**：服务器不发免费额度。首月免费由 App Store 订阅的首月免费优惠提供，每个 Apple ID 能否享受由 Apple 判断。
+- **管理页**："订阅"页切换这个开关（打开前会确认）并显示已订阅设备数：`GET /v1/admin/subscriptions`、`POST /v1/admin/subscriptions/settings`，每次保存写入操作记录。
+- **迁移**：之前 Sign in with Apple 账户留下的表（`accounts`、`account_sessions`、`account_devices` 等）和 `shares.account` 列在启动时删除，`requireSubscription` 的值保留。
 
 ## 分享课表
 
@@ -205,11 +203,32 @@ curl --fail-with-body -X POST http://127.0.0.1:8787/v1/admin/calendar/import \
 
 课程最多 600 门、序列化后不超过 256 KiB，每门必须有名称；统一调休最多 200 条。`owner` 超长截断到 40 字，留空记为「匿名」。学校名以服务端目录为准，不采信客户端上传的那一份，所以读的人看到的是「南京大学」而不是 `nju`。
 
+## 防滥用
+
+分享和实时活动的写接口都是匿名可用的，所以服务端自己限量，不依赖 IP：校园网常常是整个学校共用一个出口 IP。
+
+- **App Attest**（`server/app_attest.py`）：App 在安全芯片里生成密钥，先用 `POST /v1/app-attest/challenge` 取挑战、请 Apple 证明后 `POST /v1/app-attest/keys` 登记；之后发布、替换、更新分享，注册实时活动设备、上传实时活动课表和上报使用统计时，都带 `X-App-Attest-Key` / `X-App-Attest-Time` / `X-App-Attest-Assertion` 签名，签名覆盖方法、路径、时间和请求体的哈希，计数器只增不减，防重放。校验用的 App ID 是 APNs 配置里的 Team ID 加 Bundle ID，没配时无法登记。
+- **模式**：`NAPTABLE_APP_ATTEST=enforce`（默认）拒绝伪造的签名（签名不对、重放、别的 App 的密钥、格式错误，返回 401）；完全没带签名的请求当作"未认证"放行，因为模拟器和旧版 App 签不了名，这类请求按 IP 限速：更新分享每小时 600 次、注册实时活动设备 300 次、上传实时活动课表 600 次、上报使用统计 600 次（超过返回 429），发布分享另有下面的配额。服务端不认识的密钥（比如换了数据库）和时钟偏差超过 10 分钟也按未认证处理，并在响应头 `X-App-Attest-Status: unknownKey` 让 App 重新登记，正版设备不会被锁在外面。`log` 只记录不拒绝，`off` 不校验。管理页"分享课表"页按天显示各接口的校验结果。模拟器和脚本在服务端看来没有区别，都只受 IP 限速约束。
+- **分享配额**：发布者以设备 ID 标注：有效的 App Attest 密钥，没有时（模拟器、旧版 App、脚本）退回 IP，哈希后存进 `shares.publisher`，管理页分享列表显示"设备 xxxxxxxx"或"IP xxxxxxxx"，可按这 8 位查找。按设备识别的发布者同时最多保留 10 个分享（替换不占新名额），每小时最多发布或替换 20 次；只能按 IP 识别的，不限保留数，每小时 120 次，并且全站每天最多 3000 个，超过后只有按设备识别的才能发布。超限返回 429。nginx 另对 `POST /v1/shares*` 按 IP 限 30 次/分钟（可突发 30 次）。
+- **分享过期**：读取分享或 `/meta` 时记下日期（每天最多写一次）。180 天既没人读取也没更新、也没有实时活动设备关心的分享，会在启动时和之后每小时最多一次的发布时删除；读者那边表现为分享已撤销。
+- **分享码**：8 位，取自不含易混字符的 30 个字符，生成时查重。
+- **实时活动**：一份分享最多 500 台设备关心，超过后上传课表返回 429。既没有推送令牌、也没有进行中的活动、30 天没联系过服务器的设备不再排程（服务器什么也推不到它）；它下次发请求时会重新排程。
+- **管理页**："分享课表"页顶部显示分享总数、课程数据大小、今日新建数（其中仅凭 IP 识别的有多少）、App Attest 模式和已认证设备数，以及近 7 天各接口的校验结果（`GET /v1/admin/abuse`）。
+
 ## 管理边界
 
-首次初始化只提供南京大学模板；升级时移除旧版自动内置的中国药科大学配置，管理员自行维护的配置保留。学校删除后重启不会自动恢复。NapTable App 目前开放南京大学和中山大学的教务导入，其他导入器保留供后续启用；不在列表里的学校可手动创建课表。v2 推送首版仅服务配置中的 NapTable Bundle ID，不将其他 App 的频道、凭据或调度混用。
+首次初始化只提供南京大学模板；升级时移除旧版自动内置的中国药科大学配置，管理员自行维护的配置保留。学校删除后重启不会自动恢复。NapTable App 目前开放南京大学、中山大学和南京林业大学（学校 ID `njfu`）的教务导入，其他导入器保留供后续启用；不在列表里的学校可手动创建课表。v2 推送首版仅服务配置中的 NapTable Bundle ID，不将其他 App 的频道、凭据或调度混用。
 
-学校配置读取不需要管理员令牌，修改需要 `X-Admin-Token` 与服务进程的 `NAPTABLE_ADMIN_TOKEN` 一致。未设置令牌时，学校管理接口保持只读。
+学校配置读取不需要管理员令牌；所有写操作都在 `/v1/admin/` 下，需要管理台会话或 `X-Admin-Token`。未设置任何管理员令牌时，管理接口一律拒绝。
+
+管理员令牌有两种写法，可同时使用：
+
+- `NAPTABLE_ADMIN_TOKEN=…`：名为 `admin` 的管理员。
+- `NAPTABLE_ADMIN_TOKENS=alice=令牌1,bob=令牌2`：每人一个令牌，操作记录里记名字；换掉某人的令牌只会让这个人的会话失效。名字限 1–40 位字母、数字、点、下划线或短横线。
+
+同一来源 15 分钟内输错 10 次令牌（登录表单和 `X-Admin-Token` 合计）后，返回 429 并带 `Retry-After`，期间正确令牌也要等。来源取自本机 nginx 追加的 `X-Forwarded-For`；计数只在内存里，重启清零，nginx 前面的限速照常生效。
+
+Sign in with Apple 的密钥路径、Key ID、Team ID 留空时沿用 APNs 配置（那把密钥需同时启用两项能力）；Bundle ID 不沿用。
 
 创建分享返回的 `writeToken` 是该分享的管理凭据，更新和撤销使用 `X-Write-Token`；查看课表只需分享码。不要把管理员令牌用作分享令牌。
 
@@ -217,9 +236,11 @@ NJU 内置值用于演示，必须根据实际校历和作息核对后再使用�
 
 ## 配置学校、学期与调休
 
-`DELETE /v1/schools/{id}` 删除学校及全部学期，需要管理员认证；学校不存在时返回 404。
+`DELETE /v1/admin/schools/{id}` 删除学校及全部学期；学校不存在时返回 404。`DELETE /v1/admin/schools/{id}/terms/{termID}` 删除一个非当前学期，当前学期返回 400，不存在返回 404；绑定该学期的分享保留快照，但 `resync` 会报学期已不存在。旧的 `POST`/`DELETE /v1/schools/{id}` 已移除（返回 404），以便在边缘单独保护 `/v1/admin/`。
 
-`POST /v1/schools/{id}` 默认是“有则更新、无则创建”。请求体带 `"create": true` 时只创建：该 ID 已存在返回 409 `{"error": "school exists"}`，不会覆盖。管理页「新增学校」使用这种方式，编辑保存不带 `create`。
+分享管理：`GET /v1/admin/shares?q=` 返回最近更新的 200 份（`q` 匹配分享码前缀、分享者名字片段或发布者 ID 前缀）及总数 `total`，不含写入令牌；`DELETE /v1/admin/shares/{code}` 无需写入令牌直接删除。`GET /v1/admin/audit?action=` 返回最近 200 条操作记录，`action` 可以是完整操作名（如 `share.delete`）或前缀（如 `school`）。
+
+`POST /v1/admin/schools/{id}` 默认是“有则更新、无则创建”。请求体带 `"create": true` 时只创建：该 ID 已存在返回 409 `{"error": "school exists"}`，不会覆盖。管理页「新增学校」使用这种方式，编辑保存不带 `create`。
 
 学校节次只提交一次到学校接口：
 
@@ -235,7 +256,7 @@ NJU 内置值用于演示，必须根据实际校历和作息核对后再使用�
 ```
 
 ```sh
-curl --fail-with-body -X POST http://127.0.0.1:8787/v1/schools/nju \
+curl --fail-with-body -X POST http://127.0.0.1:8787/v1/admin/schools/nju \
   -H "X-Admin-Token: $NAPTABLE_ADMIN_TOKEN" -H 'Content-Type: application/json' \
   --data-binary @nju-school.json
 ```

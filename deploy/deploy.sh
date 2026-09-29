@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # 把 server/ 打包上传到服务器并切换到新版本。
 # 用法：deploy/deploy.sh [SSH 目标，默认 nap]
-# 环境变量：NAPTABLE_DOMAIN（默认 naptable.mom0ka27.top）、NAPTABLE_SKIP_TESTS=1 跳过本地测试
+# 环境变量：NAPTABLE_DOMAIN（默认 nap.qiuxieit.cn）、NAPTABLE_SKIP_TESTS=1 跳过本地测试
 set -Eeuo pipefail
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 target=${1:-nap}
-domain=${NAPTABLE_DOMAIN:-naptable.mom0ka27.top}
+domain=${NAPTABLE_DOMAIN:-nap.qiuxieit.cn}
 started_at=$SECONDS
 
 step() { printf '\n==> %s\n' "$*"; }

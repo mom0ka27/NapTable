@@ -18,7 +18,7 @@ class TestVault:
 
 
 class APNs:
-    bundle_id = 'me.mom0ka27.naptable'
+    bundle_id = 'com.niyiwei.naptable'
     def __init__(self):
         self.channels, self.starts, self.broadcasts, self.deleted = [], [], [], []
         self.result = {'ok': True, 'status': 200, 'certainty': 'accepted'}
@@ -174,6 +174,20 @@ class V2Tests(unittest.TestCase):
         self.service.maintain_channels()
         self.assertEqual(len(self.client.deleted), 4)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM la_channels').fetchone()[0], 0)
+
+    def test_new_bundle_waits_for_promises_until_the_old_app_is_retired(self):
+        moved = APNs(); moved.bundle_id = 'com.example.moved'
+        with self.assertRaises(ProtocolError) as error: self.service.validate_client(moved)
+        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(self.service.retired_impact(moved.bundle_id),
+                         {'bundles': [self.client.bundle_id], 'devices': 1, 'channels': 4})
+        self.service.plan_broadcasts()
+        self.service.retire_bundles(moved)
+        self.service.validate_client(moved)
+        self.assertEqual(self.db.execute('SELECT revoked FROM la_v2_devices WHERE id=?', (self.id,)).fetchone()[0], 1)
+        for table in ('la_channels', 'la_v2_broadcasts', 'la_timetables'):
+            self.assertEqual(self.db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0], 0, table)
+        self.assertNotIn(self.id, self.service.plans)
 
     def test_timezone_validation(self):
         with self.assertRaises(ProtocolError): normalize_schedule(self.periods, 'Not/AZone')

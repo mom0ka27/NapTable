@@ -89,6 +89,30 @@ class ScheduledTests(unittest.TestCase):
 
     # MARK: Upload
 
+    def test_skip_occurrence_survives_restart_and_preserves_other_days(self):
+        self.upload()
+        skipped = dict(scope='own-scope', dateKey='2026-09-22', start=at('08:00'), end=at('09:50'))
+        self.upload(revision=2, skippedOccurrences=[skipped])
+        self.assertEqual([job['day'] for job in self.jobs()], ['2026-09-23'])
+        self.assertTrue(all(claim['dateKey'] == '2026-09-23' for claim in self.service.claim(self.id, {'slots': 4})['claims']))
+        restarted = self.restart()
+        self.assertEqual([job['day'] for job in self.jobs(service=restarted)], ['2026-09-23'])
+        self.clock = at('07:30')
+        restarted.dispatch_starts()
+        self.assertEqual(self.client.starts, [])
+        with restarted.transaction() as db:
+            source = restarted._source(db, self.id)
+            next_week = restarted._day(self.id, source, date(2026, 9, 29), 0)
+        self.assertEqual(len(next_week), 1)
+
+    def test_skip_scope_and_window_are_validated(self):
+        skipped = dict(scope='another-scope', dateKey='2026-09-22', start=at('08:00'), end=at('09:50'))
+        self.upload(skippedOccurrences=[skipped])
+        self.assertEqual(len(self.jobs()), 2)
+        for changes in [dict(end=at('08:00')), dict(start=float('nan')), dict(dateKey='bad')]:
+            with self.assertRaises(ProtocolError):
+                self.upload(revision=2, skippedOccurrences=[dict(skipped, **changes)])
+
     def test_upload_builds_today_and_tomorrow_on_the_school_channel(self):
         result = self.upload()
         self.assertEqual((result['pushMode'], result['pendingCount'], result['conflicts']), ('channel', 2, []))

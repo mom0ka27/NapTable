@@ -112,7 +112,8 @@ install -d -o root -g root -m 0755 "$release_path"
 tar -xzf "$archive" -C "$release_path" --no-same-owner
 
 required_files=(
-    server/accounts.py
+    server/subscriptions.py
+    server/app_attest.py
     server/apns.py
     server/holidays.py
     server/live_activity.py

@@ -29,16 +29,16 @@ class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
     def test_create_delete_authentication_and_restart(self):
         self.assertEqual([s['id'] for s in self.store.schools()], ['nju'])
         value = {'name': '测试大学', 'periods': [{'start': '08:00', 'end': '08:50'}]}
-        self.req('POST', '/v1/schools/test', value, expect=403)
-        created = self.req('POST', '/v1/schools/test', value, self.headers)
+        self.req('POST', '/v1/admin/schools/test', value, expect=403)
+        created = self.req('POST', '/v1/admin/schools/test', value, self.headers)
         self.assertEqual(created['name'], value['name'])
-        self.req('DELETE', '/v1/schools/test', expect=403)
+        self.req('DELETE', '/v1/admin/schools/test', expect=403)
         self.assertEqual(len(self.store.schools()), 2)
-        self.req('DELETE', '/v1/schools/test', headers=self.headers)
-        self.req('DELETE', '/v1/schools/test', headers=self.headers, expect=404)
+        self.req('DELETE', '/v1/admin/schools/test', headers=self.headers)
+        self.req('DELETE', '/v1/admin/schools/test', headers=self.headers, expect=404)
         share = self.req('POST', '/v1/shares', {'owner': 'A', 'schoolID': 'nju',
                          'termID': '2026-fall-template', 'courses': [{'name': '数学'}]}, expect=201)
-        self.req('DELETE', '/v1/schools/nju', headers=self.headers)
+        self.req('DELETE', '/v1/admin/schools/nju', headers=self.headers)
         self.assertIsNone(self.store.find_term('nju', '2026-fall-template'))
         fetched = self.req('GET', '/v1/shares/' + share['id'])
         self.assertEqual(fetched['courses'][0]['name'], '数学')
@@ -97,7 +97,7 @@ class SchoolManagementTests(JSONClientMixin, unittest.TestCase):
             reopened.close()
 
     def test_rename_rejects_collision_without_changing_any_associations(self):
-        self.req('POST', '/v1/schools/test', {'name': '测试大学', 'periods': [{'start': '08:00', 'end': '08:50'}]}, self.headers)
+        self.req('POST', '/v1/admin/schools/test', {'name': '测试大学', 'periods': [{'start': '08:00', 'end': '08:50'}]}, self.headers)
         self.req('POST', '/v1/admin/schools/nju/rename', {'id': 'test'}, self.headers, expect=400)
         self.assertEqual([school['id'] for school in self.store.schools()], ['nju', 'test'])
         self.assertIsNotNone(self.store.find_term('nju', '2026-fall-template'))
@@ -162,20 +162,20 @@ class AdminWriteTests(JSONClientMixin, unittest.TestCase):
         periods = [{'start': '08:00', 'end': '08:50'}]
         for broken in ({'name': 3}, {'name': '学校', 'note': {'a': 1}}, {'name': '学校', 'semesterStart': 20260901}, {'name': ['学校']}):
             with self.subTest(broken=broken):
-                self.req('POST', '/v1/schools/test', dict(broken, periods=periods), self.headers, expect=400)
+                self.req('POST', '/v1/admin/schools/test', dict(broken, periods=periods), self.headers, expect=400)
         self.assertEqual([s['id'] for s in self.store.schools()], ['nju'])
         self.assertFalse(self.store.db.in_transaction)
 
     def test_create_never_overwrites_a_school(self):
         periods = [{'start': '07:00', 'end': '07:50'}]
-        conflict = self.req('POST', '/v1/schools/nju', {'name': '覆盖', 'periods': periods, 'create': True}, self.headers, expect=409)
+        conflict = self.req('POST', '/v1/admin/schools/nju', {'name': '覆盖', 'periods': periods, 'create': True}, self.headers, expect=409)
         self.assertEqual(conflict, {'error': 'school exists'})
         self.assertEqual(self.store.schools()[0]['name'], '南京大学')
-        created = self.req('POST', '/v1/schools/test', {'name': '测试大学', 'periods': periods, 'create': True}, self.headers)
+        created = self.req('POST', '/v1/admin/schools/test', {'name': '测试大学', 'periods': periods, 'create': True}, self.headers)
         self.assertEqual((created['id'], created['name']), ('test', '测试大学'))
         # Without `create` (or with anything but true) a save updates, as before.
-        self.assertEqual(self.req('POST', '/v1/schools/nju', {'name': '新名字', 'periods': periods}, self.headers)['name'], '新名字')
-        self.assertEqual(self.req('POST', '/v1/schools/nju', {'name': '再改', 'periods': periods, 'create': 'true'}, self.headers)['name'], '再改')
+        self.assertEqual(self.req('POST', '/v1/admin/schools/nju', {'name': '新名字', 'periods': periods}, self.headers)['name'], '新名字')
+        self.assertEqual(self.req('POST', '/v1/admin/schools/nju', {'name': '再改', 'periods': periods, 'create': 'true'}, self.headers)['name'], '再改')
 
     def test_a_body_must_be_a_json_object(self):
         for body in (b'[1,2]', b'"text"', b'3', b'null', b'{bad', b'\xff\xfe'):

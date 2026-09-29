@@ -49,7 +49,7 @@ class TermAuthorityTests(unittest.TestCase):
     def save_periods(self, first_start='07:30'):
         periods = [{'id': 1, 'name': '第1节', 'start': first_start, 'end': '08:15'},
                    {'id': 2, 'name': '第2节', 'start': '08:25', 'end': '09:10'}]
-        return self.request('POST', '/v1/schools/nju', {
+        return self.request('POST', '/v1/admin/schools/nju', {
             'name': '南京大学', 'periods': periods, 'note': 'Test only'}, admin=True)
 
     def test_authority_version_snapshot_and_restart(self):
@@ -146,7 +146,7 @@ class TermAuthorityTests(unittest.TestCase):
             term = self.term()
             term['weekCount'] = weeks
             self.assertEqual(self.request('POST', path, term, admin=True)[0], 400)
-        status, _ = self.request('POST', '/v1/schools/nju', {
+        status, _ = self.request('POST', '/v1/admin/schools/nju', {
             'name': '南京大学', 'periods': [
                 {'start': '08:00', 'end': '09:00'}, {'start': '08:30', 'end': '09:30'}]}, admin=True)
         self.assertEqual(status, 400)

@@ -102,7 +102,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         self.http = LiveServer(self.store)
         self.previous = os.environ.get("NAPTABLE_ADMIN_TOKEN")
         os.environ["NAPTABLE_ADMIN_TOKEN"] = ADMIN
-        self.req("POST", "/v1/schools/seu", {"name": "东南大学", "periods": SEU_TERM["periods"]},
+        self.req("POST", "/v1/admin/schools/seu", {"name": "东南大学", "periods": SEU_TERM["periods"]},
                  {"X-Admin-Token": ADMIN})
         self.req("POST", "/v1/admin/schools/seu/terms", SEU_TERM, {"X-Admin-Token": ADMIN})
 
@@ -262,6 +262,26 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         self.req("GET", "/v1/shares/" + code, expect=404)
         self.req("GET", f"/v1/shares/{code}/meta", expect=404)
 
+    def test_the_admin_lists_and_deletes_shares_without_the_write_token(self):
+        admin = {"X-Admin-Token": ADMIN}
+        first, second = self.create(owner="张三"), self.create(owner="李四_%")
+        self.req("GET", "/v1/admin/shares", expect=403)
+        self.req("DELETE", f"/v1/admin/shares/{first['id']}", expect=403)
+        listed = self.req("GET", "/v1/admin/shares", headers=admin)
+        self.assertEqual(listed["total"], 2)
+        self.assertEqual({row["code"] for row in listed["shares"]}, {first["id"], second["id"]})
+        self.assertNotIn("writeToken", json.dumps(listed))
+        # A code prefix or part of the owner's name; LIKE wildcards are literal.
+        self.assertEqual([row["code"] for row in self.req("GET", f"/v1/admin/shares?q={first['id'][:4].lower()}", headers=admin)["shares"]], [first["id"]])
+        self.assertEqual([row["owner"] for row in self.req("GET", "/v1/admin/shares?q=_%25", headers=admin)["shares"]], ["李四_%"])
+        self.assertEqual(self.req("GET", "/v1/admin/shares?q=%25", headers=admin)["total"], 1)
+        self.req("DELETE", f"/v1/admin/shares/{first['id'].lower()}", headers=admin)
+        self.req("GET", "/v1/shares/" + first["id"], expect=404)
+        self.req("DELETE", f"/v1/admin/shares/{first['id']}", headers=admin, expect=404)
+        # The owner's own credential now reports the share as gone.
+        self.req("DELETE", "/v1/shares/" + first["id"], headers={"X-Write-Token": first["writeToken"]}, expect=404)
+        self.assertEqual(self.req("GET", "/v1/admin/shares", headers=admin)["total"], 1)
+
     def test_an_update_keeps_the_share_on_its_term_by_default(self):
         created = self.create(school="seu", term="2026-fall")
         self.req("PUT", "/v1/shares/" + created["id"], {"courses": [{"name": "物理"}]},
@@ -326,7 +346,7 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
         created = self.create(school="seu", term="2026-fall")
         corrected = [dict(p, start="08:00", end="08:40") if p["id"] == 1 else p
                      for p in SEU_TERM["periods"]]
-        self.req("POST", "/v1/schools/seu", {"name": "东南大学", "periods": corrected},
+        self.req("POST", "/v1/admin/schools/seu", {"name": "东南大学", "periods": corrected},
                  {"X-Admin-Token": ADMIN})
 
         frozen = self.req("GET", "/v1/shares/" + created["id"])

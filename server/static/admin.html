@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>NapTable 管理台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/admin.css?v=20260928-accounts">
+  <link rel="stylesheet" href="/static/admin.css?v=20260929-console">
 </head>
 <body>
   <div class="app-shell">
@@ -17,7 +17,7 @@
       </a>
 
       <nav class="main-nav" aria-label="主导航">
-        <p class="nav-label">WORKSPACE <span>工作区</span></p>
+        <p class="nav-label">CONFIGURE <span>配置</span></p>
         <button class="nav-item active" type="button" data-view="schools">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg>
           <span>学校配置</span>
@@ -26,18 +26,28 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
           <span>统一调休</span>
         </button>
-        <button class="nav-item" type="button" data-view="stats">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16V5"/></svg>
-          <span>使用统计</span>
-        </button>
-        <button class="nav-item" type="button" data-view="accounts">
-          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M17 11l2 2 4-4"/></svg>
-          <span>账户与订阅</span>
-        </button>
         <button class="nav-item" type="button" data-view="apns">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10.3 21h3.4"/><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/></svg>
           <span>APNs 推送</span>
           <span id="apnsNavDot" class="nav-dot" aria-label="未配置"></span>
+        </button>
+        <p class="nav-label">USERS <span>用户</span></p>
+        <button class="nav-item" type="button" data-view="shares">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 13h3M8 17h6"/></svg>
+          <span>分享课表</span>
+        </button>
+        <button class="nav-item" type="button" data-view="subscriptions">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg>
+          <span>订阅</span>
+        </button>
+        <p class="nav-label">DATA <span>数据</span></p>
+        <button class="nav-item" type="button" data-view="stats">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16V5"/></svg>
+          <span>使用统计</span>
+        </button>
+        <button class="nav-item" type="button" data-view="audit">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M9 4h6a1 1 0 0 1 1 1v1H8V5a1 1 0 0 1 1-1Z"/><path d="M16 5h2a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2"/><path d="M9 11h6M9 15h4"/></svg>
+          <span>操作记录</span>
         </button>
       </nav>
 
@@ -102,7 +112,7 @@
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>已配置学校</span><strong id="schoolCount">0</strong><small>教学配置的起点</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg></span><span>学期模板</span><strong id="termCount">0</strong><small>统一管理学期安排</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>教学节次</span><strong id="periodCount">0</strong><small>学校共用的时间表</small></div>
-          <div class="metric-card metric-status"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>配置连接</span><strong><i></i>已同步</strong><small>本次配置已载入</small></div>
+          <div id="activeTermCard" class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>今天在学期内</span><strong id="activeTermCount">0</strong><small id="activeTermDetail">当前学期覆盖今天的学校</small></div>
         </div>
 
         <div class="section-toolbar">
@@ -168,10 +178,11 @@
               <div class="term-editor">
                 <div class="term-header">
                   <div><h3 id="termTitle">新学期</h3><span id="termVersion" class="badge">未保存</span></div>
+                  <div class="term-actions"><button id="deleteTermButton" class="button danger" type="button" disabled title="当前学期不能删除">删除学期</button>
                   <button id="saveTermButton" class="button primary" type="button">
                     <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
                     保存学期
-                  </button>
+                  </button></div>
                 </div>
 
                 <section class="editor-section first">
@@ -240,41 +251,45 @@
         <p class="stats-explanation">仅统计已同意基础隐私协议并上报的设备，与实时通知开关无关。<span id="unassignedStats"></span></p>
       </section>
 
-      <section id="accountsView" class="content-view" hidden>
-        <div class="metric-strip" aria-label="账户概览">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/></svg></span><span>账户总数</span><strong id="accountTotal">0</strong><small id="accountNewDetail">近 7 天新增 0</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>免费额度中</span><strong id="accountTrial">0</strong><small>剩余使用日大于 0</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>订阅中</span><strong id="accountSubscribed">0</strong><small>App Store 订阅有效</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16V5"/></svg></span><span>额度已用完</span><strong id="accountExpired">0</strong><small id="accountChargedDetail">近 7 天扣费账户 0</small></div>
+      <section id="sharesView" class="content-view" hidden>
+        <div class="metric-strip" aria-label="分享与防滥用概览">
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg></span><span>分享总数</span><strong id="shareTotal">0</strong><small id="shareBytes">课程数据 0 KB</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span><span>今日新建</span><strong id="shareToday">0</strong><small id="shareUnidentified">其中仅凭 IP 识别 0</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></span><span>App Attest</span><strong id="attestMode">—</strong><small id="attestKeys">已认证设备 0</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>分享规则</span><strong id="shareRules">—</strong><small id="shareRulesDetail"></small></div>
         </div>
-        <div class="apns-layout account-layout">
-          <section class="settings-panel">
-            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>收费规则</h3><p>开始日期按 UTC+8 计，当天起未登录或额度用完的设备不再收到提醒；留空则对所有人免费，也不扣使用日。</p></div></div>
-            <div class="form-grid">
-              <label>开始收费日期<input id="accountEnforceAfter" type="date"></label>
-              <label>新账户免费使用日<input id="accountTrialDays" type="number" min="0" max="365" step="1"><span class="input-suffix">天</span></label>
-              <label class="wide">Sign in with Apple 密钥路径<input id="accountKeyPath" type="text" autocomplete="off" placeholder="/etc/naptable/keys/AuthKey_XXXX.p8"><small>用于删除账户时撤销 Apple 授权；可与 APNs 共用同一把启用了两项能力的密钥</small></label>
-              <label>Key ID<input id="accountKeyID" type="text" autocomplete="off"></label>
-              <label>Team ID<input id="accountTeamID" type="text" autocomplete="off"></label>
-              <label class="wide">Bundle ID<input id="accountBundleID" type="text" autocomplete="off"></label>
-            </div>
-            <div class="dialog-actions"><span id="accountSignInStatus" class="badge">未配置密钥</span><button id="saveAccountSettingsButton" class="button primary" type="button">保存规则</button></div>
-          </section>
-          <section class="settings-panel">
-            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span><div><h3>增加使用日</h3><p>按账户或分组发放；负数用于更正，每次发放都会记入审计。</p></div></div>
-            <div class="form-grid">
-              <label>发放对象<select id="grantTarget"><option value="account">指定账户</option><option value="all">全部账户</option><option value="trial">免费额度中</option><option value="subscribed">订阅中</option><option value="expired">额度已用完</option></select></label>
-              <label>账户码<input id="grantCode" type="text" maxlength="8" autocomplete="off" placeholder="App 设置里显示的 8 位码"></label>
-              <label>使用日<input id="grantDays" type="number" min="-365" max="365" step="1" value="7"><span class="input-suffix">天</span></label>
-              <label>备注<input id="grantNote" type="text" maxlength="200" placeholder="例如 服务中断补偿"></label>
-            </div>
-            <div class="dialog-actions"><span id="grantPreview" class="badge"></span><button id="previewGrantButton" class="button secondary" type="button">预览人数</button><button id="grantButton" class="button primary" type="button">确认发放</button></div>
-          </section>
-        </div>
-        <div class="section-toolbar"><div><h2>账户列表</h2><p id="accountListSummary">最近注册的 200 个账户</p></div><label class="filter-label"><span>按账户码查找</span><input id="accountSearch" type="search" maxlength="8" autocomplete="off"></label></div>
+        <section class="settings-panel attest-panel">
+          <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></span><div><h3>App Attest 校验结果（近 7 天）</h3><p id="attestExplanation">拦截模式：伪造的签名（badSignature、replayed、wrongApp、malformed）直接拒绝；未携带签名的请求（模拟器、旧版 App、脚本）照常处理，但按 IP 限速。unknownKey、stale 视同未携带。</p></div></div>
+          <div class="table-scroll"><table class="account-table"><thead><tr><th>接口</th><th>有效</th><th>未携带</th><th>无效</th><th>无效原因</th></tr></thead><tbody id="attestTable"></tbody></table></div>
+        </section>
+        <div class="section-toolbar"><div><h2>分享课表</h2><p id="shareListSummary">最近更新的 200 份分享</p></div><label class="filter-label"><span>分享码 / 分享者 / 发布者 ID</span><input id="shareSearch" type="search" maxlength="40" autocomplete="off"></label></div>
         <section class="settings-panel">
-          <div class="table-scroll"><table class="account-table"><thead><tr><th>账户码</th><th>状态</th><th>剩余使用日</th><th>已用</th><th>最近扣费</th><th>订阅到期</th><th>设备</th><th>注册时间</th></tr></thead><tbody id="accountTable"></tbody></table></div>
-          <div id="accountDetail" class="account-detail" hidden></div>
+          <div class="table-scroll share-scroll"><table class="account-table"><thead><tr><th>分享码</th><th>分享者</th><th>发布者</th><th>学校 · 学期</th><th>课程</th><th>更新时间</th><th></th></tr></thead><tbody id="shareTable"></tbody></table></div>
+          <div id="shareDetail" class="account-detail" hidden></div>
+          <p class="stats-explanation">删除后分享码立即失效：已导入的人保留本机副本，但不再收到更新，效果与分享者自己撤销相同，无法恢复。</p>
+        </section>
+      </section>
+
+      <section id="subscriptionsView" class="content-view" hidden>
+        <div class="metric-strip subscription-strip" aria-label="订阅概览">
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>已订阅设备</span><strong id="subscribedDevices">0</strong><small>App Store 订阅有效的实时活动设备</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><span>收费状态</span><strong id="subscriptionMode">—</strong><small id="subscriptionModeDetail"></small></div>
+        </div>
+        <div class="account-layout">
+          <section class="settings-panel">
+            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>收费规则</h3><p>没有账户，订阅按设备记录。关闭时（Beta）所有设备都能免费收到实时活动提醒；打开后只有订阅有效的设备才会收到。免费首月由 App Store 的首月免费优惠提供。</p></div></div>
+            <div class="form-grid">
+              <label class="toggle-field wide"><input id="requireSubscription" type="checkbox"><span><strong>实时活动需要订阅</strong><small>切换后立即生效：关闭会让之前被跳过、仍未开始的提醒重新排队；打开后未订阅的设备不再收到新提醒</small></span></label>
+            </div>
+            <div class="dialog-actions"><button id="saveSubscriptionSettingsButton" class="button primary" type="button">保存规则</button></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="auditView" class="content-view" hidden>
+        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="subscription">订阅</option><option value="apns">APNs</option><option value="session">登录</option></select></label></div>
+        <section class="settings-panel">
+          <div class="table-scroll share-scroll"><table class="account-table audit-table"><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody id="auditTable"></tbody></table></div>
         </section>
       </section>
 
@@ -328,6 +343,6 @@
     </form>
   </dialog>
 
-  <script src="/static/admin.js?v=20260928-accounts"></script>
+  <script src="/static/admin.js?v=20260929-console"></script>
 </body>
 </html>
