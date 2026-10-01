@@ -2,7 +2,7 @@ import Foundation
 
 /// Keys and the deep link shared by the app and its extensions.
 enum NextWidgetConfiguration {
-    static var appGroup: String { AppGroupIdentifier.resolved() }
+    nonisolated static var appGroup: String { AppGroupIdentifier.resolved() }
     static let payloadKey = "naptable.scheduleWidgetPayload"
     static let widgetThemeKey = "scheduleWidgetTheme"
     static let widgetDisplayOptionsKey = "scheduleWidgetDisplayOptions"
@@ -297,7 +297,7 @@ struct ScheduleLiveActivityRGB: Codable, Equatable {
 
     static let `default` = ScheduleLiveActivityTheme.bunny.brandColor
 
-    var clamped: Self {
+    nonisolated var clamped: Self {
         Self(
             red: min(max(red, 0), 1),
             green: min(max(green, 0), 1),

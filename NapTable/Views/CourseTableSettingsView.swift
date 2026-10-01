@@ -243,7 +243,9 @@ struct CourseTableSettingsView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("课表中的课程将一并删除，此操作无法撤销。")
+                Text(ICloudSyncService.shared.isEnabled
+                     ? "课表中的课程将一并删除，并同步删除 iCloud 和其他设备上的对应课表。"
+                     : "课表中的课程将一并删除，此操作无法撤销。")
             }
         }
     }

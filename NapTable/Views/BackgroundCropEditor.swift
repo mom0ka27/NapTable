@@ -206,7 +206,7 @@ struct BackgroundCropEditor: View {
             }
             HStack {
                 Text(previewDark ? "深色不透明度" : "浅色不透明度")
-                Slider(value: currentOpacity, in: NativeSchedulePreferences.backgroundOpacityRange, step: 0.01)
+                Slider(value: currentOpacity, in: NativeSchedulePreferences.backgroundOpacityRange, step: 0.1)
                 Text("\(Int((currentOpacity.wrappedValue * 100).rounded()))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -271,7 +271,8 @@ struct BackgroundCropEditor: View {
     /// 以一个固定尺寸的画框重放同样的摆放，再按原图的清晰度渲染成 JPEG，
     /// 这样裁出来的结果和屏幕上预览所用的画框大小无关。
     @MainActor
-    static func render(image: CGImage, scale: CGFloat, offset: CGSize, aspect: CGFloat = targetAspect) -> Data? {
+    static func render(image: CGImage, scale: CGFloat, offset: CGSize, aspect: CGFloat? = nil) -> Data? {
+        let aspect = aspect ?? targetAspect
         let frame = CGSize(width: 390, height: 390 / aspect)
         let layer = BackgroundCropLayer(image: image, frame: frame, scale: scale,
                                         offset: clamp(offset, image: image, frame: frame, scale: scale))

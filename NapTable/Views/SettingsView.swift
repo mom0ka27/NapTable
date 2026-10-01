@@ -15,6 +15,7 @@ struct SettingsView: View {
     @ObservedObject private var schedulePreferences = NativeSchedulePreferences.shared
     @ObservedObject private var sharingService = ScheduleSharingService.shared
     @ObservedObject private var privacyConsent = PrivacyConsent.shared
+    @ObservedObject private var cloudSync = ICloudSyncService.shared
     @Binding var showImport: Bool
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
@@ -31,6 +32,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                helpGroup
                 appearanceGroup
                 NativeDeviceSettingsContent(
                     scheduleStore: scheduleStore,
@@ -63,6 +65,20 @@ struct SettingsView: View {
     }
 
     // MARK: Top-level groups
+
+    private var helpGroup: some View {
+        Section {
+            SettingsDestinationRow(
+                title: "使用指南",
+                detail: "修改课程与添加桌面小组件",
+                systemImage: "questionmark.circle"
+            ) {
+                ScheduleUsageGuideScreen()
+            }
+        } header: {
+            Text("帮助")
+        }
+    }
 
     private var appearanceGroup: some View {
         Section {
@@ -135,6 +151,13 @@ struct SettingsView: View {
     private var dataGroup: some View {
         Section {
             SettingsDestinationRow(
+                title: "iCloud 同步",
+                detail: cloudSync.statusText,
+                systemImage: "icloud"
+            ) {
+                ICloudSyncSettingsView()
+            }
+            SettingsDestinationRow(
                 title: "隐私与数据",
                 detail: privacyConsent.liveAccepted ? "已允许上传实时通知信息" : "仅上传基础统计",
                 systemImage: "hand.raised"
@@ -143,7 +166,7 @@ struct SettingsView: View {
             }
             SettingsDestinationRow(
                 title: "数据与备份",
-                detail: "\(store.courses.count) 门课程 · 仅保存在本机",
+                detail: "\(store.courses.count) 门课程 · \(cloudSync.isEnabled ? "已开启 iCloud 同步" : "本机备份")",
                 systemImage: "externaldrive"
             ) {
                 Form { dataSection }
@@ -265,7 +288,9 @@ struct SettingsView: View {
                 Button("全部清除", role: .destructive) { store.eraseEverything() }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("所有课表与课程都将被删除，此操作无法撤销。")
+                Text(cloudSync.isEnabled
+                     ? "所有自己的课表与课程都将被删除，并同步删除 iCloud 和其他设备上的对应课表。建议先导出备份。"
+                     : "所有课表与课程都将被删除，此操作无法撤销。")
             }
         } header: {
             Text("清除")
@@ -278,7 +303,8 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section {
-            LabeledContent("应用", value: "我上早八")
+            LabeledContent("应用", value: AppBrand.name)
+            LabeledContent("副标题", value: AppBrand.subtitle)
             LabeledContent("版本", value: appVersion)
             LabeledContent("课表", value: "\(store.tables.count) 张")
             LabeledContent("课程", value: "\(store.courses.count) 门")
@@ -384,7 +410,7 @@ private struct SettingsDialogs: ViewModifier {
             ) { result in
                 switch result {
                 case .success: message = "备份已导出。"
-                case .failure(let error): message = "导出失败，请稍后重试。"
+                case .failure: message = "导出失败，请稍后重试。"
                 }
             }
             .fileImporter(
@@ -402,7 +428,7 @@ private struct SettingsDialogs: ViewModifier {
                     } catch {
                         message = "恢复失败，请确认备份文件完整后重试。"
                     }
-                case .failure(let error):
+                case .failure:
                     message = "恢复失败，请确认备份文件完整后重试。"
                 }
             }

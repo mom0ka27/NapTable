@@ -44,6 +44,7 @@ final class NativeScheduleStore: ObservableObject {
 
     private weak var app: AppStore?
     private var bag = Set<AnyCancellable>()
+    private var lastProjection: ScheduleProjection?
 
     /// Binds the adapter to the app store and keeps it in sync. Safe to call
     /// from `.onAppear` / `.task` on every render.
@@ -51,11 +52,11 @@ final class NativeScheduleStore: ObservableObject {
         if self.app === app, result != nil { return }
         self.app = app
         bag.removeAll()
-        // `objectWillChange` fires *before* the mutation lands, so hop to the
-        // next main-queue turn to read the settled value. Not `RunLoop.main`:
-        // that one waits out a scroll (tracking mode) before delivering.
+        // Read after mutations settle and rebuild once for a burst of edits,
+        // such as importing all the rows of a table. DispatchQueue also keeps
+        // delivering during scrolling, unlike RunLoop's default mode.
         app.objectWillChange
-            .receive(on: DispatchQueue.main)
+            .debounce(for: .zero, scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.rebuild() }
             .store(in: &bag)
         rebuild()
@@ -81,11 +82,15 @@ final class NativeScheduleStore: ObservableObject {
 
     /// Synchronous week commit used by the swipe settle animation.
     func commitWeekSelection(_ week: String) {
-        selectedWeek = week
-        if let value = Int(week) {
-            if isReadOnly { sharedWeek = value } else { app?.selectWeek(value) }
+        guard let value = Int(week) else { return }
+        let target = min(max(value, 1), result?.weeks.count ?? max(value, 1))
+        if isReadOnly {
+            sharedWeek = target
+        } else if app?.displayWeek != target {
+            app?.selectWeek(target)
         }
-        rebuild()
+        // 切周只改变浏览位置；课程和整学期日历由数据变更订阅更新。
+        _ = update(\.selectedWeek, String(target))
     }
 
     func selectSemester(_ value: String) async {
@@ -350,8 +355,12 @@ final class NativeScheduleStore: ObservableObject {
             classTimes: display.classTimes, semesterStartMonday: display.semesterStartMonday,
             weekCount: display.weekCount, currentWeek: display.currentWeek, adjustments: display.adjustments
         )
-        changed = update(\.result, makeResult(visible)) || changed
-        changed = update(\.calendar, makeCalendar(visible)) || changed
+        // 浏览周次不属于投影内容，避免每次翻页重建整学期日期和课程。
+        if lastProjection != visible {
+            changed = update(\.result, makeResult(visible)) || changed
+            changed = update(\.calendar, makeCalendar(visible)) || changed
+            lastProjection = visible
+        }
         // 月历和日期栏的节假日按服务端的统一假期安排算，小组件那边随 payload 同步。
         ChineseCalendarInfo.usePublishedHolidays(PublishedHoliday.fromOffDays(
             app.holidayCalendarAdjustments.filter { $0.kind == .off }.map { (date: $0.date, note: $0.note) }
@@ -378,7 +387,7 @@ final class NativeScheduleStore: ObservableObject {
     /// shape, and a share brings its own school's first Monday, week count and
     /// bell times. Going through one projection is what keeps a followed
     /// timetable from being drawn against the reader's own periods.
-    struct ScheduleProjection {
+    struct ScheduleProjection: Equatable {
         let identifier: String
         let semesters: [NativeScheduleSemester]
         let courses: [Course]

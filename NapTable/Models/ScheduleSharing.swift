@@ -138,6 +138,7 @@ extension ScheduleSharingService {
     private func sourceChanged() {
         objectWillChange.send()
         NotificationCenter.default.post(name: .naptableFollowedSourceChanged, object: nil)
+        NotificationCenter.default.post(name: .naptableCloudContentChanged, object: nil)
     }
 
     // MARK: - My shares
@@ -172,6 +173,7 @@ extension ScheduleSharingService {
         guard let data = try? JSONEncoder().encode(list) else { return }
         UserDefaults.standard.set(data, forKey: Self.credentialsKey)
         objectWillChange.send()
+        NotificationCenter.default.post(name: .naptableCloudContentChanged, object: nil)
     }
 
     /// Republish the courses of an existing share. The share stays on its own
@@ -218,7 +220,7 @@ extension ScheduleSharingService {
         forget(credential)
     }
 
-    /// 只从本机删掉这条分享凭证，不联系服务端。
+    /// 移除保存的管理凭证；iCloud 开启时传播移除，不删除服务端分享。
     func forget(_ credential: ShareCredential) {
         store(myShares.filter { $0.code != credential.code })
     }
@@ -330,6 +332,22 @@ extension ScheduleSharingService {
             persist(followed, notify: false)
         }
         objectWillChange.send()
+        NotificationCenter.default.post(name: .naptableCloudContentChanged, object: nil)
+    }
+
+    /// Restoring a library does not opt this device into somebody else's
+    /// notifications. Only an already selected source has its cache refreshed.
+    func applyCloudLibrary(shared: [FollowedSchedule], credentials: [ShareCredential]) {
+        let previousShared = sharedSchedules
+        if myShares != credentials { store(credentials) }
+        guard previousShared != shared else { return }
+        guard let data = try? JSONEncoder().encode(shared) else { return }
+        UserDefaults.standard.set(data, forKey: Self.importedKey)
+        if let code = followedCode {
+            if let updated = shared.first(where: { $0.meta.code == code }) { persist(updated, notify: false) }
+            else { unfollow() }
+        }
+        sourceChanged()
     }
 
     private func fetchFollowed(_ code: String) async throws -> FollowedSchedule {
@@ -384,7 +402,7 @@ nonisolated enum ShareRevokeError: LocalizedError {
     case tokenRejected
 
     var errorDescription: String? {
-        "服务端不接受本机保存的管理凭证，无法撤销这份分享。可以仅从本机移除这个分享码。"
+        "服务端不接受保存的管理凭证，无法撤销这份分享。可以移除这条管理记录。"
     }
 }
 

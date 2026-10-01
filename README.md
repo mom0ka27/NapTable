@@ -1,4 +1,4 @@
-# NapTable（我上早八）
+# NapTable（你以为课表）
 
 NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 和 visionOS。它把课表、月历、农历节日、桌面小组件和实时活动放在同一套数据模型中，适合需要长期查看课程安排、处理调休并快速确认下一节课的场景。
 
@@ -15,21 +15,27 @@ NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 
 
 ### 课表视图
 
-| 周视图 | 月视图 |
+| 周视图 | 日视图 | 月视图 |
+| --- | --- | --- |
+| ![你以为课表周视图](server/static/site/img/week-view.jpg) | ![你以为课表日视图](server/static/site/img/day-view.jpg) | ![你以为课表月视图](server/static/site/img/month-view.jpg) |
+
+### 导入课表
+
+<img src="server/static/site/img/onboarding-import.jpg" alt="导入课表" width="260">
+
+### 实时活动
+
+| 锁屏实时活动 | 灵动岛紧凑态 | 灵动岛展开态 |
+| --- | --- | --- |
+| ![锁屏实时活动](docs/screenshots/live-lock-screen-system.png) | ![灵动岛紧凑态](docs/screenshots/live-island-system.png) | ![灵动岛展开态](docs/screenshots/live-island-expanded-system.png) |
+
+实时活动图片为 iPhone 18 Pro（iOS 27）模拟器中的系统截图，仅裁剪展示区域。截图环境和来源见[说明](docs/screenshots/README.md)。
+
+### 小组件
+
+| 临近课程小组件 | 两日课表小组件 |
 | --- | --- |
-| ![NapTable 周视图](docs/screenshots/week-view.png) | ![NapTable 月视图](docs/screenshots/month-view.png) |
-
-### 首次引导
-
-| 隐私许可 | 实时通知许可 | 导入课表 |
-| --- | --- | --- |
-| ![基础隐私许可](docs/screenshots/onboarding-privacy.png) | ![实时通知上传许可](docs/screenshots/onboarding-live-consent.png) | ![导入课表](docs/screenshots/onboarding-import.png) |
-
-### 小组件与设置
-
-| 今日课表小组件 | 两日课表小组件 | 设备设置 |
-| --- | --- | --- |
-| ![今日课表小组件](docs/screenshots/today-widget.png) | ![两日课表小组件](docs/screenshots/two-day-widget.png) | ![课表与设备设置](docs/screenshots/device-settings.png) |
+| ![临近课程小组件](server/static/site/img/upcoming-widget.png) | ![两日课表小组件](server/static/site/img/two-day-widget.png) |
 
 ## 文档
 

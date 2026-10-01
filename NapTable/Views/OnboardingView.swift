@@ -1,23 +1,44 @@
 import SwiftUI
 
-/// The main app is not mounted until consent and a real first import are complete.
+/// The main app is not mounted until consent and a first schedule are ready.
 struct AppEntryView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var consent = PrivacyConsent.shared
+
+    private var needsOnboarding: Bool {
+        !consent.basicAccepted || !consent.onboardingCompleted
+    }
+    private var scheduleTransition: AnyTransition {
+        reduceMotion ? .opacity : .opacity.combined(with: .offset(y: 16))
+    }
 
     private var reportKey: String {
         "\(consent.basicAccepted)-\(store.selectedTable?.schoolID ?? "")-\(ScheduleSharingService.shared.validatedBaseURL?.absoluteString ?? "")"
     }
     var body: some View {
-        Group {
-            if !consent.basicAccepted || !consent.onboardingCompleted {
+        ZStack {
+            if needsOnboarding {
                 OnboardingView()
+                    .transition(.opacity)
+                    .zIndex(1)
             } else {
                 ContentView()
+                    .transition(scheduleTransition)
+                    .zIndex(0)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(reduceMotion ? .easeInOut(duration: 0.18) : .smooth(duration: 0.4), value: needsOnboarding)
         .preferredColorScheme(store.settings.appearance.colorScheme)
+        .onAppear {
+            ICloudSyncService.shared.connect(store)
+            ICloudSyncService.shared.setForeground(scenePhase == .active && consent.basicAccepted)
+        }
+        .onChange(of: consent.basicAccepted) { _, accepted in
+            ICloudSyncService.shared.setForeground(scenePhase == .active && accepted)
+        }
         .task(id: reportKey) {
             guard consent.basicAccepted else { return }
             await reportUsage()
@@ -28,6 +49,7 @@ struct AppEntryView: View {
             store.refreshForToday()
         }
         .onChange(of: scenePhase) { _, phase in
+            ICloudSyncService.shared.setForeground(phase == .active && consent.basicAccepted)
             guard phase == .active else { return }
             #if os(iOS)
             // Revocation retries remain possible even when the optional permission is off.
@@ -57,6 +79,7 @@ struct OnboardingView: View {
     @State private var basicChecked: Bool
     @State private var liveChecked: Bool
     @State private var showImport = false
+    @State private var showCloudSync = false
     @State private var initialSchool: String?
     /// Where the user is. Navigation is explicit: skipping a page only moves
     /// past it, so going back (or forward again) still passes through it.
@@ -92,28 +115,34 @@ struct OnboardingView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Header and progress stay put; only the page below slides.
-                VStack(alignment: .leading, spacing: 14) {
-                    brandHeader
-                    progress
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    // Header and progress stay put; only the page below slides.
+                    VStack(alignment: .leading, spacing: 14) {
+                        brandHeader
+                        progress
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: 570)
+                    .frame(maxWidth: .infinity)
+                    ZStack {
+                        page(bottomSafeArea: geometry.safeAreaInsets.bottom)
+                            // A fresh scroll view per page, so every page starts at its top.
+                            .id(step)
+                            .transition(pageTransition)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 4)
-                .padding(.bottom, 8)
-                .frame(maxWidth: 570)
-                .frame(maxWidth: .infinity)
-                ZStack {
-                    page
-                        // A fresh scroll view per page, so every page starts at its top.
-                        .id(step)
-                        .transition(pageTransition)
+                // The import page has no footer, so its scroll viewport reaches the screen edge.
+                .ignoresSafeArea(.container, edges: isImportStep ? .bottom : [])
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if !isImportStep { bottomAction }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
             }
             .background(colors.background.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom, spacing: 0) { bottomAction }
             #if os(iOS)
             .toolbar(.hidden, for: .navigationBar)
             #endif
@@ -129,9 +158,23 @@ struct OnboardingView: View {
             .interactiveDismissDisabled()
         }
         .onAppear { scheduleStore.connect(store) }
+        .sheet(isPresented: $showCloudSync, onDismiss: {
+            let hasCourses = !store.courses.isEmpty || ScheduleSharingService.shared.sharedSchedules.contains { !$0.courses.isEmpty }
+            consent.completeOnboarding(hasImportedCourses: hasCourses)
+        }) {
+            NavigationStack {
+                ICloudSyncSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("完成") { showCloudSync = false }
+                        }
+                    }
+            }
+            .environmentObject(store)
+        }
     }
 
-    private var page: some View {
+    private func page(bottomSafeArea: CGFloat) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 switch step {
@@ -142,7 +185,7 @@ struct OnboardingView: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 12)
-            .padding(.bottom, 24)
+            .padding(.bottom, 24 + (isImportStep ? bottomSafeArea : 0))
             .frame(maxWidth: 570)
             .frame(maxWidth: .infinity)
         }
@@ -175,8 +218,12 @@ struct OnboardingView: View {
                 .frame(width: 36, height: 36)
                 .clipShape(RoundedRectangle(cornerRadius: 9))
                 .accessibilityHidden(true)
-            Text("你以为课表").font(.system(.headline, design: .rounded).weight(.bold))
-                .foregroundStyle(colors.ink)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(AppBrand.name).font(.system(.headline, design: .rounded).weight(.bold))
+                    .foregroundStyle(colors.ink)
+                Text(AppBrand.subtitle).font(.caption2.weight(.medium))
+                    .foregroundStyle(colors.secondary)
+            }
             Spacer()
             if step == .live {
                 Button("跳过") { finishLiveStep() }
@@ -271,7 +318,7 @@ struct OnboardingView: View {
                 .tracking(-0.7)
                 .foregroundStyle(colors.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(isImportStep ? "连接学校教务系统，把课程带进你的日常。" : "先了解数据如何使用，再开启你的校园日常。")
+            Text(isImportStep ? "导入你的课程，或先用示例课表体验。" : "先了解数据如何使用，再开启你的校园日常。")
                 .font(.subheadline).foregroundStyle(colors.secondary)
                 .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
         }
@@ -321,6 +368,32 @@ struct OnboardingView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("其他学校，从列表选择或手动创建课表")
 
+            Button { showCloudSync = true } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "icloud.and.arrow.down")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(colors.accent)
+                        .frame(width: 52, height: 52)
+                        .background(colors.soft, in: RoundedRectangle(cornerRadius: 16))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("从 iCloud 同步已有课表").font(.headline).foregroundStyle(colors.ink)
+                        Text("同一 Apple 账号，继续使用其他设备上的课表")
+                            .font(.caption).foregroundStyle(colors.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.subheadline).foregroundStyle(colors.accent)
+                }
+                .padding(18)
+                .background(colors.surface, in: RoundedRectangle(cornerRadius: 21))
+                .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+
+            demoCard
+
+            ScheduleUsageGuideView()
+
             VStack(alignment: .leading, spacing: 0) {
                 importInstruction("1", title: "选择教务入口", detail: "找到适合你的本科生或研究生系统。", last: false)
                 importInstruction("2", title: "登录并确认课程", detail: "在学校页面登录，核对课程与学期。", last: false)
@@ -332,11 +405,48 @@ struct OnboardingView: View {
             .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.shield").font(.caption)
-                Text("账号密码仅在学校页面输入。首次使用需导入或手动添加至少一门课程，取消或空课表不会完成引导。")
+                Text("账号密码仅在学校页面输入。也可以先用示例课表体验，之后再导入自己的课程。")
                     .font(.caption2).lineSpacing(3)
             }
             .foregroundStyle(colors.secondary)
         }
+    }
+
+    private var demoCard: some View {
+        Button {
+            store.installDemoSchedule()
+            store.saveNow()
+            consent.completeOnboarding(hasImportedCourses: !store.currentCourses.isEmpty)
+        } label: {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 14) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(colors.accent)
+                        .frame(width: 52, height: 52)
+                        .background(colors.soft, in: RoundedRectangle(cornerRadius: 16))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("导入示例课表").font(.headline).foregroundStyle(colors.ink)
+                        Text("计算机科学与技术 · 无需登录")
+                            .font(.caption).foregroundStyle(colors.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "arrow.down.doc")
+                        .font(.subheadline).foregroundStyle(colors.accent)
+                }
+                Text("切换周次体验单双周和指定周次，点击「自由时间课程」查看实践课。示例课程可编辑或删除。")
+                    .font(.caption).foregroundStyle(colors.secondary)
+                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+            .background(colors.surface, in: RoundedRectangle(cornerRadius: 21))
+            .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 21))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("导入计算机科学与技术示例课表")
+        .accessibilityHint("无需登录，包含单双周、指定周次和自由时间课程，导入后开始使用")
     }
 
     private func schoolCard(_ name: String, glyph: String, detail: String) -> some View {

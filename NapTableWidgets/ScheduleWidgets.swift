@@ -2054,11 +2054,11 @@ private struct DayTimeline: View {
     }
 }
 
-private struct ProportionalWeight: LayoutValueKey {
+nonisolated private struct ProportionalWeight: LayoutValueKey {
     static let defaultValue: CGFloat = 0
 }
 
-private struct ProportionalMaxHeight: LayoutValueKey {
+nonisolated private struct ProportionalMaxHeight: LayoutValueKey {
     static let defaultValue: CGFloat = .infinity
 }
 
@@ -3643,7 +3643,7 @@ struct ScheduleEntry: TimelineEntry {
             date: now,
             state: .loaded(
                 WidgetSchedulePayload(
-                    title: "我上早八",
+                    title: AppBrand.name,
                     sourceLabel: nil,
                     generatedAt: nil,
                     semester: "2026-2027-1",

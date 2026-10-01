@@ -95,6 +95,7 @@ final class NativeLiveActivityController: ObservableObject {
     /// (it runs out, or is swiped away on the Lock Screen).
     private var previewObserver: Task<Void, Never>?
     private var dismissalObservers: [String: Task<Void, Never>] = [:]
+    private var retiringActivityIDs: Set<String> = []
     private struct DismissalWindow: Codable, Equatable {
         var scope: String
         var dateKey: String
@@ -248,7 +249,7 @@ final class NativeLiveActivityController: ObservableObject {
     }
     func observeTokens(of activity: Activity<ScheduleLiveActivityAttributes>) {
         if !isEnabled || isSkipped(activity.attributes) {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            Task { await self.endActivity(activity) }
             return
         }
         // A delayed push can arrive after the foreground fallback. Retire
@@ -263,7 +264,7 @@ final class NativeLiveActivityController: ObservableObject {
                 ($0.attributes.reservationEnd ?? .distantPast) > (activity.attributes.reservationStart ?? .distantFuture)
             }
             if !fallbacks.isEmpty {
-                Task { for fallback in fallbacks { await fallback.end(nil, dismissalPolicy: .immediate) } }
+                Task { for fallback in fallbacks { await self.endActivity(fallback) } }
             }
         }
         guard activity.attributes.pushMode == "token", tokenObservers[activity.id] == nil else { return }
@@ -367,14 +368,23 @@ final class NativeLiveActivityController: ObservableObject {
         let previousRetirement = retirementTask
         let activities = courseActivities.filter { isSkipped($0.attributes) }
         retirementTask = Task { [weak self] in
+            guard let self else { return }
             await previousRetirement?.value
-            for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
-            self?.announceTokens()
+            for activity in activities { await self.endActivity(activity) }
+            self.announceTokens()
         }
         rebuild()
     }
+    private func endActivity(_ activity: Activity<ScheduleLiveActivityAttributes>) async {
+        // Immediate ends also report dismissed. Stop observing before the API
+        // call so replacing or retiring an activity cannot prompt the user.
+        retiringActivityIDs.insert(activity.id)
+        dismissalObservers.removeValue(forKey: activity.id)?.cancel()
+        defer { retiringActivityIDs.remove(activity.id) }
+        await activity.end(nil, dismissalPolicy: .immediate)
+    }
     private func observeDismissals() {
-        for activity in courseActivities where dismissalObservers[activity.id] == nil {
+        for activity in courseActivities where dismissalObservers[activity.id] == nil && !retiringActivityIDs.contains(activity.id) {
             let id = activity.id
             let initiallyVisible = activity.activityState == .active || activity.activityState == .stale
             dismissalObservers[id] = Task { [weak self] in
@@ -382,6 +392,7 @@ final class NativeLiveActivityController: ObservableObject {
                 // being dismissed. Remember whether this activity actually started.
                 var wasVisible = initiallyVisible
                 for await state in activity.activityStateUpdates {
+                    guard !Task.isCancelled, state != .ended else { break }
                     if state == .active || state == .stale { wasVisible = true }
                     guard state == .dismissed else { continue }
                     guard let self, wasVisible, self.isEnabled, !self.isPreviewActive, !self.restoringDismissedReminder,
@@ -453,7 +464,7 @@ final class NativeLiveActivityController: ObservableObject {
             // One-time retirement is also safe after an interrupted upgrade.
             if isSkipped(activity.attributes) || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= now() ||
                 activity.attributes.protocolVersion != 2 || activity.attributes.scheduleScope != display.scope {
-                await activity.end(nil, dismissalPolicy: .immediate)
+                await endActivity(activity)
             }
         }
         observeTokenActivities()
@@ -476,7 +487,7 @@ final class NativeLiveActivityController: ObservableObject {
                         activity.attributes.scheduleScope == display.scope && activity.attributes.dateKey == occurrence.dateKey &&
                         (activity.attributes.reservationStart?.timeIntervalSince1970 ?? .infinity) < occurrence.end &&
                         (activity.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) > occurrence.start {
-                        await activity.end(nil, dismissalPolicy: .immediate)
+                        await endActivity(activity)
                     }
                     guard valid(generation), canStartForegroundActivity else { return }
                 }
@@ -543,7 +554,7 @@ final class NativeLiveActivityController: ObservableObject {
         let wanted = Dictionary(claims.map { ($0.occurrenceId, $0.attributes(semester: semester)) }, uniquingKeysWith: { first, _ in first })
         for activity in courseActivities where activity.activityState == .pending {
             guard let id = activity.attributes.occurrenceId, wanted[id] != activity.attributes else { continue }
-            await activity.end(nil, dismissalPolicy: .immediate)
+            await endActivity(activity)
         }
         guard valid(generation) else { return unreserved(claims) }
         var release: [String] = []
@@ -609,9 +620,10 @@ final class NativeLiveActivityController: ObservableObject {
         let activities = Activity<ScheduleLiveActivityAttributes>.activities
         let tokens = activities.contains { $0.attributes.pushMode == "token" }
         retirementTask = Task { [weak self] in
-            for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
+            guard let self else { return }
+            for activity in activities { await self.endActivity(activity) }
             // Lets the push service withdraw the ended activities' refreshes.
-            if tokens { self?.announceTokens() }
+            if tokens { self.announceTokens() }
         }
     }
     func startPreview() {
@@ -659,7 +671,7 @@ final class NativeLiveActivityController: ObservableObject {
         let stored = display ?? LiveActivityDisplaySnapshot.load()
         for activity in Activity<ScheduleLiveActivityAttributes>.activities where activity.activityState != .ended && activity.activityState != .dismissed {
             if !isEnabled || isSkipped(activity.attributes) || (activity.attributes.reservationEnd ?? activity.content.state.endDate) <= current {
-                await activity.end(nil, dismissalPolicy: .immediate)
+                await endActivity(activity)
             } else if !Self.isPending(activity), let state = stored?.resolve(attributes: activity.attributes, at: current) {
                 await activity.update(ActivityContent(state: state, staleDate: staleDate(activity.attributes, in: stored)))
             }

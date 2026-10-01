@@ -154,7 +154,7 @@ nonisolated enum CalendarAdjustmentResolver {
 
 private extension String {
     /// 空串和纯空白都当成「没填」，服务端和手写 JSON 都可能出现。
-    var trimmedCalendarDate: String? {
+    nonisolated var trimmedCalendarDate: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }

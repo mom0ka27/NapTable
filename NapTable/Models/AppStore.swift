@@ -49,12 +49,14 @@ final class AppStore: ObservableObject {
     /// 读不到（比如后台启动时数据保护还没解锁），用空状态覆盖它会把课表清掉。
     /// 下一次成功读到内容就恢复保存。
     private var saveBlocked = false
+    private(set) var cloudSync: CloudSyncJournal
 
     // MARK: Init
 
     init(fileURL: URL? = AppStore.defaultFileURL()) {
         self.fileURL = fileURL
         let state = AppStore.readState(from: fileURL)
+        self.cloudSync = state.state.cloudSync ?? CloudSyncJournal()
         self.settings = state.state.settings
         self.tables = state.state.tables
         self.courses = state.state.courses
@@ -94,6 +96,7 @@ final class AppStore: ObservableObject {
         guard saveBlocked else { return }
         let state = AppStore.readState(from: fileURL)
         guard !state.saveBlocked else { return }
+        cloudSync = state.state.cloudSync ?? CloudSyncJournal()
         saveTask?.cancel()
         settings = state.state.settings
         tables = state.state.tables
@@ -378,12 +381,13 @@ final class AppStore: ObservableObject {
     @discardableResult
     func addTable(name: String, semesterStartMonday: String = "", classTimeList: [ClassTime] = []) -> CourseTable {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let table = CourseTable(
+        var table = CourseTable(
             id: nextTableId,
             name: uniqueTableName(trimmed.isEmpty ? "课表 \(nextTableId)" : trimmed),
             classTimeList: classTimeList,
             semesterStartMonday: semesterStartMonday
         )
+        table.syncID = UUID().uuidString
         nextTableId += 1
         tables.append(table)
         selectedTableId = table.id
@@ -576,9 +580,8 @@ final class AppStore: ObservableObject {
         courses.removeAll()
         tables = []
         selectedTableId = 0
-        nextCourseId = 1
-        nextTableId = 1
-        nextCourseKey = 1
+        // Saved share credentials can still refer to old table IDs. Never reuse
+        // those IDs for unrelated tables created after a cloud-synced deletion.
         didSeedSample = true
         scheduleSave()
     }
@@ -728,6 +731,8 @@ final class AppStore: ObservableObject {
         var tableRemap: [Int: Int] = [:]
         var newTables: [CourseTable] = []
         for var table in document.tables {
+            // Restoring a backup creates independent copies, not cloud aliases.
+            table.syncID = UUID().uuidString
             let newId = nextTableId
             nextTableId += 1
             tableRemap[table.id] = newId
@@ -782,7 +787,13 @@ final class AppStore: ObservableObject {
     private func normalize() {
         // 老版本和恢复备份都可能带进同名课表，按先后给后来的补序号。
         var seen = Set<String>()
+        var syncIDs = Set<String>()
         for index in tables.indices {
+            let id = tables[index].syncID ?? ""
+            if UUID(uuidString: id) == nil || !syncIDs.insert(id).inserted {
+                tables[index].syncID = UUID().uuidString
+                syncIDs.insert(tables[index].syncID!)
+            }
             let base = tables[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
             var name = base
             var suffix = 2
@@ -817,8 +828,12 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func saveNow() {
-        guard didLoad, let fileURL, !saveBlocked else { return }
+    @discardableResult
+    func saveNow() -> Bool {
+        guard didLoad, let fileURL, !saveBlocked else { return false }
+        normalizeCloudIDs()
+        let previousDocument = cloudSync.document
+        cloudSync.capture(cloudSnapshot())
         var state = AppStateFile()
         state.settings = settings
         state.tables = tables
@@ -829,14 +844,142 @@ final class AppStore: ObservableObject {
         state.nextCourseKey = nextCourseKey
         state.didSeedSample = didSeedSample
         state.unifiedCalendarAdjustments = unifiedCalendarAdjustments
+        state.cloudSync = cloudSync
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(state)
             try data.write(to: fileURL, options: .atomic)
             loadErrorMessage = nil
+            if previousDocument != cloudSync.document {
+                NotificationCenter.default.post(name: .naptableCloudContentChanged, object: self)
+            }
+            return true
         } catch {
             loadErrorMessage = "本地数据保存失败：\(error.localizedDescription)"
+            return false
         }
+    }
+
+    private func normalizeCloudIDs() {
+        for index in tables.indices where tables[index].syncID == nil {
+            tables[index].syncID = UUID().uuidString
+        }
+    }
+
+    func cloudSnapshot() -> [String: CloudSyncPayload] {
+        var values: [String: CloudSyncPayload] = [:]
+        for table in tables {
+            let payload = CloudSyncPayload.table(CloudTable(
+                table: table, courses: courses.filter { $0.tableId == table.id }, weekCount: weekCount(of: table)
+            ))
+            values[payload.key] = payload
+        }
+        let sharing = ScheduleSharingService.shared
+        for var shared in sharing.sharedSchedules {
+            // Fetch time is a device cache detail, not a user edit.
+            shared.fetchedAt = Date(timeIntervalSince1970: 0)
+            let payload = CloudSyncPayload.shared(shared)
+            values[payload.key] = payload
+        }
+        for var credential in sharing.myShares {
+            let tableSyncID = tables.first { $0.id == credential.tableID }?.syncID
+            credential.tableID = nil
+            let payload = CloudSyncPayload.credential(CloudCredential(credential: credential, tableSyncID: tableSyncID))
+            values[payload.key] = payload
+        }
+        return values
+    }
+
+    func bindCloudAccount(_ accountID: String) throws {
+        if let previous = cloudSync.accountID, previous != accountID { throw CloudSyncFailure.accountChanged }
+        cloudSync.accountID = accountID
+        guard saveNow() else { throw CloudSyncFailure.localStorage }
+    }
+
+    /// Apply all entities before publishing the saved journal. Local selection,
+    /// appearance and notification permissions never come from the cloud.
+    func applyCloudDocument(_ incoming: CloudSyncDocument) throws {
+        let incoming = try incoming.validated()
+        guard saveNow() else { throw CloudSyncFailure.localStorage }
+        let merged = cloudSync.document.merged(with: incoming)
+        let before = cloudSnapshot()
+        // Keep a recovery copy before replacing any local content, including
+        // concurrent edits to the same timetable. No backup is uploaded.
+        if merged.entries.contains(where: { key, entry in
+            before[key] != nil && before[key] != entry.payload
+        }), let fileURL {
+            let backup = fileURL.deletingLastPathComponent().appendingPathComponent("before-icloud-\(UUID().uuidString).json")
+            try FileManager.default.copyItem(at: fileURL, to: backup)
+            for old in cloudRecoveryCopies.dropFirst(5) { try? FileManager.default.removeItem(at: old.url) }
+        }
+
+        for (key, entry) in merged.entries.sorted(by: { $0.key < $1.key }) where key.hasPrefix("table:") {
+            let syncID = String(key.dropFirst("table:".count))
+            let existing = tables.first { $0.syncID == syncID }
+            guard entry.payload != before[key] else { continue }
+            if let existing { courses.removeAll { $0.tableId == existing.id } }
+            guard case .table(let value) = entry.payload else {
+                tables.removeAll { $0.syncID == syncID }
+                continue
+            }
+            var table = value.table
+            table.id = existing?.id ?? nextTableId
+            if existing == nil { nextTableId += 1 }
+            if let index = tables.firstIndex(where: { $0.syncID == syncID }) { tables[index] = table }
+            else { tables.append(table) }
+            var keys: [Int: Int] = [:]
+            for var course in value.courses {
+                course.id = nextCourseId
+                nextCourseId += 1
+                course.tableId = table.id
+                if let key = course.courseKey {
+                    if keys[key] == nil { keys[key] = nextCourseKey; nextCourseKey += 1 }
+                    course.courseKey = keys[key]
+                }
+                courses.append(course)
+            }
+        }
+        let shared = merged.entries.values.compactMap { entry -> FollowedSchedule? in
+            if case .shared(let value) = entry.payload { return value }
+            return nil
+        }.sorted { $0.meta.code < $1.meta.code }
+        let credentials = merged.entries.values.compactMap { entry -> ShareCredential? in
+            guard case .credential(let value) = entry.payload else { return nil }
+            var credential = value.credential
+            credential.tableID = tables.first { $0.syncID == value.tableSyncID }?.id
+            return credential
+        }.sorted { $0.code < $1.code }
+        ScheduleSharingService.shared.applyCloudLibrary(shared: shared, credentials: credentials)
+        cloudSync.document = merged
+        cloudSync.baseline = cloudSnapshot()
+        // Resolve independently created equal names in the same order everywhere.
+        tables.sort { ($0.syncID ?? "") < ($1.syncID ?? "") }
+        normalize()
+        displayWeek = min(max(displayWeek, 1), maxWeeks)
+        guard saveNow() else { throw CloudSyncFailure.localStorage }
+    }
+
+    struct CloudRecoveryCopy: Identifiable {
+        let url: URL
+        let date: Date
+        var id: URL { url }
+    }
+
+    var cloudRecoveryCopies: [CloudRecoveryCopy] {
+        guard let directory = fileURL?.deletingLastPathComponent(),
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.creationDateKey]
+              ) else { return [] }
+        return files.filter { $0.lastPathComponent.hasPrefix("before-icloud-") && $0.pathExtension == "json" }
+            .map { CloudRecoveryCopy(url: $0, date: (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast) }
+            .sorted { $0.date > $1.date }
+    }
+
+    func restoreCloudRecovery(_ copy: CloudRecoveryCopy) throws {
+        guard cloudRecoveryCopies.contains(where: { $0.url == copy.url }) else { throw CloudSyncFailure.invalidData }
+        let state = try JSONDecoder().decode(AppStateFile.self, from: Data(contentsOf: copy.url))
+        restore(ExportDocument(settings: state.settings, tables: state.tables, courses: state.courses, display: nil))
+        guard saveNow() else { throw CloudSyncFailure.localStorage }
     }
 }

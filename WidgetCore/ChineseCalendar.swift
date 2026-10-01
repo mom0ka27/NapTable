@@ -174,6 +174,22 @@ nonisolated enum ChineseCalendarInfo {
         return cache.year(year).days[date]
     }
 
+    /// 月历渲染只读已有结果，未命中时由后台预热，避免在主线程计算整年。
+    static func cachedInfo(forDate date: String) -> ChineseCalendarDay? {
+        guard let year = gregorianYear(of: date) else { return nil }
+        return cache.cachedYear(year)?.days[date]
+    }
+
+    static var holidayRevision: Int { cache.revision }
+
+    static func prewarm(year: Int) async {
+        await Task.detached(priority: .userInitiated) {
+            for value in [year, year - 1, year + 1] {
+                _ = cache.year(value)
+            }
+        }.value
+    }
+
     /// 换上服务端下发的放假安排。和上次一样时什么都不做，不一样就丢掉缓存重算。
     static func usePublishedHolidays(_ days: [PublishedHoliday]) {
         cache.usePublished(days)
@@ -372,6 +388,18 @@ private nonisolated final class YearCache: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return publishedDays
+    }
+
+    var revision: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return version
+    }
+
+    func cachedYear(_ year: Int) -> YearData? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[year]
     }
 
     func usePublished(_ days: [PublishedHoliday]) {

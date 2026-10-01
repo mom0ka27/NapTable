@@ -210,7 +210,7 @@ struct NativeLiveActivityChecks {
         precondition(announcements == 2, "An unchanged rebuild announces nothing")
         follower.leaveForeground()
         follower.accept(fixture(), own: nil); await settle()
-        precondition(remote.activityState == .ended && announcements == 3, "Another table ends the share's activity and withdraws its token")
+        precondition(remote.activityState == .dismissed && announcements == 3, "Another table ends the share's activity and withdraws its token")
 
         // MARK: Reservations the server hands over (iOS 26)
         let a = LiveActivityClaim(occurrenceId: "claim-a", dateKey: "2026-09-22", reminder: first.reminder + 600, start: start, end: first.end,
@@ -277,7 +277,7 @@ struct NativeLiveActivityChecks {
         let foreign = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: attributes(id: "foreign", scope: "other"), content: .init(state: first.frames[0].state, staleDate: nil))
         cold.accept(snapshot); await settle()
         precondition(running.activityState == .active, "The first timetable after launch must not end the class being shown")
-        precondition(foreign.activityState == .ended, "Another table's activity is retired by its scope")
+        precondition(foreign.activityState == .dismissed, "Another table's activity is retired by its scope")
         cold.setEnabled(false); await settle()
 
         // MARK: Entering the app starts the current reminder without a push
@@ -323,7 +323,7 @@ struct NativeLiveActivityChecks {
             content: .init(state: first.frames[0].state, staleDate: nil), pushType: .token, style: .standard,
             alertConfiguration: .init(title: "课程提醒", body: "即将上课", sound: .default), start: now.addingTimeInterval(60))
         entering.continueDismissedReminder(); await settle()
-        precondition(pendingRestore.activityState == .ended && live.count == 1 && live[0].activityState == .active,
+        precondition(pendingRestore.activityState == .dismissed && live.count == 1 && live[0].activityState == .active,
                      "Continue replaces a covering pending reservation with a visible activity")
         live[0].dismiss(); await settle()
         TestActivityKit.activitiesEnabled = false
@@ -341,7 +341,9 @@ struct NativeLiveActivityChecks {
         let fallback = live[0]
         let delayed = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: matching, content: .init(state: first.frames[0].state, staleDate: nil))
         entering.observeTokens(of: delayed); await settle()
-        precondition(fallback.activityState == .ended && live.count == 1, "A delayed push replaces the local fallback")
+        precondition(fallback.activityState == .dismissed && live.count == 1, "A delayed push replaces the local fallback")
+        precondition(entering.dismissedOccurrence == nil,
+                     "Replacing the foreground reminder with a delayed remote start is not a user dismissal")
         entering.foreground(); await settle()
         precondition(live.count == 1 && live[0].id == delayed.id, "An existing remote reminder is reused")
         delayed.dismiss(); await settle()
@@ -392,7 +394,7 @@ struct NativeLiveActivityChecks {
                      "The server receives the skipped course window")
         let late = Activity<ScheduleLiveActivityAttributes>.remoteStart(attributes: matching, content: .init(state: first.frames[0].state, staleDate: nil))
         entering.observeTokens(of: late); await settle()
-        precondition(late.activityState == .ended, "An in-flight push cannot restore a skipped occurrence")
+        precondition(late.activityState == .dismissed, "An in-flight push cannot restore a skipped occurrence")
         let relaunched = NativeLiveActivityController(now: { foregroundTime }, privacyDefaults: defaults)
         relaunched.accept(snapshot); relaunched.foreground(); await settle()
         precondition(live.isEmpty && relaunched.dismissedOccurrence == nil, "Skipping survives relaunch")

@@ -26,6 +26,8 @@ Live Activity 本身需要 iOS 16.1+，当前 iOS 部署目标为 17.0。iOS、m
 
 ## Bundle ID 与 App Group
 
+iCloud 的开发者后台配置、同步范围与真机验收见 [iCloud 课表同步](icloud-sync.md)。
+
 | 项 | 值 |
 | --- | --- |
 | App bundle id | `com.niyiwei.naptable` |

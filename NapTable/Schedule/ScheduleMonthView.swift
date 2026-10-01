@@ -3,11 +3,12 @@ import SwiftUI
 /// 月视图：课表界面的第三种视图，和「日」「周」共用同一个顶栏切换。
 ///
 /// 周视图和日视图都是按节次画网格的课表；月视图不再画网格，而是一张日历：每天一
-/// 格，格子里是公历日、农历/节日和当天课程的彩色圆点，下面跟着所选那天的课程清
+/// 格，格子里是公历日、农历/节日和表示当天课程数量的横条，点击日期展开课程清
 /// 单。教学周信息保留在每行左侧的「周」栏里，这样月历和学期周次仍能对上。
 struct NativeScheduleMonthView: View {
     /// 所显示月份里的任意一天（`yyyy-MM-dd`）。
-    let monthAnchor: String
+    @Binding var monthAnchor: String
+    let contentRevision: Date?
     let selectedDate: String
     let todayDate: String?
     /// 日期 -> (教学周, 星期几)。来自课表日历，学期外的日期查不到。
@@ -17,6 +18,7 @@ struct NativeScheduleMonthView: View {
     /// 日期 -> 这一天的调休安排。
     let adjustments: [String: ResolvedCalendarAdjustment]
     let onSelect: (String) -> Void
+    let onMoveMonth: (Int) -> Void
     let onOpenDay: (String) -> Void
     /// 第二个参数是被点的那一天，调课时课程归属要按它换算。
     let onCourseSelected: (NativeScheduleCourseBlock, String) -> Void
@@ -26,26 +28,145 @@ struct NativeScheduleMonthView: View {
         let day: Int
     }
 
+    @State private var visibleMonth: String?
+    @State private var dataCache = MonthDataCache()
+    @State private var calendarGeneration = 0
+
+    private struct WarmKey: Equatable {
+        let year: Int
+        let holidayRevision: Int
+    }
+
+    private var warmKey: WarmKey {
+        WarmKey(year: Int((visibleMonth ?? monthAnchor).prefix(4)) ?? 2026,
+                holidayRevision: ChineseCalendarInfo.holidayRevision)
+    }
+
+    /// 不发布变化的派生缓存，限量保存最近浏览的月份。
+    private final class MonthDataCache {
+        var contentRevision: Date?
+        var holidayRevision = -1
+        var generation = -1
+        var days: [String: [Day]] = [:]
+        var indexDates: [String: DaySlot] = [:]
+        var indexToday = ""
+        var months: [String] = []
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsDayDetails = false
+    @State private var pendingCourse: NativeScheduleCourseBlock?
+    @State private var opensDayAfterDismiss = false
+
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
 
     private static let weekdayLabels = ["一", "二", "三", "四", "五", "六", "日"]
-    private static let gutterWidth: CGFloat = 26
+    private static let gutterWidth: CGFloat = 20
 
     var body: some View {
-        // 一个月的格子要查 42 天的农历和课程，整个 body 只算一次再传下去。
-        let days = buildDays()
-        VStack(alignment: .leading, spacing: 12) {
-            monthGrid(days)
-            selectedDayCard(days)
+        GeometryReader { geometry in
+            // 外层测量未被标签栏遮挡的高度；滚动视口和每页则延伸到屏幕底部。
+            let pageHeight = geometry.size.height + geometry.safeAreaInsets.bottom
+            if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *) {
+                monthScroller(contentHeight: geometry.size.height, pageHeight: pageHeight)
+                    .onScrollPhaseChange { _, phase in
+                        if phase == .idle { commitVisibleMonth() }
+                    }
+            } else {
+                monthScroller(contentHeight: geometry.size.height, pageHeight: pageHeight)
+                    .onChange(of: visibleMonth) { _, _ in commitVisibleMonth() }
+            }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 12)
+        .task(id: warmKey) {
+            await ChineseCalendarInfo.prewarm(year: warmKey.year)
+            guard !Task.isCancelled else { return }
+            calendarGeneration &+= 1
+        }
+        .onAppear { visibleMonth = monthKey(monthAnchor) }
+        .onChange(of: monthKey(monthAnchor)) { _, target in
+            guard visibleMonth != target else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
+                visibleMonth = target
+            }
+        }
+        .accessibilityAction(named: Text("上个月")) { onMoveMonth(-1) }
+        .accessibilityAction(named: Text("下个月")) { onMoveMonth(1) }
+        .sheet(isPresented: $showsDayDetails, onDismiss: {
+            if let course = pendingCourse {
+                pendingCourse = nil
+                onCourseSelected(course, selectedDate)
+            } else if opensDayAfterDismiss {
+                opensDayAfterDismiss = false
+                onOpenDay(selectedDate)
+            }
+        }) {
+            ScrollView {
+                selectedDayCard(buildDays(anchor: selectedDate))
+                    .padding(16)
+            }
+            .appSheetDetents([.medium, .large])
+        }
+    }
+
+    private func monthScroller(contentHeight: CGFloat, pageHeight: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0) {
+                ForEach(pageMonths, id: \.self) { month in
+                    monthGrid(buildDays(anchor: month), height: contentHeight)
+                        .frame(height: pageHeight, alignment: .top)
+                        .id(month)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .frame(height: pageHeight, alignment: .top)
+        .ignoresSafeArea(.container, edges: .bottom)
+        .scrollTargetBehavior(.paging)
+        // 程序跳转与分页吸附共用页顶，向前返回时不再按另一条边对齐。
+        .scrollPosition(id: $visibleMonth, anchor: .top)
+    }
+
+    private func commitVisibleMonth() {
+        guard let visibleMonth, visibleMonth != monthKey(monthAnchor) else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { monthAnchor = visibleMonth }
+    }
+
+    private func monthKey(_ date: String) -> String {
+        String(date.prefix(7)) + "-01"
+    }
+
+    private var pageMonths: [String] {
+        let today = todayDate ?? monthKey(monthAnchor)
+        if dataCache.indexDates == dateIndex, dataCache.indexToday == today,
+           !dataCache.months.isEmpty { return dataCache.months }
+        dataCache.indexDates = dateIndex
+        dataCache.indexToday = today
+        let calendar = ChineseCalendarInfo.gregorian
+        // 围绕今天及学期范围扩展，翻页时不移动数据窗口或重置滚动位置。
+        let dates = Array(dateIndex.keys) + [todayDate ?? monthAnchor]
+        guard let first = dates.min(), let last = dates.max(),
+              let start = ChineseCalendarInfo.date(fromDate: monthKey(first)),
+              let end = ChineseCalendarInfo.date(fromDate: monthKey(last)) else { return [] }
+        let distance = calendar.dateComponents([.month], from: start, to: end).month ?? 0
+        let months = (-120...(max(0, distance) + 120)).compactMap { offset in
+            calendar.date(byAdding: .month, value: offset, to: start)
+                .map(ChineseCalendarInfo.dateString)
+        }
+        dataCache.months = months
+        return months
     }
 
     // MARK: 月历
 
-    private func monthGrid(_ days: [Day]) -> some View {
-        VStack(spacing: 6) {
+    private func monthGrid(_ days: [Day], height: CGFloat) -> some View {
+        let rows = weeks(days)
+        let courseScale = max(6, days.map { $0.courses.count }.max() ?? 0)
+        let rowHeight = max(0, (height - 38) / CGFloat(max(1, rows.count)))
+        return VStack(spacing: 0) {
             HStack(spacing: 2) {
                 Text("周")
                     .font(.caption2.weight(.semibold))
@@ -54,48 +175,65 @@ struct NativeScheduleMonthView: View {
                 ForEach(Array(Self.weekdayLabels.enumerated()), id: \.offset) { index, label in
                     Text(label)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(index >= 5 ? Color.pink.opacity(0.8) : Color.secondary)
+                        .foregroundStyle(Color.secondary)
                         .frame(maxWidth: .infinity)
                 }
             }
 
-            ForEach(weeks(days), id: \.first?.date) { row in
+            ForEach(rows, id: \.first?.date) { row in
                 HStack(spacing: 2) {
                     Text(row.compactMap { dateIndex[$0.date]?.week }.first.map(String.init) ?? "")
-                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .font(.system(size: 10).monospacedDigit())
                         .foregroundStyle(.tertiary)
                         .frame(width: Self.gutterWidth)
                     ForEach(row) { day in
-                        dayCell(day)
+                        dayCell(day, height: rowHeight, courseScale: courseScale)
                     }
+                }
+                .overlay(alignment: .top) {
+                    Rectangle().fill(Color.secondary.opacity(0.12)).frame(height: 0.5)
                 }
             }
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 8)
-        .background { ScheduleSurface(cornerRadius: 16, isCard: true) }
+        .padding(.top, 10)
     }
 
-    private func dayCell(_ day: Day) -> some View {
+    private func dayCell(_ day: Day, height: CGFloat, courseScale: Int) -> some View {
         let isSelected = day.date == selectedDate
         let isToday = day.date == todayDate
         return Button {
             onSelect(day.date)
+            showsDayDetails = true
+            // 邻月日期对应其实际月份。
+            if monthKey(day.date) != monthKey(monthAnchor) {
+                monthAnchor = monthKey(day.date)
+            }
         } label: {
-            VStack(spacing: 1) {
+            VStack(spacing: 4) {
                 Text("\(day.number)")
-                    .font(.system(size: 16, weight: isToday || isSelected ? .bold : .medium, design: .rounded))
-                    .foregroundStyle(numberColor(day, isSelected: isSelected, isToday: isToday))
+                    .font(.system(size: 20, weight: isToday || isSelected ? .semibold : .regular))
+                    .foregroundStyle(isToday || isSelected ? Color.white : numberColor(day, isSelected: false, isToday: false))
+                    .frame(width: 32, height: 32)
+                    .background {
+                        if isToday {
+                            Circle().fill(Color.red)
+                        } else if isSelected {
+                            Circle().fill(colorScheme == .dark ? Color.white.opacity(0.25) : Color.primary)
+                        }
+                    }
                 Text(day.subtitle)
-                    .font(.system(size: 9, weight: day.isFestival ? .bold : .regular))
+                    .font(.system(size: 10, weight: .regular))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .foregroundStyle(subtitleColor(day, isSelected: isSelected))
                     .opacity(day.inMonth ? 1 : 0.4)
-                courseDots(day)
+                courseBar(day, scale: courseScale)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 50)
+            .padding(.top, 8)
+            .padding(.horizontal, 2)
+            .frame(height: height, alignment: .top)
+            .clipped()
             .overlay(alignment: .topTrailing) {
                 if let adjustment = day.adjustment {
                     Text(adjustment.badge)
@@ -114,15 +252,6 @@ struct NativeScheduleMonthView: View {
                         .opacity(day.inMonth ? 1 : 0.45)
                 }
             }
-            .background {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.cpuBrand.opacity(0.16))
-                } else if isToday {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(Color.cpuBrand.opacity(0.45), lineWidth: 1)
-                }
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -130,33 +259,27 @@ struct NativeScheduleMonthView: View {
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
     }
 
-    private func courseDots(_ day: Day) -> some View {
-        HStack(spacing: 2) {
-            ForEach(Array(day.courses.prefix(3).enumerated()), id: \.offset) { _, block in
-                Circle()
-                    .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: colorScheme, solid: themeSettings.solidCourseColor))
-                    .frame(width: 4, height: 4)
-            }
-            if day.courses.count > 3 {
-                Text("+")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(height: 5)
-        .opacity(day.inMonth ? 1 : 0.45)
+    /// 同月使用一致的比例，课程越多横条越长；空课日不画横条。
+    private func courseBar(_ day: Day, scale: Int) -> some View {
+        Capsule()
+            .fill(Color.cpuBrand)
+            .scaleEffect(x: CGFloat(day.courses.count) / CGFloat(scale), y: 1, anchor: .center)
+            .frame(height: 4)
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+            .opacity(day.courses.isEmpty ? 0 : (day.inMonth ? 0.85 : 0.3))
+            .accessibilityHidden(true)
     }
 
     private func numberColor(_ day: Day, isSelected: Bool, isToday: Bool) -> Color {
         guard day.inMonth else { return .secondary.opacity(0.45) }
         if isToday || isSelected { return Color.cpuBrand }
         if day.isStatutoryHoliday { return .pink }
-        return day.weekday >= 6 ? Color.pink.opacity(0.85) : .primary
+        return day.weekday >= 6 ? .secondary : .primary
     }
 
     private func subtitleColor(_ day: Day, isSelected: Bool) -> Color {
         if day.isStatutoryHoliday { return .pink }
-        if day.isFestival { return Color.cpuBrand }
         return .secondary
     }
 
@@ -185,7 +308,8 @@ struct NativeScheduleMonthView: View {
                 Spacer(minLength: 8)
                 if dateIndex[selectedDate] != nil {
                     Button {
-                        onOpenDay(selectedDate)
+                        opensDayAfterDismiss = true
+                        showsDayDetails = false
                     } label: {
                         Label("日视图", systemImage: "calendar.day.timeline.left")
                             .font(.caption.weight(.semibold))
@@ -223,7 +347,8 @@ struct NativeScheduleMonthView: View {
 
     private func agendaRow(_ block: NativeScheduleCourseBlock) -> some View {
         Button {
-            onCourseSelected(block, selectedDate)
+            pendingCourse = block
+            showsDayDetails = false
         } label: {
             HStack(spacing: 10) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -277,7 +402,7 @@ struct NativeScheduleMonthView: View {
     private var selectedSubtitle: String {
         var parts: [String] = []
         if let slot = dateIndex[selectedDate] { parts.append("第 \(slot.week) 周") }
-        if let info = ChineseCalendarInfo.info(forDate: selectedDate) {
+        if let info = ChineseCalendarInfo.cachedInfo(forDate: selectedDate) {
             parts.append(info.lunar.fullLabel)
             if let badge = info.badge { parts.append(badge) }
         }
@@ -305,9 +430,26 @@ struct NativeScheduleMonthView: View {
         stride(from: 0, to: days.count, by: 7).map { Array(days[$0..<min($0 + 7, days.count)]) }
     }
 
-    private func buildDays() -> [Day] {
+    private func buildDays(anchor: String? = nil) -> [Day] {
+        let key = monthKey(anchor ?? monthAnchor)
+        let revision = ChineseCalendarInfo.holidayRevision
+        if dataCache.contentRevision != contentRevision || dataCache.holidayRevision != revision
+            || dataCache.generation != calendarGeneration {
+            dataCache.days.removeAll(keepingCapacity: true)
+            dataCache.contentRevision = contentRevision
+            dataCache.holidayRevision = revision
+            dataCache.generation = calendarGeneration
+        }
+        if let days = dataCache.days[key] { return days }
+        let days = makeDays(anchor: key)
+        if dataCache.days.count >= 12 { dataCache.days.removeAll(keepingCapacity: true) }
+        dataCache.days[key] = days
+        return days
+    }
+
+    private func makeDays(anchor: String) -> [Day] {
         let calendar = ChineseCalendarInfo.gregorian
-        guard let anchor = ChineseCalendarInfo.date(fromDate: monthAnchor),
+        guard let anchor = ChineseCalendarInfo.date(fromDate: anchor),
               let monthRange = calendar.range(of: .day, in: .month, for: anchor),
               let firstOfMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: anchor)) else {
             return []
@@ -319,7 +461,7 @@ struct NativeScheduleMonthView: View {
         return (0..<total).compactMap { offset -> Day? in
             guard let date = calendar.date(byAdding: .day, value: offset - leading, to: firstOfMonth) else { return nil }
             let key = ChineseCalendarInfo.dateString(date)
-            let info = ChineseCalendarInfo.info(forDate: key)
+            let info = ChineseCalendarInfo.cachedInfo(forDate: key)
             let slot = dateIndex[key]
             let weekdayIndex = (calendar.component(.weekday, from: date) + 5) % 7 + 1
             return Day(

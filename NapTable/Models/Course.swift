@@ -189,7 +189,7 @@ nonisolated enum CourseLimits {
 // 存档约定：`Course`、`CourseTable`、`AppStateFile` 以后新增的字段一律用可选类型
 // （或者像这里一样手写 `decodeIfPresent` 给默认值）。合成的 `Decodable` 遇到缺键的
 // 非可选字段会让整份存档解码失败，旧版本写的文件就会被当成损坏的。
-extension Course {
+nonisolated extension Course {
     private enum CodingKeys: String, CodingKey {
         case id, tableId, name, weeks, weekTime, startTime, timeCount, importType
         case classroom, classNumber, teacher, testTime, testLocation, link, info, color, courseKey, hidden
@@ -233,6 +233,8 @@ nonisolated enum ImportKind {
 /// bell schedule and semester anchor alongside the name.
 nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     var id: Int
+    /// Stable across devices; older local archives acquire one on first load.
+    var syncID: String? = nil
     var name: String
     /// Per-table bell schedule override. Empty means `SchoolDefaults`.
     var classTimeList: [ClassTime]

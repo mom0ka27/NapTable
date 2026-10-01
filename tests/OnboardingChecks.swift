@@ -75,6 +75,50 @@ struct OnboardingChecks {
         store.saveNow()
         precondition(AppStore(fileURL: url).tables.isEmpty)
 
+        // 示例导入也能完成引导，且重启后仍保留独立学期和自由时间课程。
+        preferences.removeObject(forKey: PrivacyPolicy.onboardingKey)
+        let demoConsent = PrivacyConsent(defaults: preferences)
+        precondition(!demoConsent.onboardingCompleted)
+        let demoAdapter = NativeScheduleStore()
+        demoAdapter.connect(store)
+        let referenceDate = WeekCalculator.parseDay("2026-09-30")!
+        let demoTable = store.installDemoSchedule(referenceDate: referenceDate)
+        // 批量导入的更新合并后，界面仍应自动拿到最终课表和自由时间课程。
+        for _ in 0..<50 {
+            if demoAdapter.selectedSemester == String(demoTable.id), !demoAdapter.freeCourses.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        precondition(demoAdapter.selectedSemester == String(demoTable.id) && demoAdapter.selectedWeek == "1")
+        precondition(!demoAdapter.freeCourses.isEmpty)
+        precondition(store.selectedTableId == demoTable.id && store.displayWeek == 1)
+        precondition(demoTable.semesterStartMonday == "2026-09-28" && store.maxWeeks == DemoSchedule.weekCount)
+        precondition(demoTable.schoolID == nil && demoTable.termID == nil)
+        precondition(demoTable.unifiedHolidaysEnabled == false, "Holidays must not hide the demo")
+        let demoCourses = store.currentCourses
+        let odd = demoCourses.first { WeekSeries.detectKind($0.weeks) == .single }!
+        let even = demoCourses.first { WeekSeries.detectKind($0.weeks) == .double }!
+        precondition(odd.weekTime == even.weekTime && odd.startTime == even.startTime)
+        for week in 1...DemoSchedule.weekCount {
+            let logic = ScheduleLogic(courses: demoCourses, nowWeek: week)
+            let visible = Set(logic.visibleCourses.map(\.id))
+            precondition(visible.contains(odd.id) == (week % 2 == 1))
+            precondition(visible.contains(even.id) == (week % 2 == 0))
+            precondition(!logic.freeCourses.isEmpty && logic.freeCourses.allSatisfy { !visible.contains($0.id) })
+        }
+        let custom = demoCourses.first { !$0.isFreeTime && WeekSeries.detectKind($0.weeks) == .custom }!
+        precondition(ScheduleLogic(courses: demoCourses, nowWeek: custom.weeks[0]).visibleCourses.contains { $0.id == custom.id })
+        let offWeek = (1...DemoSchedule.weekCount).first { !custom.weeks.contains($0) }!
+        precondition(!ScheduleLogic(courses: demoCourses, nowWeek: offWeek).visibleCourses.contains { $0.id == custom.id })
+        store.saveNow()
+        demoConsent.completeOnboarding(hasImportedCourses: !store.currentCourses.isEmpty)
+        let persistedDemo = AppStore(fileURL: url)
+        precondition(PrivacyConsent(defaults: preferences).onboardingCompleted)
+        precondition(persistedDemo.selectedTable == demoTable && persistedDemo.currentCourses == demoCourses)
+        let secondDemo = store.installDemoSchedule(referenceDate: referenceDate)
+        precondition(secondDemo.id != demoTable.id && secondDemo.name != demoTable.name)
+        precondition(store.courses.filter { $0.tableId == demoTable.id } == demoCourses,
+                     "Importing another demo must preserve existing courses")
+
         // 读不到（这里用同名目录模拟）：不动原文件、不写盘。
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try! FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -98,6 +142,6 @@ struct OnboardingChecks {
         precondition(reset.loadErrorMessage?.contains("corrupt-") == true)
         let backups = try! FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.contains(".corrupt-") }
         precondition(backups.count == 2, "\(backups)")
-        print("PASS: privacy consent, upload gating, payload minimization, dedup/retry, onboarding import gate, fresh launch, empty persistence, explicit creation, last-table deletion, empty backup, restore selection, erase, unreadable state kept, timestamped corrupt backups")
+        print("PASS: privacy consent, upload gating, payload minimization, dedup/retry, onboarding import gate, fresh launch, empty persistence, explicit creation, last-table deletion, empty backup, restore selection, erase, demo import/persistence/odd-even/custom/free courses, unreadable state kept, timestamped corrupt backups")
     }
 }

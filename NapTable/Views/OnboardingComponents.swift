@@ -157,3 +157,90 @@ struct OnboardingPermissionCard: View {
         .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(accepted ? colors.accent.opacity(0.45) : colors.line, lineWidth: 1))
     }
 }
+
+/// The two actions people usually look for after their first import. Keep the
+/// wording in one place so the first-run page and Settings stay in sync.
+struct ScheduleUsageGuideView: View {
+    var showsTitle = true
+    @Environment(\.colorScheme) private var scheme
+    private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if showsTitle {
+                Text("导入后这样用")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(colors.ink)
+            }
+
+            usageRow(
+                number: "1",
+                symbol: "square.and.pencil",
+                title: "修改课程详细信息",
+                detail: "在自己的课表中点按课程卡片，打开“编辑课程”。可以修改课程名、老师、地点、备注、周数和上课节次，完成后点右上角“保存”。"
+            )
+
+            usageRow(
+                number: "2",
+                symbol: "plus.square",
+                title: "把课表放到桌面",
+                detail: widgetInstruction
+            )
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(colors.surface, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var widgetInstruction: String {
+        #if os(iOS)
+        return "回到 iPhone 或 iPad 主屏幕，长按空白处，点左上角“+”，搜索 NapTable，选择“今日课程”或“两日课表”，再点“添加小组件”。"
+        #else
+        return "小组件可在 iPhone 或 iPad 主屏幕添加：长按空白处，点“+”，搜索 NapTable，选择“今日课程”或“两日课表”，再点“添加小组件”。"
+        #endif
+    }
+
+    private func usageRow(number: String, symbol: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                Circle().fill(colors.soft)
+                Text(number)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(colors.accent)
+            }
+            .frame(width: 28, height: 28)
+
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(colors.accent)
+                .frame(width: 30, height: 30)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(colors.ink)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(colors.secondary)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+struct ScheduleUsageGuideScreen: View {
+    var body: some View {
+        ScrollView {
+            ScheduleUsageGuideView(showsTitle: false)
+                .padding(16)
+        }
+        .background(.appBackground)
+        .navigationTitle("使用指南")
+        .appInlineNavigationTitle()
+        .appSoftTopScrollEdge()
+    }
+}

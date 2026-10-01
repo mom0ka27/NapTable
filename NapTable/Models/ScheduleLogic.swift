@@ -152,7 +152,7 @@ nonisolated struct ScheduleLane: Identifiable {
     var face: Course { group[0] }
 }
 
-extension ScheduleLogic {
+nonisolated extension ScheduleLogic {
     /// Every non-overlapping meeting and conflict group as a lane, keyed by the
     /// face course's row id.
     var lanes: [ScheduleLane] {

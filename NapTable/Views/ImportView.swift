@@ -85,6 +85,7 @@ struct ImportView: View {
             }
             .navigationTitle(imported == nil ? "选择学校" : "导入完成")
             .appInlineNavigationTitle()
+            .modifier(ImportSearchToolbar(hideSearch: imported != nil))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(imported == nil ? "取消" : "完成") {
@@ -139,6 +140,20 @@ struct ImportView: View {
         ManualScheduleWizard(school: school, requiresCourses: requiresImport) {
             onFinish?()
             dismiss()
+        }
+    }
+}
+
+/// 移除完成页不再使用的系统搜索项，避免留下空的玻璃搜索容器。
+private struct ImportSearchToolbar: ViewModifier {
+    let hideSearch: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            content.toolbar(removing: hideSearch ? .search : nil)
+        } else {
+            content
         }
     }
 }

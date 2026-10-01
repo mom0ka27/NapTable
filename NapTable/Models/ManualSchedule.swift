@@ -235,7 +235,7 @@ nonisolated struct ClassTimeGenerator: Equatable {
 }
 
 private extension String {
-    var trimmedNilIfEmpty: String? {
+    nonisolated var trimmedNilIfEmpty: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value
     }

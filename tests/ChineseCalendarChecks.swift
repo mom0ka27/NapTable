@@ -6,7 +6,7 @@ import Foundation
 /// `tests/check-chinese-calendar.sh`
 @main
 struct ChineseCalendarChecks {
-    static func main() {
+    static func main() async {
         func expect(_ condition: Bool, _ message: @autoclosure () -> String) {
             guard condition else {
                 FileHandle.standardError.write(Data("FAIL: \(message())\n".utf8))
@@ -20,6 +20,21 @@ struct ChineseCalendarChecks {
             }
             return info
         }
+
+        // 月历缓存未命中时不触发同步构建；异步预热后与完整查询一致。
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2040-06-01") == nil, "冷查询不应生成整年缓存")
+        await ChineseCalendarInfo.prewarm(year: 2040)
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2040-06-01") == day("2040-06-01"), "预热结果一致")
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2039-12-31") != nil, "预热前一年")
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2041-01-01") != nil, "预热后一年")
+        let priorHolidays = ChineseCalendarInfo.publishedHolidays
+        let priorRevision = ChineseCalendarInfo.holidayRevision
+        ChineseCalendarInfo.usePublishedHolidays([PublishedHoliday(date: "2040-06-01", name: "测试假日")])
+        expect(ChineseCalendarInfo.holidayRevision != priorRevision, "假期变化使月历缓存版本失效")
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2040-06-01") == nil, "假期变化清除旧缓存")
+        await ChineseCalendarInfo.prewarm(year: 2040)
+        expect(ChineseCalendarInfo.cachedInfo(forDate: "2040-06-01") == day("2040-06-01"), "假期变化后重新预热")
+        ChineseCalendarInfo.usePublishedHolidays(priorHolidays)
 
         // 农历换算与干支
         let springFestival = day("2026-02-17")

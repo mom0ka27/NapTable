@@ -110,11 +110,15 @@ extension View {
     /// 顶部滚动边缘用柔和的渐隐（iOS 26 / macOS 26 起才有）；更早的系统保持原样。
     @ViewBuilder
     func appSoftTopScrollEdge() -> some View {
+        #if os(visionOS)
+        self
+        #else
         if #available(iOS 26.0, macOS 26.0, *) {
             self.scrollEdgeEffectStyle(.soft, for: .top)
         } else {
             self
         }
+        #endif
     }
 
     /// `.navigationBarTitleDisplayMode(.inline)` is unavailable on macOS; on the

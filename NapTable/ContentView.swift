@@ -37,7 +37,10 @@ struct ContentView: View {
         }
         // Schedule edits update both companion surfaces. Caring changes only
         // the Live Activity source; the displayed timetable and widgets stay put.
-        .onChange(of: scheduleStore.lastUpdatedAt) { _, _ in
+        .task(id: scheduleStore.lastUpdatedAt) {
+            // Let the first render proceed and coalesce updates from the initial connection.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             syncCompanionFeatures()
         }
         .onReceive(NotificationCenter.default.publisher(for: .naptableFollowedSourceChanged)) { _ in
@@ -50,8 +53,7 @@ struct ContentView: View {
         }
         .onAppear {
             scheduleStore.connect(store)
-            syncCompanionFeatures()
-            if store.tables.isEmpty { showImport = true }
+            if store.tables.isEmpty && ScheduleSharingService.shared.sharedSchedules.isEmpty { showImport = true }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             #if os(iOS)
@@ -72,6 +74,7 @@ struct ContentView: View {
             NativeLiveActivityController.shared.resumeReminderRestoration()
         }
         #endif
+        #if os(iOS)
         .onReceive(NativeLiveActivityController.shared.$dismissedOccurrence) { occurrence in
             guard let occurrence else {
                 showLiveActivityDismissal = false
@@ -94,7 +97,7 @@ struct ContentView: View {
                 NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: true)
             }
         } message: {
-            Text("实时通知可以在锁定屏幕上显示课程进度。是否继续显示？选择“本节课不再提醒”会跳过本次课程；选择“永不提醒”会关闭实时通知，可在设置中重新开启。")
+            Text("实时通知可以在灵动岛和锁定屏幕上显示课程进度。是否继续显示？选择“永不提醒”会关闭实时通知的功能，可在设置中重新开启。")
         }
         .onReceive(NativeLiveActivityController.shared.$restorationFailure) { restorationFailure = $0 }
         .alert("未能恢复实时通知", isPresented: Binding(
@@ -105,6 +108,7 @@ struct ContentView: View {
         } message: {
             Text(restorationFailure ?? "")
         }
+        #endif
         // 深色页面底色按主题色调，挂在最外层，弹出的页面也拿得到。
         .environment(\.appThemeBrand, themeSettings.brandRGB)
     }

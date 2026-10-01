@@ -24,11 +24,23 @@ struct SharingChecks {
         for key in keys { defaults.removeObject(forKey: key) }
         group.removeObject(forKey: "naptable.followedShare")
         let app = AppStore(fileURL: nil)
+        app.addTable(name: "翻页测试", semesterStartMonday: "2026-09-14")
         let store = NativeScheduleStore()
         store.connect(app)
         let ownCourses = app.currentCourses
         let ownWeek = app.displayWeek
         let ownPeriods = store.periods
+        let initialResult = store.result
+        let initialCalendar = store.calendar
+        let initialContentStamp = store.lastUpdatedAt
+        let browsingWeek = ownWeek == 1 ? 2 : 1
+        store.commitWeekSelection(String(browsingWeek))
+        precondition(store.selectedWeek == String(app.displayWeek), "Week selection must commit synchronously")
+        await store.refresh()
+        precondition(store.result == initialResult && store.calendar == initialCalendar,
+                     "Browsing another week must preserve semester content")
+        precondition(store.lastUpdatedAt == initialContentStamp, "Browsing must not invalidate layout caches")
+        store.commitWeekSelection(String(ownWeek))
         let meta = ShareMeta(code: "TEST123", owner: "我", schoolID: "test", schoolName: "测试学校", name: "我 · 测试学校", termID: "test", termVersion: 1, courseCount: 1, semesterStartMonday: "2026-09-14", weekCount: 4, updatedAt: "1")
         let shared = FollowedSchedule(meta: meta,
             courses: [Course(tableId: 0, name: "对方课程", weeks: [1, 2], weekTime: 1, startTime: 1, timeCount: 0, importType: ImportKind.imported)],
@@ -77,7 +89,11 @@ struct SharingChecks {
         precondition(store.isReadOnly && store.sourceLabel == "小明同学")
         precondition(store.periods.first?.startTime == "10:10")
         precondition(store.result?.cells.first?.courses.first?.name == "对方课程")
+        let sharedContentStamp = store.lastUpdatedAt
         store.commitWeekSelection("4")
+        precondition(store.lastUpdatedAt == sharedContentStamp, "Shared week browsing must preserve cached content")
+        store.commitWeekSelection("999")
+        precondition(store.selectedWeek == "4", "Shared browsing must clamp to the semester boundary")
         precondition(app.displayWeek == ownWeek && store.selectedWeek == "4")
         precondition(store.snapshot(useSharedNotifications: false)?.periods == ownPeriods)
         do {

@@ -217,7 +217,7 @@ enum ScheduleServiceError: LocalizedError {
         // Unfollowing ends the share's activity and withdraws its token.
         controller.accept(own)
         for _ in 0..<3 { await settle() }
-        precondition(remote.activityState == .ended && containing("/activities/remote", "DELETE").count == 1)
+        precondition(remote.activityState == .dismissed && containing("/activities/remote", "DELETE").count == 1)
         // A share that went away is reported, not retried in a loop.
         shareGone = true
         controller.accept(share, own: own)

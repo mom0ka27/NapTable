@@ -8,7 +8,7 @@ struct PrivacyDocumentView: View {
         (liveActivities ? PrivacyPolicy.liveText : PrivacyPolicy.basicText).components(separatedBy: "\n\n")
     }
     private var headings: [String] {
-        liveActivities ? ["由你决定是否开启", "需要哪些信息", "不同系统如何处理", "如何撤回许可"] : ["我们收集哪些信息", "这些数据用于什么", "何时上报与保存多久", "你的选择与账号安全"]
+        liveActivities ? ["由你决定是否开启", "需要哪些信息", "不同系统如何处理", "如何撤回许可"] : ["我们收集哪些信息", "这些数据用于什么", "主动分享课表", "可选的 iCloud 同步", "请求验证与账号安全", "何时上报与保存多久", "你的选择"]
     }
     private var title: String { liveActivities ? PrivacyPolicy.liveTitle : PrivacyPolicy.basicTitle }
     var body: some View {

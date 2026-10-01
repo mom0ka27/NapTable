@@ -179,7 +179,9 @@ public final class Activity<Attributes: ActivityAttributes> {
 
     public func end(_ content: ActivityContent<Attributes.ContentState>?, dismissalPolicy: ActivityUIDismissalPolicy) async {
         if let content { self.content = content }
-        activityState = .ended
+        // An immediate end removes the UI and reports dismissed, just like
+        // ActivityKit. This is also reported when the app initiated the end.
+        activityState = .dismissed
         TestActivityKit.events.append("end")
         for continuation in tokenContinuations { continuation.finish() }
         tokenContinuations = []

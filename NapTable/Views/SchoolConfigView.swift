@@ -125,7 +125,9 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                                 }
                                 Button("取消", role: .cancel) { pendingRemoval = nil }
                             } message: {
-                                Text("仅从你的列表移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。")
+                                Text(ICloudSyncService.shared.isEnabled
+                                     ? "从你的列表及已开启 iCloud 同步的设备上移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。"
+                                     : "仅从你的列表移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。")
                             }
                         }
                         Toggle(isOn: Binding(
@@ -194,7 +196,7 @@ private struct ShareOwnScheduleView: View {
     @State private var errorMessage: String?
     @State private var pendingRevoke: ShareCredential?
     @State private var revoking = false
-    /// 服务端不认凭证（403）的那条分享，确认框里改成提供「仅从本机移除」。
+    /// 服务端不认凭证（403）的那条分享，确认框里改成提供「移除管理记录」。
     @State private var rejectedCredential: ShareCredential?
 
     private var currentShare: ShareCredential? {
@@ -413,7 +415,7 @@ private struct ShareOwnScheduleView: View {
 }
 
 /// 撤销分享的确认框，挂在触发它的按钮上。服务端拒绝凭证（403）之后同一个确认框
-/// 改为只提供「仅从本机移除」。合成一个是因为同一视图上叠两个确认框不可靠。
+/// 改为只提供「移除管理记录」。合成一个是因为同一视图上叠两个确认框不可靠。
 private struct RevokeDialogs: ViewModifier {
     let credential: ShareCredential
     @Binding var pendingRevoke: ShareCredential?
@@ -434,7 +436,7 @@ private struct RevokeDialogs: ViewModifier {
                 titleVisibility: .visible
             ) {
                 if isRejected {
-                    Button("仅从本机移除", role: .destructive) { forget(credential) }
+                    Button("移除管理记录", role: .destructive) { forget(credential) }
                 } else {
                     Button("撤销并删除", role: .destructive) {
                         pendingRevoke = nil
@@ -444,7 +446,7 @@ private struct RevokeDialogs: ViewModifier {
                 Button("取消", role: .cancel) { pendingRevoke = nil; rejected = nil }
             } message: {
                 Text(isRejected
-                     ? "服务端不接受本机保存的管理凭证。仅从本机移除后，这个分享码不再显示在这里，但服务端上的分享不会被删除。"
+                     ? "服务端不接受保存的管理凭证。移除后，这个分享码不再显示在这里；开启 iCloud 同步时，也会从其他设备移除管理记录。服务端上的分享不会被删除。"
                      : "服务端会删除这份分享，朋友将无法再获取更新。已保存到对方设备上的副本不会被删除。")
             }
     }
