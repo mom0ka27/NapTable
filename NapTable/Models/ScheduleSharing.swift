@@ -68,6 +68,11 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
     /// 分享者已经撤销了这份分享（服务端返回 404）。本机的副本照常能看，只是
     /// 不会再更新。旧缓存没有这个键，所以是可选值。
     var revoked: Bool? = nil
+    var seasonalPeriods: [SeasonalClassTimes]? = nil
+
+    var effectiveSeasonalPeriods: [SeasonalClassTimes]? {
+        seasonalPeriods ?? SeasonalClassTimes.defaults(for: meta.schoolID)
+    }
 
     var isRevoked: Bool { revoked == true }
 
@@ -76,7 +81,7 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
 
     /// A complete import payload retaining the sharer's school calendar.
     var importedSchedule: ImportedSchedule {
-        ImportedSchedule(
+        var schedule = ImportedSchedule(
             name: name,
             courses: courses,
             classTimeList: classTimes,
@@ -88,6 +93,8 @@ nonisolated struct FollowedSchedule: Codable, Equatable {
             termTimezone: meta.timeZone,
             calendarAdjustments: adjustments.isEmpty ? nil : adjustments
         )
+        schedule.seasonalPeriods = effectiveSeasonalPeriods
+        return schedule
     }
 }
 
@@ -376,13 +383,15 @@ extension ScheduleSharingService {
                 return value
             }
         }
-        return FollowedSchedule(
+        var followed = FollowedSchedule(
             meta: meta,
             courses: courses,
             classTimes: classTimes,
             adjustments: schedule.calendarAdjustments ?? [],
             fetchedAt: Date()
         )
+        followed.seasonalPeriods = schedule.seasonalPeriods
+        return followed
     }
 
     private func persist(_ followed: FollowedSchedule, notify: Bool = true) {

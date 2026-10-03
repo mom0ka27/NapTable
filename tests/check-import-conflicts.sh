@@ -16,6 +16,7 @@ swiftc -swift-version 5 -parse-as-library \
     NapTable/Schedule/ScheduleModels.swift \
     NapTable/Schedule/ScheduleStore.swift \
     NapTable/Schedule/ScheduleSnapshot.swift \
+    NapTable/Schedule/ScheduleICSExport.swift \
     NapTable/Schedule/NativeWidgetSettings.swift \
     WidgetCore/*.swift \
     tests/ImportConflictChecks.swift -o "$check_dir/checks"

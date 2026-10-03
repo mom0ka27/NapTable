@@ -22,6 +22,7 @@ final class NativeScheduleStore: ObservableObject {
     @Published private(set) var result: NativeScheduleResult?
     @Published private(set) var calendar: NativeScheduleCalendar?
     @Published private(set) var periods: [NativeSchedulePeriod] = []
+    @Published private(set) var seasonalPeriods: [SeasonalClassTimes]? = nil
     @Published var selectedSemester: String = ""
     @Published var selectedWeek: String = ""
     @Published private(set) var errorMessage: String?
@@ -91,6 +92,7 @@ final class NativeScheduleStore: ObservableObject {
         }
         // 切周只改变浏览位置；课程和整学期日历由数据变更订阅更新。
         _ = update(\.selectedWeek, String(target))
+        updateDisplayedPeriods()
     }
 
     func selectSemester(_ value: String) async {
@@ -132,6 +134,7 @@ final class NativeScheduleStore: ObservableObject {
                 periods: projection.classTimes.enumerated().map {
                     NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
                 },
+                seasonalPeriods: projection.seasonalPeriods,
                 data: makeResult(projection),
                 calendar: makeCalendar(projection),
                 auth: NativeScheduleAuth(
@@ -158,6 +161,7 @@ final class NativeScheduleStore: ObservableObject {
             periods: local.classTimes.enumerated().map {
                 NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
             },
+            seasonalPeriods: local.seasonalPeriods,
             data: makeResult(local),
             calendar: makeCalendar(local),
             auth: NativeScheduleAuth(
@@ -273,7 +277,8 @@ final class NativeScheduleStore: ObservableObject {
             // / 不属于教务课表". NapTable's own import kind is the accurate
             // signal, so imported courses are still described as 教务课程.
             custom: !course.isImported,
-            orphaned: false
+            orphaned: false,
+            displayPriority: course.displayPriority
         )
     }
 
@@ -333,17 +338,11 @@ final class NativeScheduleStore: ObservableObject {
         let viewed = shares.first { $0.meta.code == viewedShareCode }
         if viewed == nil { viewedShareCode = nil; sharedWeek = nil }
         let display = viewed.map { projection(for: $0) } ?? localProjection(app)
-        let slots = display.classTimes.enumerated().map {
-            ScheduleSlot(number: $0.offset + 1, start: $0.element.start, end: $0.element.end)
-        }
-        ScheduleSlot.all = slots.isEmpty ? ScheduleSlot.fallback : slots
         _ = update(\.selectedSemester, viewed.map { "share:" + $0.meta.code } ?? String(app.selectedTableId))
         _ = update(\.selectedWeek, String(viewed == nil ? app.displayWeek : min(max(sharedWeek ?? display.currentWeek, 1), display.weekCount)))
         let zone = (viewed?.meta.timeZone ?? app.selectedTable?.termTimezone).flatMap(TimeZone.init(identifier:)) ?? Self.fallbackTimeZone
         _ = update(\.timeZone, zone)
-        var changed = update(\.periods, display.classTimes.enumerated().map {
-            NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
-        })
+        var changed = update(\.seasonalPeriods, display.seasonalPeriods)
         let choices = app.tables.map {
             NativeScheduleSemester(value: String($0.id), label: $0.name, current: String($0.id) == selectedSemester)
         } + shares.map {
@@ -353,7 +352,8 @@ final class NativeScheduleStore: ObservableObject {
         let visible = ScheduleProjection(
             identifier: selectedSemester, semesters: choices, courses: display.courses,
             classTimes: display.classTimes, semesterStartMonday: display.semesterStartMonday,
-            weekCount: display.weekCount, currentWeek: display.currentWeek, adjustments: display.adjustments
+            weekCount: display.weekCount, currentWeek: display.currentWeek, adjustments: display.adjustments,
+            seasonalPeriods: display.seasonalPeriods
         )
         // 浏览周次不属于投影内容，避免每次翻页重建整学期日期和课程。
         if lastProjection != visible {
@@ -361,6 +361,7 @@ final class NativeScheduleStore: ObservableObject {
             changed = update(\.calendar, makeCalendar(visible)) || changed
             lastProjection = visible
         }
+        updateDisplayedPeriods(projection: visible)
         // 月历和日期栏的节假日按服务端的统一假期安排算，小组件那边随 payload 同步。
         ChineseCalendarInfo.usePublishedHolidays(PublishedHoliday.fromOffDays(
             app.holidayCalendarAdjustments.filter { $0.kind == .off }.map { (date: $0.date, note: $0.note) }
@@ -398,6 +399,7 @@ final class NativeScheduleStore: ObservableObject {
         /// 调休也是按学校、按学期下发的，所以跟着来源走：关注别人的课表时用
         /// 对方学校的调休表，而不是本机这张。
         let adjustments: [CalendarAdjustment]
+        var seasonalPeriods: [SeasonalClassTimes]? = nil
     }
 
     private func localProjection(_ app: AppStore) -> ScheduleProjection {
@@ -407,11 +409,12 @@ final class NativeScheduleStore: ObservableObject {
                 NativeScheduleSemester(value: String($0.id), label: $0.name, current: $0.id == app.selectedTableId)
             },
             courses: app.currentCourses,
-            classTimes: app.classTimeList,
+            classTimes: app.selectedTable?.effectiveClassTimeList ?? SchoolDefaults.classTimeList,
             semesterStartMonday: app.effectiveSemesterStartMonday,
             weekCount: max(1, app.maxWeeks),
             currentWeek: max(1, app.liveWeek),
-            adjustments: app.selectedTable.map(app.calendarAdjustments(of:)) ?? []
+            adjustments: app.selectedTable.map(app.calendarAdjustments(of:)) ?? [],
+            seasonalPeriods: app.selectedTable?.effectiveSeasonalPeriods
         )
     }
 
@@ -432,8 +435,31 @@ final class NativeScheduleStore: ObservableObject {
             semesterStartMonday: followed.meta.semesterStartMonday,
             weekCount: weekCount,
             currentWeek: min(max(week, 1), weekCount),
-            adjustments: followed.adjustments
+            adjustments: followed.adjustments,
+            seasonalPeriods: followed.effectiveSeasonalPeriods
         )
+    }
+
+    func periods(on day: String) -> [NativeSchedulePeriod] {
+        guard let projection = lastProjection else { return periods }
+        return SeasonalClassTimes.resolve(on: day, base: projection.classTimes,
+            seasons: projection.seasonalPeriods).enumerated().map {
+                NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
+            }
+    }
+
+    private func updateDisplayedPeriods(projection: ScheduleProjection? = nil) {
+        guard let projection = projection ?? lastProjection else { return }
+        let monday = calendar?.weeks.first(where: { String($0.week) == selectedWeek })?.monday
+            ?? projection.semesterStartMonday
+        let clocks = SeasonalClassTimes.resolve(on: monday, base: projection.classTimes,
+            seasons: projection.seasonalPeriods)
+        ScheduleSlot.all = clocks.enumerated().map {
+            ScheduleSlot(number: $0.offset + 1, start: $0.element.start, end: $0.element.end)
+        }
+        _ = update(\.periods, clocks.enumerated().map {
+            NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
+        })
     }
 
     private func makeResult(_ projection: ScheduleProjection) -> NativeScheduleResult {

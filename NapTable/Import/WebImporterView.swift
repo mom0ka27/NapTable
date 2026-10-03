@@ -25,6 +25,7 @@ struct WebImporterView: View {
     @State private var state: WebImportState = .loading
     @State private var didStartExtraction = false
     @State private var statusMessage = "正在打开登录页面…"
+    @State private var currentURL = ""
     @State private var progress = 0.0
     @State private var parsed: ImportedSchedule?
     /// Bumped to ask the web view to load the entry page again.
@@ -36,12 +37,15 @@ struct WebImporterView: View {
     @State private var tableName = ""
     /// 避开同名课表后的默认名，名称留空时用它。
     @State private var defaultName = ""
-    /// 撞车的时段选了哪一节：组 id -> `parsed.courses` 下标。每次重新解析清空。
+    /// 重叠的时段优先显示哪一节：组 id -> `parsed.courses` 下标。每次重新解析清空。
     @State private var conflictChoice: [Int: Int] = [:]
-    /// 只有部分周次重叠的那几节怎么处理：`parsed.courses` 下标 -> 处理方式。
-    @State private var conflictDispositions: [Int: ImportConflictDisposition] = [:]
     /// 页面上的学期和当前学期对不上时，点「导入」先问一次。
     @State private var confirmingTermMismatch = false
+    /// 人大本科平台登录前后使用同一个单页地址，首次解析失败时短暂轮询，
+    /// 等待登录完成和课表页面渲染出来。
+    @State private var automaticRucRetryTask: Task<Void, Never>?
+    @State private var rucRetryWindow = WebImportRetryWindow(timeout: 240)
+    @State private var latestRucWaitMessage = ""
 
     /// `initialMode` is the destination chosen on the import hub. Without it the
     /// sheet always started on `.replaceCurrent`, which made the hub's
@@ -72,8 +76,7 @@ struct WebImporterView: View {
                     ImportedScheduleForm(
                         schedule: parsed, mode: $mode, tableName: $tableName,
                         defaultName: defaultName, nameTaken: nameTaken,
-                        conflicts: conflicts, conflictChoice: $conflictChoice,
-                        conflictDispositions: $conflictDispositions
+                        conflicts: conflicts, conflictChoice: $conflictChoice
                     )
                 }
             }
@@ -81,6 +84,10 @@ struct WebImporterView: View {
                 // Start fetching as soon as the import route is selected.
                 // The pipeline validates the matching term before confirmation.
                 _ = try? await ScheduleSharingService.shared.loadSchools()
+            }
+            .onDisappear {
+                automaticRucRetryTask?.cancel()
+                automaticRucRetryTask = nil
             }
             .safeAreaInset(edge: .bottom) {
                 if requiresCourses && parsed?.courses.isEmpty == true {
@@ -94,6 +101,8 @@ struct WebImporterView: View {
                         .padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
                 }
             }
+            .onChange(of: mode) { _, _ in conflictChoice = [:] }
+            .onChange(of: store.selectedTableId) { _, _ in conflictChoice = [:] }
             .navigationTitle(parsed == nil ? school.pageTitle : "确认导入")
             .appInlineNavigationTitle()
             .toolbar {
@@ -105,11 +114,11 @@ struct WebImporterView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     if let parsed {
                         Button("导入") {
+                            guard !hasUnresolvedConflicts else { return }
                             if parsed.termMismatch != nil { confirmingTermMismatch = true; return }
                             onFinish(resolved(parsed), mode)
                             dismiss()
                         }
-                        // 冲突没选完就导入，等于替用户随便留一节，所以先拦住。
                         .disabled((requiresCourses && parsed.courses.isEmpty) || hasUnresolvedConflicts || nameTaken)
                         // 挂在「导入」按钮上：iOS 26 起确认框从触发它的视图旁边弹出。
                         .confirmationDialog(
@@ -118,6 +127,7 @@ struct WebImporterView: View {
                             titleVisibility: .visible
                         ) {
                             Button("仍然导入") {
+                                guard !hasUnresolvedConflicts else { return }
                                 onFinish(resolved(parsed), mode)
                                 dismiss()
                             }
@@ -147,36 +157,33 @@ struct WebImporterView: View {
 
     /// 同一时段撞在一起的课。下标指向 `parsed.courses`，所以每次重新解析都要
     /// 连同 `conflictChoice` 一起作废。
-    /// 选定一节之后，组里和它不相交的成员会重新分成后续的组接着问。
+    /// 选定一节之后，组里和它不相交的成员可以继续选择优先显示。
+    private var conflictCourses: [Course] {
+        (mode == .appendToCurrent ? store.currentCourses : []) + (parsed?.courses ?? [])
+    }
+
     private var conflicts: [ImportConflictGroup] {
-        ImportConflictFinder.expandedGroups(in: parsed?.courses ?? [], keeping: conflictChoice)
+        ImportConflictFinder.expandedGroups(in: conflictCourses, keeping: conflictChoice)
     }
 
-    /// 还没选保留哪一节，或者部分重叠的那几节还没说怎么处理。
     private var hasUnresolvedConflicts: Bool {
-        ImportConflictFinder.hasUnresolvedConflicts(
-            in: parsed?.courses ?? [], keeping: conflictChoice, dispositions: conflictDispositions
-        )
+        ImportConflictFinder.hasUnresolvedConflicts(in: conflictCourses, keeping: conflictChoice)
     }
 
-    /// 写库之前把没选中的那几节收起来。
     /// 从确认页回到网页。页面还停在课表页上：回到「已加载」让「重新解析」直接重新读取；
     /// `didStartExtraction` 保持为真，免得页面一有动静就又自动提取。
     private func backToPage() {
         parsed = nil
         conflictChoice = [:]
-        conflictDispositions = [:]
         state = .loaded
-        statusMessage = "已返回课表页面。需要重新读取时点右上角「重新解析」。"
+        statusMessage = "需要重新读取时，点右上角「重新解析」。"
     }
 
     private func resolved(_ schedule: ImportedSchedule) -> ImportedSchedule {
-        var value = schedule
-        value.name = effectiveName
-        value.courses = ImportConflictFinder.apply(
-            keeping: conflictChoice, dispositions: conflictDispositions,
-            to: schedule.courses, groups: conflicts
+        var value = schedule.selectingDisplayPriorities(
+            conflictChoice, existing: mode == .appendToCurrent ? store.currentCourses : []
         )
+        value.name = effectiveName
         return value
     }
 
@@ -193,6 +200,7 @@ struct WebImporterView: View {
                         state: $state,
                         didStartExtraction: $didStartExtraction,
                         statusMessage: $statusMessage,
+                        currentURL: $currentURL,
                         progress: $progress,
                         reloadToken: reloadToken,
                         extractToken: extractToken,
@@ -200,7 +208,7 @@ struct WebImporterView: View {
                     )
                     if state == .importing {
                         Color.black.opacity(0.18).ignoresSafeArea()
-                        ProgressView("正在读取课程与学校配置…")
+                        ProgressView("正在整理课表…")
                             .padding(20)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
@@ -210,23 +218,32 @@ struct WebImporterView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 8) {
-            if state == .importing {
-                ProgressView().controlSize(.small)
-            } else {
-                Image(systemName: state.isFailure ? "exclamationmark.triangle.fill" : "info.circle")
-                    .foregroundStyle(state.isFailure ? .orange : .secondary)
-            }
-            Text(statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(6)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
-            if progress > 0, progress < 1 {
-                Text("\(Int(progress * 100))%")
-                    .font(.caption.monospacedDigit())
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if state == .importing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: state.isFailure ? "exclamationmark.triangle.fill" : "info.circle")
+                        .foregroundStyle(state.isFailure ? .orange : .secondary)
+                }
+                Text(statusMessage)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(6)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                if progress > 0, progress < 1 {
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !currentURL.isEmpty {
+                Text("网址：\(currentURL)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 12)
@@ -240,6 +257,9 @@ struct WebImporterView: View {
     /// page the user navigated to: reloading the entry page there would throw
     /// them back to the login screen.
     private func retry() {
+        automaticRucRetryTask?.cancel()
+        automaticRucRetryTask = nil
+        rucRetryWindow.reset()
         didStartExtraction = false
         if state == .loaded || state == .finished || state == .failed {
             state = .loaded
@@ -265,7 +285,7 @@ struct WebImporterView: View {
 
     private func bannerView(_ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
+            Image(systemName: "info.circle").foregroundStyle(.secondary)
             Text(text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -277,21 +297,23 @@ struct WebImporterView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.1))
+        .background(Color.appSecondaryGroupedBackground)
     }
 
     private func handleExtraction(_ result: Result<String, Error>) {
         switch result {
         case .success(let payload):
+            automaticRucRetryTask?.cancel()
+            automaticRucRetryTask = nil
+            rucRetryWindow.reset()
             state = .importing
-            statusMessage = "正在解析课表并匹配学校学期…"
+            statusMessage = "正在整理课表…"
             ImportPipeline.shared.ingest(payload: payload, school: school) { outcome in
                 switch outcome {
                 case .success(let schedule):
                     state = .finished
                     statusMessage = "已解析 \(schedule.courses.count) 条课程安排"
                     conflictChoice = [:]
-                    conflictDispositions = [:]
                     parsed = schedule
                     defaultName = store.uniqueTableName(schedule.name)
                     tableName = defaultName
@@ -301,9 +323,47 @@ struct WebImporterView: View {
                 }
             }
         case .failure(let error):
+            // 只等待明确的登录/页面未就绪；格式变化和脚本异常直接显示错误。
+            if school.serviceSchoolID == "ruc",
+               let importError = error as? ImportError, importError.shouldRetryWhenPageLoads {
+                latestRucWaitMessage = error.localizedDescription
+                if rucRetryWindow.canRetry() {
+                    state = .loaded
+                    statusMessage = "正在等待登录和课表页面完成，随后会自动重试…\n" + latestRucWaitMessage
+                    scheduleAutomaticRucRetry()
+                } else {
+                    finishRucWait()
+                }
+                return
+            }
+            automaticRucRetryTask?.cancel()
+            automaticRucRetryTask = nil
             state = .failed
             statusMessage = error.localizedDescription
         }
+    }
+
+    private func scheduleAutomaticRucRetry() {
+        guard automaticRucRetryTask == nil else { return }
+        automaticRucRetryTask = Task { @MainActor in
+            // 最长等待约四分钟；用户仍可随时点「重新解析」或返回。
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, parsed == nil, state == .loaded else { return }
+                guard rucRetryWindow.canRetry() else {
+                    finishRucWait()
+                    return
+                }
+                extractToken += 1
+            }
+        }
+    }
+
+    private func finishRucWait() {
+        automaticRucRetryTask?.cancel()
+        automaticRucRetryTask = nil
+        state = .failed
+        statusMessage = "等待课表页面超时。请确认网页已显示课表，再点「重新解析」。\n" + latestRucWaitMessage
     }
 }
 
@@ -328,6 +388,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     let state: Binding<WebImportState>
     let didStartExtraction: Binding<Bool>
     let statusMessage: Binding<String>
+    let currentURL: Binding<String>
     let progress: Binding<Double>
     let onExtract: (Result<String, Error>) -> Void
 
@@ -337,6 +398,13 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     #endif
     private var observation: NSKeyValueObservation?
     private var isExtracting = false
+    /// 防止登录成功后重复打开学校课表页；用户手动进入目标页时仍会照常解析。
+    private var didRequestPostLoginNavigation = false
+    private var rucLoginFlow = RucLoginFlow()
+    private var rucPageMonitor: Task<Void, Never>?
+    private var isRucUndergraduate: Bool {
+        school.serviceSchoolID == "ruc" && Self.host(of: school.targetURL) == "jw.ruc.edu.cn"
+    }
     private var lastPageFacts: String?
     /// 最近几次主框架跳转经过的地址（去掉查询参数，ticket 不外露），跳转失败时附在提示里。
     private var redirectTrail: [String] = []
@@ -352,6 +420,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         state: Binding<WebImportState>,
         didStartExtraction: Binding<Bool>,
         statusMessage: Binding<String>,
+        currentURL: Binding<String>,
         progress: Binding<Double>,
         reloadToken: Int,
         extractToken: Int,
@@ -361,6 +430,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         self.state = state
         self.didStartExtraction = didStartExtraction
         self.statusMessage = statusMessage
+        self.currentURL = currentURL
         self.progress = progress
         self.lastReloadToken = reloadToken
         self.lastExtractToken = extractToken
@@ -373,6 +443,8 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
             lastReloadToken = tokens.reload
             didStartExtraction.wrappedValue = false
             clearedLoopCookies = false
+            didRequestPostLoginNavigation = false
+            rucLoginFlow = RucLoginFlow()
             redirectTrail = []
             if let url = URL(string: school.initialURL) {
                 webView.load(URLRequest(url: url))
@@ -380,7 +452,6 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         }
         if tokens.extract != lastExtractToken {
             lastExtractToken = tokens.extract
-            isExtracting = false
             startExtraction()
         }
     }
@@ -391,7 +462,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         let controller = WKUserContentController()
         controller.add(coordinator, name: "SnackbarJSChannel")
         controller.add(coordinator, name: "NapTableBridge")
-        if coordinator.school.serviceSchoolID == "sysu" {
+        if ["sysu", "ruc"].contains(coordinator.school.serviceSchoolID) {
             controller.add(coordinator, name: "NapTableRoute")
             controller.addUserScript(WKUserScript(source: """
             (() => {
@@ -439,14 +510,42 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
                 self?.progress.wrappedValue = webView.estimatedProgress
             }
         }
+        if isRucUndergraduate {
+            rucPageMonitor?.cancel()
+            rucPageMonitor = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { return }
+                    guard let self else { return }
+                    await self.advanceRucPageIfNeeded()
+                }
+            }
+        }
+    }
+
+    /// 不依赖 didFinish/hash 事件：网页停在首页后异步初始化，也能继续跳转。
+    private func advanceRucPageIfNeeded() async {
+        guard let webView, !webView.isLoading, !isExtracting,
+              state.wrappedValue == .loaded || state.wrappedValue == .loading else { return }
+        let url = webView.url?.absoluteString ?? ""
+        guard RucLoginFlow.isPortal(url)
+            || URLComponents(string: url)?.path.lowercased() == "/cas/oauth2.0/callbackauthorize" else { return }
+        if await navigateAfterLoginIfNeeded(webView, url: url) { return }
+        guard webView.url?.absoluteString == url,
+              state.wrappedValue == .loaded || state.wrappedValue == .loading else { return }
+        state.wrappedValue = .loaded
+        currentURL.wrappedValue = url
+        checkTarget(url)
     }
 
     func stopObserving() {
+        rucPageMonitor?.cancel()
+        rucPageMonitor = nil
         observation?.invalidate()
         observation = nil
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "SnackbarJSChannel")
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "NapTableBridge")
-        if school.serviceSchoolID == "sysu" {
+        if ["sysu", "ruc"].contains(school.serviceSchoolID) {
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: "NapTableRoute")
         }
     }
@@ -455,26 +554,126 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let url = webView.url?.absoluteString ?? ""
+        handleLoadedPage(webView, url: url)
+    }
+
+    /// 同时处理完整导航和 SPA 路由变化；CAS 回调、首页与课表页均走同一流程。
+    private func handleLoadedPage(_ webView: WKWebView, url: String) {
+        currentURL.wrappedValue = url
         guard state.wrappedValue != .importing, state.wrappedValue != .finished else { return }
         state.wrappedValue = .loaded
-        checkTarget(url)
+        Task { @MainActor [weak self, weak webView] in
+            guard let self, let webView else { return }
+            if await self.navigateAfterLoginIfNeeded(webView, url: url) { return }
+            guard webView.url?.absoluteString == url else { return }
+            self.checkTarget(url)
+        }
+    }
+
+    /// Some portals return to a home page after authentication instead of
+    /// opening the timetable. Give those routes a configured second hop, while
+    /// leaving the login page alone until the user actually signs in.
+    private func navigateAfterLoginIfNeeded(_ webView: WKWebView, url: String) async -> Bool {
+        if isRucUndergraduate { return await navigateRucAfterLoginIfNeeded(webView, url: url) }
+        guard let destination = school.postLoginURL,
+              !destination.isEmpty,
+              !didRequestPostLoginNavigation,
+              !matches(url, pattern: school.targetURL),
+              let destinationURL = URL(string: destination),
+              let currentHost = webView.url?.host?.lowercased(),
+              currentHost == Self.host(of: school.targetURL) else { return false }
+
+        let loginPageScript = """
+        (() => {
+          const path = location.pathname.toLowerCase();
+          const visiblePassword = Array.from(document.querySelectorAll('input[type="password"]'))
+            .some((element) => getComputedStyle(element).display !== 'none');
+          return path.includes('login') || (visiblePassword && !!document.querySelector('#dl'));
+        })();
+        """
+        let value = try? await webView.evaluateJavaScript(loginPageScript)
+        let isLoginPage = (value as? Bool) ?? true
+        guard !isLoginPage else { return false }
+
+        didRequestPostLoginNavigation = true
+        statusMessage.wrappedValue = "登录成功，正在打开学生个人课表…"
+        webView.load(URLRequest(url: destinationURL))
+        return true
+    }
+
+    private func navigateRucAfterLoginIfNeeded(_ webView: WKWebView, url: String) async -> Bool {
+        guard !webView.isLoading else { return false }
+        guard let page = URLComponents(string: url), page.scheme == "https",
+              page.host?.lowercased() == "cas.ruc.edu.cn" || RucLoginFlow.isPortal(url) else { return false }
+        let rucPageStateScript = """
+        (() => {
+          const visiblePassword = Array.from(document.querySelectorAll('input[type="password"]'))
+            .some((element) => element.getClientRects().length > 0
+              && getComputedStyle(element).visibility !== 'hidden');
+          return {
+            login: location.pathname.toLowerCase().includes('login') || visiblePassword,
+            ready: typeof Qz !== 'undefined' && !!(Qz.loginUser && Qz.loginUser.userType
+              && window.app && window.app.$router && window.app.$store),
+          };
+        })();
+        """
+        guard let facts = try? await webView.evaluateJavaScript(rucPageStateScript) as? [String: Any],
+              webView.url?.absoluteString == url,
+              state.wrappedValue != .importing, state.wrappedValue != .finished else { return false }
+        guard let destination = rucLoginFlow.destination(after: url,
+            isLoginPage: facts["login"] as? Bool ?? true,
+            portalReady: facts["ready"] as? Bool ?? false) else { return false }
+        statusMessage.wrappedValue = destination.absoluteString == RucLoginFlow.homeURL
+            ? "认证完成，正在打开教务系统…" : "登录成功，正在打开「课表查看」…"
+        // 同文档的 hash 跳转可能立即报告新路由，先释放导航轮询的锁。
+        isExtracting = false
+        if destination.absoluteString == RucLoginFlow.timetableURL {
+            let rucTimetableNavigationScript = """
+            (() => {
+              const route = '/student/student-course-list/';
+              const router = window.app && window.app.$router;
+              try {
+                if (router && typeof router.replace === 'function') {
+                  const result = router.replace(route);
+                  if (result && typeof result.catch === 'function') {
+                    result.catch(() => { location.hash = route; });
+                  }
+                } else {
+                  location.hash = route;
+                }
+                return true;
+              } catch (_) {
+                return false;
+              }
+            })();
+            """
+            if let moved = try? await webView.evaluateJavaScript(rucTimetableNavigationScript) as? Bool, moved {
+                return true
+            }
+        }
+        webView.load(URLRequest(url: destination))
+        return true
     }
 
     private func checkTarget(_ url: String) {
-        guard state.wrappedValue != .importing, state.wrappedValue != .finished,
-              !didStartExtraction.wrappedValue else { return }
+        guard state.wrappedValue != .importing, state.wrappedValue != .finished else { return }
+        if isRucUndergraduate, !RucLoginFlow.isTimetable(url) {
+            if RucLoginFlow.isPortal(url) {
+                // 首页的异步初始化尚未完成时，继续轮询导航，不能把首页预览当作导入结果。
+                startExtraction()
+            } else {
+                statusMessage.wrappedValue = "请在人大统一身份认证页面完成登录，随后会自动进入「课表查看」。"
+            }
+            return
+        }
+        guard !didStartExtraction.wrappedValue else { return }
         if matches(url, pattern: school.targetURL) {
             didStartExtraction.wrappedValue = true
             // `startExtraction` owns the `delayTime` wait so that `preExtractJS`
             // runs as soon as the target page is reached, like the Flutter app.
             startExtraction()
-        } else if !school.redirectURL.isEmpty, url.hasPrefix(school.redirectURL) {
-            statusMessage.wrappedValue = "已登录，正在打开课表页面…"
         } else {
-            let path = URL(string: url)?.path ?? url
-            statusMessage.wrappedValue = "当前页面：\(path)\n"
-                + "请在这个页面里登录，并手动进入「我的课表」；到达课表页面后会自动读取。"
-                + "如果已经能看到课表但仍没反应，点右上角「重新解析」。"
+            statusMessage.wrappedValue = "未自动读取课表时，可点右上角「重新解析」。"
         }
     }
 
@@ -483,10 +682,12 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        currentURL.wrappedValue = webView.url?.absoluteString ?? ""
         recordHop(webView.url)
     }
 
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        currentURL.wrappedValue = webView.url?.absoluteString ?? ""
         recordHop(webView.url)
     }
 
@@ -566,7 +767,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         // 页面里的第三方 iframe 也能调到 messageHandlers，只听主框架的。
         guard message.frameInfo.isMainFrame else { return }
         if message.name == "NapTableRoute", let url = message.body as? String {
-            if state.wrappedValue == .loaded { checkTarget(url) }
+            if let webView { handleLoadedPage(webView, url: url) }
             return
         }
         if let text = message.body as? String {
@@ -616,6 +817,13 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     /// the stable prefix can be matched.
     private func matches(_ url: String, pattern: String) -> Bool {
         guard !pattern.isEmpty else { return false }
+        // 南审 CAS 回调可能带显式 :443，ASP.NET 路径大小写也不固定。
+        if school.serviceSchoolID == "nau", let page = URLComponents(string: url) {
+            return ["http", "https"].contains(page.scheme ?? "")
+                && page.host?.lowercased() == "jwc.nau.edu.cn"
+                && page.path.lowercased().hasPrefix("/students/")
+        }
+        if isRucUndergraduate { return RucLoginFlow.isTimetable(url) }
         if school.serviceSchoolID == "sysu",
            let page = URLComponents(string: url), let target = URLComponents(string: pattern) {
             let path = page.path.replacingOccurrences(of: "/+", with: "/", options: .regularExpression)
@@ -645,17 +853,34 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     /// tab that loads the real table, so extracting in the same tick would read
     /// a table that is not there yet.
     private func startExtraction() {
-        // 学校脚本只该在教务系统自己的页面上跑。停在登录页或别的站点时直接提示，
-        // 不把脚本（和它读到的内容）交给别人的页面。中大的脚本自己检查来源。
-        if school.serviceSchoolID != "sysu", let problem = hostMismatch() {
-            isExtracting = false
-            onExtract(.failure(ImportError.notReady(problem)))
-            return
-        }
+        guard !isExtracting else { return }
         let pre = school.preExtractJS
         let delay = max(0, school.delayTime)
+        isExtracting = true
         Task { @MainActor [weak self] in
             guard let self else { return }
+            if isRucUndergraduate, let webView {
+                guard !webView.isLoading else {
+                    isExtracting = false
+                    onExtract(.failure(ImportError.notReady("正在等待教务页面加载完成…")))
+                    return
+                }
+                let url = webView.url?.absoluteString ?? ""
+                if await navigateAfterLoginIfNeeded(webView, url: url) {
+                    return
+                }
+                guard RucLoginFlow.isTimetable(webView.url?.absoluteString ?? "") else {
+                    isExtracting = false
+                    onExtract(.failure(ImportError.notReady("正在等待统一认证和教务首页初始化，随后会自动进入「课表查看」。")))
+                    return
+                }
+            }
+            // 只在学校教务系统自身的页面运行提取脚本。
+            if school.serviceSchoolID != "sysu", let problem = hostMismatch() {
+                isExtracting = false
+                onExtract(.failure(ImportError.notReady(problem)))
+                return
+            }
             if !pre.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let webView = self.webView {
                 // A failing pre-script is deliberately not fatal: Flutter runs it
                 // as a separate, fire-and-forget script, so a missing button must
@@ -674,7 +899,7 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         guard let target = Self.host(of: school.targetURL) else { return nil }
         let current = webView?.url?.host?.lowercased()
         guard current != target else { return nil }
-        return "当前页面（\(current ?? "未打开")）不是教务系统的课表页。请先登录，并进入「我的课表」页面，再点右上角「重新解析」。"
+        return "请先登录学校系统，进入教务或选课系统后点右上角「重新解析」。"
     }
 
     /// `targetUrl` 可能带 `*default` 这种通配段，`URL(string:)` 不一定认，所以手动取 host。
@@ -687,8 +912,13 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
     }
 
     private func runExtraction() {
-        guard let webView, !isExtracting else { return }
-        isExtracting = true
+        guard let webView else { isExtracting = false; return }
+        // 延时期间发生了跳转时，不在 CAS 登录页或首页上执行课表提取。
+        if isRucUndergraduate, webView.isLoading || !RucLoginFlow.isTimetable(webView.url?.absoluteString ?? "") {
+            isExtracting = false
+            onExtract(.failure(ImportError.notReady("课表页面仍在跳转，请稍候。")))
+            return
+        }
         statusMessage.wrappedValue = "正在读取课表数据…"
         lastPageFacts = nil
         Task { @MainActor in lastPageFacts = await pageFacts(of: webView) }
@@ -706,7 +936,8 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
         try {
           \(extract)
         } catch (error) {
-          "NAP_ERROR:" + (error && error.message ? error.message : String(error));
+          (error && error.name === "NapTableNotReady" ? "NAP_WAIT:" : "NAP_ERROR:")
+            + (error && error.message ? error.message : String(error));
         }
         """
         Task { @MainActor in
@@ -717,13 +948,16 @@ final class SchoolWebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, 
                     // The extractor returned nothing: the page is not the one the
                     // school's script expects, or its data has not loaded yet.
                     onExtract(.failure(ImportError.emptyResult(
-                        "学校解析脚本没有返回内容" + pageSuffix
-                            + "。请确认已经登录并停在课表页面（页面上能看到课程表），然后点「重新解析」。"
+                        "未读取到课表，请确认已登录学校系统，再点「重新解析」。" + pageSuffix
                     )))
                     return
                 }
+                if text.hasPrefix("NAP_WAIT:") {
+                    onExtract(.failure(ImportError.notReady(String(text.dropFirst("NAP_WAIT:".count)) + pageSuffix)))
+                    return
+                }
                 if text.hasPrefix("NAP_ERROR:") {
-                    let detail = text.replacingOccurrences(of: "NAP_ERROR:", with: "")
+                    let detail = String(text.dropFirst("NAP_ERROR:".count))
                     onExtract(.failure(ImportError.emptyResult(
                         "学校解析脚本在页面里出错了：" + detail + pageSuffix
                     )))

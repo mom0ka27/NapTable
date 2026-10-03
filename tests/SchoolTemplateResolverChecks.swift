@@ -1,8 +1,32 @@
 import Foundation
 
+private final class SchoolConfigurationStubProtocol: URLProtocol {
+    static var responseBody = Data()
+    static var offline = false
+    static var requestCount = 0
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path == "/v1/schools"
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requestCount += 1
+        if Self.offline {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.responseBody)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @main
 struct SchoolTemplateResolverChecks {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
         func term(_ id: String, _ start: String, _ time: String = "08:00") -> ServiceTermConfiguration {
             ServiceTermConfiguration(id: id, version: 3, semesterStartMonday: start, weekCount: 18,
                 periods: [ServiceClassPeriod(id: 1, name: "第1节", start: time, end: "09:00")],
@@ -66,6 +90,63 @@ struct SchoolTemplateResolverChecks {
         precondition(SchoolTemplateResolver.semesterName(startMonday: "2027-02-22", hint: "2026-2027学年 第1学期", now: now) == "2027 春")
         precondition(SchoolTemplateResolver.semesterName(startMonday: nil, hint: "2025-2026学年第二学期", now: now) == "2026 春")
         precondition(SchoolTemplateResolver.semesterName(startMonday: nil, hint: "我的课表", now: now) == "2026 秋")
+        try await checkServerSchoolConfiguration(term: term("2026-fall", "2026-09-14", "08:10"))
         print("PASS: semester table names, server current term, page term over current term, academic-year matching, active/upcoming selection, template priority, authoritative fields, missing school/term and ambiguity")
+    }
+
+    @MainActor private static func checkServerSchoolConfiguration(term: ServiceTermConfiguration) async throws {
+        precondition(URLProtocol.registerClass(SchoolConfigurationStubProtocol.self))
+        let service = ScheduleSharingService.shared
+        let defaults = UserDefaults.standard
+        let cacheKey = "naptable.schoolsCache." + service.serverURLString
+        let previousCache = defaults.data(forKey: cacheKey)
+        defaults.removeObject(forKey: cacheKey)
+        defer {
+            defaults.set(previousCache, forKey: cacheKey)
+            URLProtocol.unregisterClass(SchoolConfigurationStubProtocol.self)
+        }
+        let importableIDs = Set(SchoolCatalog.all.map(\.serviceSchoolID))
+        precondition(importableIDs.contains("njtech"))
+        precondition(importableIDs.contains("xjtu"))
+        precondition(importableIDs.contains("ruc"))
+        precondition(SchoolCatalog.all.filter { $0.serviceSchoolID == "ruc" }.count == 2)
+        let rucUndergraduate = SchoolCatalog.all.first { $0.pinyin == "zhongguorenmindaxuebenkejiaowu" }!
+        precondition(rucUndergraduate.serviceSchoolID == "ruc")
+        precondition(rucUndergraduate.initialURL == RucLoginFlow.loginURL)
+        precondition(rucUndergraduate.targetURL == RucLoginFlow.timetableURL)
+        precondition(rucUndergraduate.postLoginURL == RucLoginFlow.timetableURL)
+        precondition(rucUndergraduate.extractJS == SchoolCatalog.rucExtractJS)
+        let xjtu = SchoolCatalog.all.first { $0.serviceSchoolID == "xjtu" }!
+        precondition(xjtu.hasExtractor && xjtu.extractJS == SchoolCatalog.xjtuExtractJS)
+        precondition(xjtu.initialURL == "https://ehall.xjtu.edu.cn/portal/html/select_role.html?appId=4770397878132218")
+        let configured = (importableIDs.sorted() + ["cpu"]).map {
+            ServiceSchoolConfiguration(id: $0, name: $0 == "njtech" ? "南京工业大学" : $0,
+                timezone: "Asia/Shanghai", terms: [term], note: "")
+        }
+        SchoolConfigurationStubProtocol.responseBody = try JSONEncoder().encode(["schools": configured])
+        let loaded = try await service.loadSchools()
+        precondition(SchoolConfigurationStubProtocol.requestCount == 1)
+        precondition(!service.usingCachedSchools)
+        precondition(Set(loaded.map(\.id)) == importableIDs,
+                     "Server configuration must retain every importable school, including njtech")
+        let schedule = ImportedSchedule(name: "2026-2027学年第1学期", courses: [])
+        let resolved = try SchoolTemplateResolver.applying(to: schedule, schoolID: "njtech", schools: loaded)
+        precondition(resolved.schoolID == "njtech" && resolved.termID == term.id)
+        precondition(resolved.classTimeList?.first?.start == "08:10")
+        let xjtuSchedule = ImportedSchedule(name: "2026-2027-1", courses: [])
+        let xjtuResolved = try SchoolTemplateResolver.applying(to: xjtuSchedule, schoolID: "xjtu", schools: loaded)
+        precondition(xjtuResolved.schoolID == "xjtu" && xjtuResolved.termID == term.id)
+        precondition(xjtuResolved.classTimeList?.first?.start == "08:10")
+
+        SchoolConfigurationStubProtocol.offline = true
+        let cached = try await service.loadSchools()
+        precondition(SchoolConfigurationStubProtocol.requestCount == 2)
+        precondition(service.usingCachedSchools && cached == loaded)
+        let cachedSchedule = try SchoolTemplateResolver.applying(to: schedule, schoolID: "njtech", schools: cached)
+        precondition(cachedSchedule.schoolID == "njtech" && cachedSchedule.termID == term.id)
+        let cachedXjtu = try SchoolTemplateResolver.applying(to: xjtuSchedule, schoolID: "xjtu", schools: cached)
+        precondition(cachedXjtu.schoolID == "xjtu" && cachedXjtu.termID == term.id)
+        precondition(cachedXjtu.classTimeList == xjtuResolved.classTimeList)
+        print("PASS: all importable schools survive server and offline-cache filtering; NJTECH and XJTU use their configured terms and class times")
     }
 }

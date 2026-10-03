@@ -45,6 +45,11 @@ extension SchoolCatalog {
 
       const clean = (value) => String(value == null ? "" : value).replace(/\s+/g, " ").trim();
       const tagOf = (node) => String(node.tagName || "").toUpperCase();
+      const cleanClassroom = (value) => {
+        // 教务地点只保留「-」后的教室，再去掉「xx校区」前缀。
+        const room = value.slice(value.indexOf("-") + 1);
+        return clean(room.replace(/^.*?校区/, ""));
+      };
 
       const range = (a, b) => {
         const out = [];
@@ -120,7 +125,7 @@ extension SchoolCatalog {
               let name = "", teacher = "", classroom = "", timing = "";
               parts.forEach((part) => {
                 if (part.title === "老师" || part.title === "教师") teacher = part.text;
-                else if (part.title === "教室") classroom = part.text;
+                else if (part.title === "教室") classroom = cleanClassroom(part.text);
                 else if (part.title.indexOf("周次") >= 0 || (/周/.test(part.text) && /\[.*节\]/.test(part.text))) timing = part.text;
                 else if (!part.title && !name) name = part.text;
               });

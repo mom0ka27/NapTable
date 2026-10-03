@@ -39,7 +39,7 @@ struct ImportView: View {
                             Label("课表已添加", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(Color.accentColor)
                             LabeledContent("课表", value: imported.name)
-                            // 让位收起来的课不算在里面，否则数字和课表上看到的对不上。
+                            // 包括完整保留的重叠课程。
                             LabeledContent("课程", value: "\(imported.courses.count { !$0.isHidden }) 门")
                         }
                         if imported.termID == nil {
@@ -160,7 +160,7 @@ private struct ImportSearchToolbar: ViewModifier {
 
 extension SchoolConfig {
     var schoolName: String {
-        ["南京大学", "中山大学", "南京林业大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
+        ["南京大学", "中山大学", "南京林业大学", "南京审计大学", "南京工业大学", "复旦大学", "西安交通大学", "浙江大学", "东南大学", "上海交通大学", "西北农林科技大学", "中国人民大学", "清华大学", "中国科学院大学"]
             .first { title.hasPrefix($0) } ?? title
     }
 }
@@ -179,10 +179,8 @@ struct ImportedScheduleForm: View {
     var nameTaken = false
     /// 同一时段撞在一起的课。空数组表示这次导入没有冲突。
     var conflicts: [ImportConflictGroup] = []
-    /// 每组选中保留的那一节：组 id -> `ImportedSchedule.courses` 下标。
+    /// 每组选中优先显示的那一节：组 id -> `ImportedSchedule.courses` 下标。
     @Binding var conflictChoice: [Int: Int]
-    /// 只有部分周次重叠的那几节怎么处理：`courses` 下标 -> 处理方式。
-    @Binding var conflictDispositions: [Int: ImportConflictDisposition]
     @State private var availableModes: [AppStore.ImportMode] = []
 
     @EnvironmentObject private var store: AppStore
@@ -194,8 +192,7 @@ struct ImportedScheduleForm: View {
         defaultName: String = "",
         nameTaken: Bool = false,
         conflicts: [ImportConflictGroup] = [],
-        conflictChoice: Binding<[Int: Int]> = .constant([:]),
-        conflictDispositions: Binding<[Int: ImportConflictDisposition]> = .constant([:])
+        conflictChoice: Binding<[Int: Int]> = .constant([:])
     ) {
         self.schedule = schedule
         _mode = mode
@@ -204,7 +201,6 @@ struct ImportedScheduleForm: View {
         self.nameTaken = nameTaken
         self.conflicts = conflicts
         _conflictChoice = conflictChoice
-        _conflictDispositions = conflictDispositions
     }
 
     var body: some View {
@@ -228,24 +224,18 @@ struct ImportedScheduleForm: View {
                     LabeledContent("学期开始", value: start)
                 }
                 if !conflicts.isEmpty {
-                    Label("\(conflicts.count) 处时间冲突待处理", systemImage: "exclamationmark.triangle.fill")
+                    Label("\(conflicts.count) 组时间重叠，请选择优先显示", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
             }
-            // 教务可能把同一门课导出两遍，学生也可能真的选到同一时段的两门课。
-            // 课表能并排画出来，但到底上哪节只有用户知道，所以写库之前先问清楚。
+            // 所有组必须选好优先级，但每条课程的实际安排都完整保留。
             ForEach(conflicts) { group in
                 Section {
                     ForEach(group.members) { member in
                         conflictRow(group: group, member: member)
                     }
-                    if let kept = conflictChoice[group.id] {
-                        ForEach(ImportConflictFinder.membersNeedingDisposition(in: group, keeping: kept)) { member in
-                            dispositionRows(group: group, member: member, keeping: kept)
-                        }
-                    }
                 } header: {
-                    Text("时间冲突 · \(group.title)")
+                    Text("优先显示 · \(group.title)")
                 } footer: {
                     Text(conflictFooter(group))
                 }
@@ -300,50 +290,7 @@ struct ImportedScheduleForm: View {
     }
 
     private func conflictFooter(_ group: ImportConflictGroup) -> String {
-        guard let kept = conflictChoice[group.id], group.members.contains(where: { $0.id == kept }) else {
-            return "请选择这个时段保留哪一节。"
-        }
-        let hint = "和它撞在一起的课会被收起来，课表里看不到，之后可以在设置里恢复。"
-        // 连带进组、但和保留这节并不相交的课不会被收起来；它们之间要是还撞，下面接着问。
-        return group.membersUnaffected(by: kept).isEmpty
-            ? hint
-            : hint + "和它不冲突的课保持不变。"
-    }
-
-    /// 周次只是部分重叠时，整节收起来会连不冲突的周次一起抹掉，所以在这里
-    /// 多问一句，而不是替用户决定。
-    @ViewBuilder
-    private func dispositionRows(
-        group: ImportConflictGroup, member: ImportConflictGroup.Member, keeping kept: Int
-    ) -> some View {
-        if let keeper = group.members.first(where: { $0.id == kept }) {
-            let overlap = ImportConflictFinder.overlappingWeeks(member.course, keeping: keeper.course)
-            let rest = ImportConflictFinder.remainingWeeks(member.course, keeping: keeper.course)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("「\(member.course.name)」只有 \(WeekSeries.summary(overlap)) 和保留的这节撞在一起")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("其余的 \(WeekSeries.summary(rest)) 本来可以照常上课")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            ForEach(ImportConflictDisposition.allCases) { option in
-                let picked = conflictDispositions[member.id] == option
-                Button {
-                    conflictDispositions[member.id] = option
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: picked ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(picked ? Color.accentColor : .secondary)
-                        Text(option.title).foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
+        "所有课程都会完整导入并计入课表。每组都必须选择优先显示的课程，选完才能导入。剩余课程如果仍有重叠，需要继续选择，确保每个周次、节次都有明确的显示顺序。之后长按可切换编辑同一时段的全部课程。"
     }
 
     @ViewBuilder
@@ -358,6 +305,10 @@ struct ImportedScheduleForm: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(member.course.name)
                         .foregroundStyle(.primary)
+                    if mode == .appendToCurrent && member.course.id > 0 {
+                        Text("当前课表已有").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if picked { Text("优先显示").font(.caption).foregroundStyle(Color.accentColor) }
                     let subtitle = member.subtitle
                     if !subtitle.isEmpty {
                         Text(subtitle).font(.caption).foregroundStyle(.secondary)

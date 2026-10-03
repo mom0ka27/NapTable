@@ -190,7 +190,7 @@ final class AppStore: ObservableObject {
     }
 
     var classTimeList: [ClassTime] {
-        selectedTable?.effectiveClassTimeList ?? SchoolDefaults.classTimeList
+        selectedTable?.classTimes(on: WeekCalculator.format(Date())) ?? SchoolDefaults.classTimeList
     }
 
     var maxClasses: Int {
@@ -423,11 +423,13 @@ final class AppStore: ObservableObject {
 
     // MARK: 统一假期安排
 
-    /// 这张课表实际生效的调休：关掉统一假期安排就一条都不要；否则以服务端的统一
-    /// 安排为准，课表自己带的（导入文件、分享快照里的）只补统一安排没写到的日期。
+    /// 这张课表实际生效的放假和调休：按两类开关过滤服务端统一安排，课表自己带的
+    /// （导入文件、分享快照里的）只补统一安排没写到的日期。
     func calendarAdjustments(of table: CourseTable) -> [CalendarAdjustment] {
-        guard table.unifiedHolidaysEnabled != false else { return [] }
-        return Self.merge(unified: unifiedCalendarAdjustments, own: table.calendarAdjustments ?? [])
+        let unified = unifiedCalendarAdjustments.filter { item in
+            item.kind == .off ? table.unifiedHolidaysEnabled != false : table.unifiedMakeupEnabled != false
+        }
+        return Self.merge(unified: unified, own: table.calendarAdjustments ?? [])
     }
 
     /// 节假日提示（「中秋快乐」「距国庆节还有 3 天」）用的放假安排。它只是报日子，
@@ -454,6 +456,12 @@ final class AppStore: ObservableObject {
         scheduleSave()
     }
 
+    func setUnifiedMakeupEnabled(_ enabled: Bool, tableId: Int) {
+        guard let index = tables.firstIndex(where: { $0.id == tableId }) else { return }
+        tables[index].unifiedMakeupEnabled = enabled
+        scheduleSave()
+    }
+
     func updateClassTimeList(_ list: [ClassTime], tableId: Int? = nil) {
         let target = tableId ?? selectedTableId
         guard let index = tables.firstIndex(where: { $0.id == target }) else { return }
@@ -470,7 +478,12 @@ final class AppStore: ObservableObject {
         tables[index].termTimezone = term.timezone
         tables[index].semesterStartMonday = term.semesterStartMonday
         tables[index].classTimeList = term.classTimes
+        tables[index].seasonalPeriods = term.seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
         tables[index].calendarAdjustments = term.calendarAdjustments
+        if let school = ScheduleSharingService.shared.schools.first(where: { $0.id == schoolID }) {
+            tables[index].unifiedHolidaysEnabled = school.unifiedHolidaysEnabled ?? true
+            tables[index].unifiedMakeupEnabled = school.unifiedMakeupEnabled ?? true
+        }
         scheduleSave(); resetWeekToLive()
     }
 
@@ -483,12 +496,16 @@ final class AppStore: ObservableObject {
                   let school = schools.first(where: { $0.id == schoolID }),
                   let term = school.currentTerm else { continue }
             let classTimes = term.classTimes
+            let seasonalPeriods = term.seasonalPeriods ?? school.seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
             let adjustments = term.calendarAdjustments
             guard tables[index].termID != term.id
                     || tables[index].termVersion != term.version
                     || tables[index].semesterStartMonday != term.semesterStartMonday
                     || tables[index].termWeekCount != term.weekCount
                     || tables[index].classTimeList != classTimes
+                    || tables[index].seasonalPeriods != seasonalPeriods
+                    || tables[index].unifiedHolidaysEnabled != (school.unifiedHolidaysEnabled ?? true)
+                    || tables[index].unifiedMakeupEnabled != (school.unifiedMakeupEnabled ?? true)
                     || tables[index].calendarAdjustments != adjustments else { continue }
             tables[index].termID = term.id
             tables[index].termVersion = term.version
@@ -496,6 +513,9 @@ final class AppStore: ObservableObject {
             tables[index].termTimezone = term.timezone
             tables[index].semesterStartMonday = term.semesterStartMonday
             tables[index].classTimeList = classTimes
+            tables[index].seasonalPeriods = seasonalPeriods
+            tables[index].unifiedHolidaysEnabled = school.unifiedHolidaysEnabled ?? true
+            tables[index].unifiedMakeupEnabled = school.unifiedMakeupEnabled ?? true
             tables[index].calendarAdjustments = adjustments
             selectedChanged = selectedChanged || tables[index].id == selectedTableId
             changed = true
@@ -545,6 +565,114 @@ final class AppStore: ObservableObject {
         guard let index = courses.firstIndex(where: { $0.id == course.id }) else { return }
         courses[index] = course
         scheduleSave()
+    }
+
+    func saveCourseSchedule(_ draft: CourseScheduleDraft, tableID: Int) throws {
+        try saveCourseSchedules([draft], tableID: tableID)
+    }
+
+    /// 同一时段的多门课程一起保存。先检查全部草稿，再一次性提交。
+    func saveCourseSchedules(_ drafts: [CourseScheduleDraft], tableID: Int, deleting deletedIDs: Set<Int> = []) throws {
+        guard let table = tables.first(where: { $0.id == tableID }) else {
+            throw ScheduleServiceError.server("课表已不存在，请返回重新选择")
+        }
+        let slotCount = max(SchoolDefaults.maxClasses, table.effectiveClassTimeList.count,
+                            table.seasonalPeriods?.map { $0.periods.count }.max() ?? 0)
+        let tableIDs = Set(courses.filter { $0.tableId == tableID }.map(\.id))
+        var handled = deletedIDs
+        guard deletedIDs.isSubset(of: tableIDs) else {
+            throw ScheduleServiceError.server("课程已发生变化，请返回重新打开编辑页")
+        }
+        for draft in drafts {
+            if let problem = draft.problem(weekCount: weekCount(of: table), slotCount: slotCount) {
+                throw ScheduleServiceError.server(problem)
+            }
+            let ids = Set(draft.originals.map(\.id))
+            guard ids.isSubset(of: tableIDs), handled.isDisjoint(with: ids) else {
+                throw ScheduleServiceError.server("课程已发生变化，请返回重新打开编辑页")
+            }
+            handled.formUnion(ids)
+        }
+        let editedRows = drafts.flatMap { $0.rows(tableID: tableID) }
+        let projected = courses.filter { $0.tableId == tableID && !handled.contains($0.id) } + editedRows
+        // 变更周次、节次或删除首位后，也不能留下没有首位的重叠区域。
+        for row in editedRows where !row.isHidden && !row.isFreeTime {
+            for week in row.weeks {
+                for slot in row.startTime...row.endTime {
+                    let overlapping = projected.filter {
+                        !$0.isHidden && !$0.isFreeTime && $0.weekTime == row.weekTime
+                            && $0.weeks.contains(week) && $0.startTime <= slot && slot <= $0.endTime
+                    }
+                    if overlapping.count > 1 && !overlapping.contains(where: { ($0.displayPriority ?? 0) > 0 }) {
+                        throw ScheduleServiceError.server("第 \(week) 周 \(WeekCalculator.weekdayName(row.weekTime)) 第 \(slot) 节仍有重叠，请选择优先显示的课程")
+                    }
+                }
+            }
+        }
+        var updated = courses.filter { !deletedIDs.contains($0.id) }
+        for draft in drafts {
+            let originalIDs = Set(draft.originals.map(\.id))
+            let key: Int
+            if let existing = draft.originals.first?.courseKey { key = existing }
+            else { key = nextCourseKey; nextCourseKey += 1 }
+            var rows = draft.rows(tableID: tableID)
+            var offset = 0
+            for meeting in draft.meetings {
+                for segment in meeting.ranges.indices {
+                    if segment == 0, let original = meeting.original, originalIDs.contains(original.id) {
+                        rows[offset].id = original.id
+                    } else {
+                        rows[offset].id = nextCourseId
+                        nextCourseId += 1
+                    }
+                    rows[offset].courseKey = key
+                    offset += 1
+                }
+            }
+            let insertion = updated.firstIndex { originalIDs.contains($0.id) } ?? updated.count
+            updated.removeAll { originalIDs.contains($0.id) }
+            updated.insert(contentsOf: rows, at: min(insertion, updated.count))
+        }
+        courses = updated
+        scheduleSave()
+    }
+
+    /// 编辑页只对实际同周、同日、同节且参与显示的课程提供优先显示选项。
+    func hasCourseOverlap(in drafts: [CourseScheduleDraft], selectedIndex: Int, tableID: Int, deleting: Set<Int> = []) -> Bool {
+        guard drafts.indices.contains(selectedIndex) else { return false }
+        let editedIDs = Set(drafts.flatMap { $0.originals.map(\.id) }).union(deleting)
+        let others = drafts.enumerated().filter { $0.offset != selectedIndex }.flatMap { $0.element.rows(tableID: tableID) }
+            + courses.filter { $0.tableId == tableID && !editedIDs.contains($0.id) }
+        return drafts[selectedIndex].rows(tableID: tableID).contains { current in
+            guard !current.isHidden, !current.isFreeTime else { return false }
+            return others.contains { other in
+                !other.isHidden && !other.isFreeTime && other.weekTime == current.weekTime
+                    && other.startTime <= current.endTime && current.startTime <= other.endTime
+                    && !Set(other.weeks).isDisjoint(with: current.weeks)
+            }
+        }
+    }
+
+    /// 同一星期、与所按课程节次相交的所有课程，包含其他周次和已收起的行。
+    func coursesInTimeRange(of course: Course) -> [[Course]] {
+        let candidates = courses.filter { row in
+            row.tableId == course.tableId && (row.id == course.id ||
+                (!course.isFreeTime && !row.isFreeTime && row.weekTime == course.weekTime
+                 && row.startTime <= course.endTime && course.startTime <= row.endTime))
+        }
+        var seen = Set<Int>()
+        return candidates.compactMap { row in
+            let family = courseFamily(containing: row)
+            guard !family.contains(where: { seen.contains($0.id) }) else { return nil }
+            seen.formUnion(family.map(\.id))
+            return family
+        }
+    }
+
+    func courseFamily(containing course: Course) -> [Course] {
+        courses.filter { row in
+            row.tableId == course.tableId && (course.courseKey.map { row.courseKey == $0 } ?? (row.id == course.id))
+        }
     }
 
     /// 收起或恢复一门课。恢复之后它会重新回到原来的时段，
@@ -630,10 +758,21 @@ final class AppStore: ObservableObject {
             tables[index].termWeekCount = payload.termWeekCount
             tables[index].termTimezone = payload.termTimezone
             tables[index].serviceConfigurationUpdatesEnabled = !payload.configurationFrozen
+            tables[index].seasonalPeriods = payload.seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
+            if let enabled = payload.unifiedHolidaysEnabled { tables[index].unifiedHolidaysEnabled = enabled }
+            if let enabled = payload.unifiedMakeupEnabled { tables[index].unifiedMakeupEnabled = enabled }
             if let start = payload.semesterStartMonday { tables[index].semesterStartMonday = start }
             if let times = payload.classTimeList, !times.isEmpty { tables[index].classTimeList = times }
             // 学期换了就整张替换，包括「这学期没有调休」这种空表。
             tables[index].calendarAdjustments = payload.calendarAdjustments
+        }
+
+        if mode == .appendToCurrent {
+            for index in courses.indices where courses[index].tableId == table.id {
+                if let priority = payload.displayPriorityUpdates[courses[index].id] {
+                    courses[index].displayPriority = priority > 0 ? priority : nil
+                }
+            }
         }
 
         for item in payload.courses {

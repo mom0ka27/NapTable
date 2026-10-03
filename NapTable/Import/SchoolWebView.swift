@@ -10,6 +10,7 @@ struct SchoolWebView: NSViewRepresentable {
     @Binding var state: WebImportState
     @Binding var didStartExtraction: Bool
     @Binding var statusMessage: String
+    @Binding var currentURL: String
     @Binding var progress: Double
     let reloadToken: Int
     let extractToken: Int
@@ -21,6 +22,7 @@ struct SchoolWebView: NSViewRepresentable {
             state: $state,
             didStartExtraction: $didStartExtraction,
             statusMessage: $statusMessage,
+            currentURL: $currentURL,
             progress: $progress,
             reloadToken: reloadToken,
             extractToken: extractToken,
@@ -46,6 +48,7 @@ struct SchoolWebView: UIViewRepresentable {
     @Binding var state: WebImportState
     @Binding var didStartExtraction: Bool
     @Binding var statusMessage: String
+    @Binding var currentURL: String
     @Binding var progress: Double
     let reloadToken: Int
     let extractToken: Int
@@ -57,6 +60,7 @@ struct SchoolWebView: UIViewRepresentable {
             state: $state,
             didStartExtraction: $didStartExtraction,
             statusMessage: $statusMessage,
+            currentURL: $currentURL,
             progress: $progress,
             reloadToken: reloadToken,
             extractToken: extractToken,

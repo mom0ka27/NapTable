@@ -2,218 +2,154 @@ import Foundation
 
 @main
 struct ImportConflictChecks {
-    @MainActor static func main() {
-        func course(
-            _ name: String, day: Int, start: Int, count: Int = 1, weeks: [Int] = Array(1...16)
-        ) -> Course {
+    @MainActor static func main() throws {
+        func course(_ name: String, day: Int = 1, start: Int = 1, count: Int = 1,
+                    weeks: [Int] = Array(1...16)) -> Course {
             Course(tableId: 0, name: name, weeks: weeks, weekTime: day,
                    startTime: start, timeCount: count, importType: ImportKind.imported)
         }
-
-        // MARK: 撞车判定
-
-        // 同一天、节次相交、周次也相交：撞车。
-        let 高数 = course("高等数学", day: 3, start: 3)
-        let 线代 = course("线性代数", day: 3, start: 4)
-        precondition(ImportConflictFinder.collide(高数, 线代))
-
-        // 单双周轮流的实验课节次完全重合，但永远不会在同一周碰面。
-        let 单周 = course("实验 A", day: 1, start: 1, weeks: [1, 3, 5, 7])
-        let 双周 = course("实验 B", day: 1, start: 1, weeks: [2, 4, 6, 8])
-        precondition(!ImportConflictFinder.collide(单周, 双周))
-        precondition(ImportConflictFinder.groups(in: [单周, 双周]).isEmpty)
-
-        // 节次不相邻、星期不同、自由时间：都不算冲突。
-        precondition(!ImportConflictFinder.collide(高数, course("体育", day: 3, start: 6)))
-        precondition(!ImportConflictFinder.collide(高数, course("英语", day: 4, start: 3)))
-        let 自由 = Course(tableId: 0, name: "自由时间", weeks: Array(1...16), weekTime: 0,
-                        startTime: 0, timeCount: 0, importType: ImportKind.imported)
-        precondition(!ImportConflictFinder.collide(自由, 自由))
-
-        // MARK: 分组
-
-        // 一组两节：组 id 是组内第一门课的下标，范围覆盖两节课。
-        let pair = [course("体育", day: 5, start: 1), 高数, 线代]
-        let groups = ImportConflictFinder.groups(in: pair)
-        precondition(groups.count == 1)
-        precondition(groups[0].id == 1 && groups[0].members.map(\.id) == [1, 2])
-        precondition(groups[0].weekday == 3 && groups[0].startSlot == 3 && groups[0].endSlot == 5)
-        precondition(groups[0].title == "周三 第3-5节")
-
-        // A 撞 B、B 撞 C，但 A 和 C 不相交：三节必须进同一组，
-        // 否则用户选完一组之后另外两节还叠着。
-        let chain = [course("A", day: 2, start: 1, count: 1),
-                     course("B", day: 2, start: 2, count: 1),
-                     course("C", day: 2, start: 3, count: 1)]
-        precondition(!ImportConflictFinder.collide(chain[0], chain[2]))
-        let chained = ImportConflictFinder.groups(in: chain)
-        precondition(chained.count == 1 && chained[0].members.map(\.id) == [0, 1, 2])
-
-        // 保留 B 时 A、C 都和 B 撞，一起收起来；保留 A 时只有 B 撞 A，
-        // C 和 A 节次不相交，不能被连带收起来。
-        let keepA = ImportConflictFinder.apply(
-            keeping: [0: 0], dispositions: [:], to: chain, groups: chained
-        )
-        precondition(keepA.map(\.isHidden) == [false, true, false])
-
-        // 周二：A 第1节、B 第1-3节、C 第3节。A 撞 B、B 撞 C，A 和 C 不撞。
-        let tuesday = [course("A", day: 2, start: 1, count: 0),
-                       course("B", day: 2, start: 1, count: 2),
-                       course("C", day: 2, start: 3, count: 0)]
-        precondition(!ImportConflictFinder.collide(tuesday[0], tuesday[2]))
-        let tuesdayGroups = ImportConflictFinder.groups(in: tuesday)
-        precondition(tuesdayGroups.count == 1 && tuesdayGroups[0].members.map(\.id) == [0, 1, 2])
-        // 保留 A：只有 B 被收起来，C 照常上课，也没有后续组要问。
-        let expandedA = ImportConflictFinder.expandedGroups(in: tuesday, keeping: [0: 0])
-        precondition(expandedA.count == 1)
-        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: tuesday, keeping: [0: 0], dispositions: [:]))
-        precondition(ImportConflictFinder.apply(
-            keeping: [0: 0], dispositions: [:], to: tuesday, groups: expandedA
-        ).map(\.isHidden) == [false, true, false])
-        // 保留 C：B 被收起来，A 不受影响。
-        precondition(ImportConflictFinder.apply(
-            keeping: [0: 2], dispositions: [:], to: tuesday,
-            groups: ImportConflictFinder.expandedGroups(in: tuesday, keeping: [0: 2])
-        ).map(\.isHidden) == [false, true, false])
-        // 保留 B：A、C 都撞 B，一起收起来。
-        precondition(ImportConflictFinder.apply(
-            keeping: [0: 1], dispositions: [:], to: tuesday, groups: tuesdayGroups
-        ).map(\.isHidden) == [true, false, true])
-
-        // 连通分量里剩下的课之间还撞：A 第1-2节、D 第1节撞 A，B 第2节撞 A 也撞 E，
-        // E 第2-3节、F 第3节撞 E。保留 D 之后 A 被收起来，B、E、F 要接着再选一次。
-        let web = [course("A", day: 5, start: 1, count: 1),
-                   course("D", day: 5, start: 1, count: 0),
-                   course("B", day: 5, start: 2, count: 0),
-                   course("E", day: 5, start: 2, count: 1),
-                   course("F", day: 5, start: 3, count: 0)]
-        let webTop = ImportConflictFinder.groups(in: web)
-        precondition(webTop.count == 1 && webTop[0].members.count == 5)
-        let afterD = ImportConflictFinder.expandedGroups(in: web, keeping: [0: 1])
-        precondition(afterD.count == 2 && afterD[1].members.map(\.id) == [2, 3, 4])
-        precondition(afterD[1].id != afterD[0].id)
-        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: web, keeping: [0: 1], dispositions: [:]))
-        let webChoice = [0: 1, afterD[1].id: 3]
-        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: web, keeping: webChoice, dispositions: [:]))
-        let webResolved = ImportConflictFinder.apply(
-            keeping: webChoice, dispositions: [:], to: web,
-            groups: ImportConflictFinder.expandedGroups(in: web, keeping: webChoice)
-        )
-        precondition(webResolved.map(\.isHidden) == [true, false, true, false, true])
-        // 后续组里残留的旧选择不在组里时，仍然算没选完。
-        precondition(ImportConflictFinder.hasUnresolvedConflicts(
-            in: web, keeping: [0: 1, afterD[1].id: 0], dispositions: [:]))
-
-        // 两个互不相干的冲突组，各自独立。
-        let two = [高数, 线代, course("物理", day: 6, start: 1), course("化学", day: 6, start: 1)]
-        precondition(ImportConflictFinder.groups(in: two).map(\.id) == [0, 2])
-
-        // 没有课、只有一节课时不该报冲突。
+        let odd = course("单周", weeks: [1, 3, 5])
+        let even = course("双周", weeks: [2, 4, 6])
+        precondition(ImportConflictFinder.groups(in: [odd, even]).isEmpty)
+        precondition(!ImportConflictFinder.collide(odd, course("另一日", day: 2)))
+        precondition(!ImportConflictFinder.collide(odd, course("另一时段", start: 4)))
         precondition(ImportConflictFinder.groups(in: []).isEmpty)
-        precondition(ImportConflictFinder.groups(in: [高数]).isEmpty)
 
-        // MARK: 完全重叠——没选中的整节收起来
+        // 部分周次、部分节次重叠：选择只改优先级，全部真实安排保留。
+        let partial = [course("前半程", weeks: Array(1...8)), course("全学期", start: 2)]
+        let groups = ImportConflictFinder.groups(in: partial)
+        precondition(groups.count == 1)
+        let resolved = ImportConflictFinder.apply(keeping: [0: 0], to: partial, groups: groups)
+        precondition(resolved.count == 2 && resolved.allSatisfy { !$0.isHidden })
+        precondition(resolved.map(\.weeks) == partial.map(\.weeks))
+        precondition(resolved.map(\.startTime) == partial.map(\.startTime))
+        precondition(resolved[0].displayPriority == 1 && resolved[1].displayPriority == nil)
+        precondition(ImportConflictFinder.apply(keeping: [:], to: partial, groups: groups) == partial)
+        precondition(ImportConflictFinder.apply(keeping: [0: 99], to: partial, groups: groups) == partial)
 
-        let resolved = ImportConflictFinder.apply(
-            keeping: [1: 2], dispositions: [:], to: pair, groups: groups
-        )
-        // 一节都没少，只是让位的那节被收起来了。
-        precondition(resolved.map(\.name) == ["体育", "高等数学", "线性代数"])
-        precondition(resolved.map(\.isHidden) == [false, true, false])
+        // 连环重叠不会隐藏任何成员；后续选择仍可独立保存优先级。
+        let chain = [course("A", count: 0), course("B", count: 2), course("C", start: 3, count: 0)]
+        let expanded = ImportConflictFinder.expandedGroups(in: chain, keeping: [0: 0])
+        let chained = ImportConflictFinder.apply(keeping: [0: 0], to: chain, groups: expanded)
+        precondition(chained.count == chain.count && chained.allSatisfy { !$0.isHidden })
+        precondition(chained[0].displayPriority != nil && chained[2].displayPriority == nil)
 
-        // 还没选的组原样保留，也不能有谁被收起来。
-        let untouched = ImportConflictFinder.apply(
-            keeping: [:], dispositions: [:], to: pair, groups: groups
-        )
-        precondition(untouched == pair && untouched.allSatisfy { !$0.isHidden })
-        // 选了个不在组里的下标同样按「没选」处理。
-        precondition(ImportConflictFinder.apply(
-            keeping: [1: 0], dispositions: [:], to: pair, groups: groups
-        ) == pair)
+        // 导入前必须完成所有真实重叠的选择，旧选择失效也不能放行。
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: partial, keeping: [:]))
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: partial, keeping: [0: 99]))
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: partial, keeping: [0: 0]))
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: chain, keeping: [0: 0]))
+        let nextGroup = expanded[1]
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: chain, keeping: [0: 0, nextGroup.id: 2]))
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: chain, keeping: [0: 0, nextGroup.id: 0]))
+        // 首位不在的后半学期，另外两门课仍须选一次。
+        let halfTerm = [course("前半程", weeks: Array(1...8)), course("整学期 B"), course("整学期 C")]
+        let halfGroups = ImportConflictFinder.expandedGroups(in: halfTerm, keeping: [0: 0])
+        precondition(halfGroups.count == 2)
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: halfTerm, keeping: [0: 0]))
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: halfTerm, keeping: [0: 0, halfGroups[1].id: 1]))
 
-        // MARK: 部分重叠——要问用户
-
-        let 早半程 = course("专业课", day: 4, start: 1, weeks: Array(1...8))
-        let 全学期 = course("选修课", day: 4, start: 1, weeks: Array(1...16))
-        precondition(ImportConflictFinder.partiallyOverlaps(全学期, keeping: 早半程))
-        // 反过来不算：早半程整个被盖住，收起来不会误伤任何一周。
-        precondition(!ImportConflictFinder.partiallyOverlaps(早半程, keeping: 全学期))
-
-        let partial = [早半程, 全学期]
-        let partialGroups = ImportConflictFinder.groups(in: partial)
-        precondition(partialGroups.count == 1)
-        // 保留早半程时要问全学期那节怎么办；反过来不用问。
-        precondition(ImportConflictFinder.membersNeedingDisposition(in: partialGroups[0], keeping: 0)
-            .map(\.id) == [1])
-        precondition(ImportConflictFinder.membersNeedingDisposition(in: partialGroups[0], keeping: 1).isEmpty)
-        precondition(ImportConflictFinder.overlappingWeeks(全学期, keeping: 早半程) == Array(1...8))
-        precondition(ImportConflictFinder.remainingWeeks(全学期, keeping: 早半程) == Array(9...16))
-
-        // 整节收起来：第 9-16 周也跟着看不见了，这正是要先问一句的原因。
-        let wholeHidden = ImportConflictFinder.apply(
-            keeping: [0: 0], dispositions: [1: .hideCourse], to: partial, groups: partialGroups
-        )
-        precondition(wholeHidden.count == 2)
-        precondition(wholeHidden[1].isHidden && wholeHidden[1].weeks == Array(1...16))
-
-        // 只收起重叠的周次：拆成明面上的 9-16 周和收起来的 1-8 周，两头都能还原。
-        let split = ImportConflictFinder.apply(
-            keeping: [0: 0], dispositions: [1: .hideOverlap], to: partial, groups: partialGroups
-        )
-        precondition(split.count == 3)
-        precondition(split[0].name == "专业课" && !split[0].isHidden)
-        precondition(split[1].name == "选修课" && !split[1].isHidden && split[1].weeks == Array(9...16))
-        precondition(split[2].name == "选修课" && split[2].isHidden && split[2].weeks == Array(1...8))
-
-        // 选了保留哪一节但还没回答处理方式：原样保留，不能擅自收起来。
-        precondition(ImportConflictFinder.apply(
-            keeping: [0: 0], dispositions: [:], to: partial, groups: partialGroups
-        ) == partial)
-
-        // MARK: 文案
-
-        let member = ImportConflictGroup.Member(
-            id: 0, course: course("X", day: 1, start: 1, weeks: [1, 2, 3, 5, 9, 10])
-        )
-        precondition(member.weeksText == "第 1-3,5,9-10 周")
-
-        // MARK: 旧存档
-
-        // `hidden` 是后加的键，旧存档里没有它，必须还能解出来；
-        // 没被收起来的课也不该因为这个键而多写一段 JSON。
-        let legacy = Data(#"""
-        {"id":1,"tableId":1,"name":"旧课","weeks":[1],"weekTime":1,"startTime":1,
-         "timeCount":1,"importType":1}
-        """#.utf8)
-        let decoded = try! JSONDecoder().decode(Course.self, from: legacy)
-        precondition(!decoded.isHidden)
-        let encoded = String(data: try! JSONEncoder().encode(decoded), encoding: .utf8)!
-        precondition(!encoded.contains("hidden"))
-
-        // MARK: 收起来的课不进课表
-
+        // 完全相同的两行也各自安装，网格、小组件快照和编辑都能区分身份。
+        let duplicate = course("重复课")
+        let duplicates = [duplicate, duplicate, duplicate]
+        precondition(ImportConflictFinder.expandedGroups(in: duplicates, keeping: [0: 2]).count == 1)
+        precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: duplicates, keeping: [0: 2]))
+        let picked = ImportConflictFinder.apply(keeping: [0: 2], to: duplicates,
+                                                groups: ImportConflictFinder.groups(in: duplicates))
         let app = AppStore(fileURL: nil)
         app.deleteAllCourses()
-        let table = app.install(
-            payload: ImportedSchedule(name: "冲突课表", courses: resolved), mode: .replaceCurrent
-        )
-        precondition(app.selectedTableId == table.id)
-        // 三节都写进去了，但让位的那节不出现在课表里。
-        precondition(app.currentCourses.map(\.name) == ["体育", "线性代数"])
-        precondition(app.currentHiddenCourses.map(\.name) == ["高等数学"])
-        // 网格、分享、通知都走 currentCourses，所以那一节确实不会画在格子里。
-        func drawn(_ day: Int) -> [ScheduleLayout.Placed] {
-            app.layout(forWeek: 1, days: [day]).columnsByDay[day]?.placed ?? []
-        }
-        precondition(!drawn(3).flatMap(\.sessions).contains { $0.name == "高等数学" })
+        app.install(payload: ImportedSchedule(name: "重复课表", courses: picked, semesterStartMonday: "2026-09-07"), mode: .replaceCurrent)
+        precondition(app.currentCourses.count == 3 && app.currentHiddenCourses.isEmpty)
+        precondition(Set(app.currentCourses.map(\.id)).count == 3)
+        let logic = ScheduleLogic(courses: app.currentCourses, nowWeek: 1)
+        precondition(logic.multiCourses.count == 1 && logic.multiCourses[0].count == 3)
+        precondition(logic.multiCourses[0][0].id == app.currentCourses[2].id)
+        precondition(logic.activeCourses.isEmpty) // 第三个成员不能又被单独画一次。
+        let native = NativeScheduleStore()
+        native.connect(app)
+        let snapshot = native.snapshot()!
+        let nativeRows = snapshot.data!.cells.flatMap(\.courses)
+        precondition(nativeRows.count == 3 && Set(nativeRows.map(\.id)).count == 3)
+        precondition(nativeRows.filter { ($0.displayPriority ?? 0) > 0 }.count == 1)
 
-        // 之后随时可以改主意。
-        let restored = app.currentHiddenCourses[0]
-        app.setCourse(id: restored.id, hidden: false)
-        precondition(app.currentHiddenCourses.isEmpty)
+        let widgetPayload = NativeWidgetSettings.payload(from: snapshot, selectedWeek: 1)!
+        let widgetCourses = widgetPayload.weekDays!.first { $0.day == 1 }!.courses!
+        precondition(widgetCourses.count == 3 && Set(widgetCourses.map(\.id)).count == 3)
+        precondition(widgetCourses.first!.displayPriority == 1)
+        let restoredWidget = try JSONDecoder().decode(WidgetSchedulePayload.self, from: JSONEncoder().encode(widgetPayload))
+        precondition(restoredWidget.weekDays == widgetPayload.weekDays)
+        let week = snapshot.calendar!.weeks.first { $0.week == 1 }!
+        let ics = NativeScheduleICSExporter.make(result: snapshot.data!, week: week, periods: snapshot.periods)
+        let uids = ics.components(separatedBy: "\n").filter { $0.hasPrefix("UID:") }
+        precondition(uids.count == 3 && Set(uids).count == 3)
+
+        // 老存档、备份、分享导入：优先级可选且往返保留。
+        let legacy = Data(#"{"id":1,"tableId":1,"name":"旧课","weeks":[1],"weekTime":1,"startTime":1,"timeCount":1,"importType":1}"#.utf8)
+        let decoded = try JSONDecoder().decode(Course.self, from: legacy)
+        precondition(decoded.displayPriority == nil && !decoded.isHidden)
+        let restored = try JSONDecoder().decode(Course.self, from: JSONEncoder().encode(picked[2]))
+        precondition(restored.displayPriority == 1)
+        let payload = CoursePayloadCodec.makeCourse(from: ["name": "分享课", "weeks": [1],
+            "week_time": 1, "start_time": 1, "displayPriority": 2])!
+        precondition(payload.displayPriority == 2)
+        // 长按同一时段能找到三门独立课程；批量保存保留各自的身份与安排。
+        let originals = app.currentCourses
+        precondition(app.coursesInTimeRange(of: originals[0]).count == 3)
+        var drafts = originals.map { CourseScheduleDraft(courses: app.courseFamily(containing: $0)) }
+        precondition(app.hasCourseOverlap(in: drafts, selectedIndex: 0, tableID: app.selectedTableId))
+        var alternating = drafts
+        alternating[0].meetings[0].weeks = [1, 3]
+        alternating[1].meetings[0].weeks = [2, 4]
+        alternating[2].meetings[0].hidden = true
+        precondition(!app.hasCourseOverlap(in: alternating, selectedIndex: 0, tableID: app.selectedTableId))
+        alternating[1].meetings[0].weeks = [1, 3]
+        alternating[1].meetings[0].slots = [5, 6]
+        precondition(!app.hasCourseOverlap(in: alternating, selectedIndex: 0, tableID: app.selectedTableId))
+        alternating[1].meetings[0].slots = [1, 2]
+        alternating[1].meetings[0].day = 2
+        precondition(!app.hasCourseOverlap(in: alternating, selectedIndex: 0, tableID: app.selectedTableId))
+        precondition(!app.hasCourseOverlap(in: [drafts[0]], selectedIndex: 0, tableID: app.selectedTableId,
+                                         deleting: Set(originals.dropFirst().map(\.id))))
+        drafts[0].name = "第一门修改"
+        drafts[0].meetings[0].weeks = [1, 3]
+        drafts[1].name = "第二门修改"
+        drafts[1].meetings[0].slots = [3, 4]
+        drafts[2].displayPriority = 8
+        let beforeInvalidSave = app.courses
+        var invalid = drafts
+        invalid[2].meetings[0].weeks = []
+        do {
+            try app.saveCourseSchedules(invalid, tableID: app.selectedTableId)
+            preconditionFailure("An invalid page must prevent the whole save")
+        } catch { precondition(app.courses == beforeInvalidSave) }
+        var missingPriority = drafts
+        missingPriority[2].displayPriority = nil
+        do {
+            try app.saveCourseSchedules(missingPriority, tableID: app.selectedTableId)
+            preconditionFailure("Unresolved overlaps after editing must not be saved")
+        } catch { precondition(app.courses == beforeInvalidSave) }
+        try app.saveCourseSchedules(drafts, tableID: app.selectedTableId)
         precondition(app.currentCourses.count == 3)
-        // 恢复之后它又和原来那节撞在一起，课表把两节并排画在同一个格子里。
-        precondition(drawn(3).contains { $0.sessions.count == 2 })
+        precondition(app.currentCourses[0].name == "第一门修改" && app.currentCourses[0].weeks == [1, 3])
+        precondition(app.currentCourses[1].name == "第二门修改" && app.currentCourses[1].startTime == 3)
+        precondition(app.currentCourses[2].displayPriority == 8)
+        precondition(app.currentCourses.map(\.id) == originals.map(\.id))
+        // 暂存删除只提交被选中的课程，其他课程不受影响。
+        try app.saveCourseSchedules([CourseScheduleDraft(courses: [app.currentCourses[0]])],
+                                    tableID: app.selectedTableId, deleting: [originals[1].id])
+        precondition(app.currentCourses.count == 2 && !app.currentCourses.contains { $0.id == originals[1].id })
+
+        // 追加导入也必须包含已有课程的重叠；用户可以选择新课优先，已有课仍保留。
+        app.install(payload: ImportedSchedule(name: "追加测试", courses: [duplicate]), mode: .replaceCurrent)
+        let existing = app.currentCourses
+        let incoming = ImportedSchedule(name: "追加", courses: [duplicate])
+        precondition(ImportConflictFinder.hasUnresolvedConflicts(in: existing + incoming.courses, keeping: [:]))
+        let appended = incoming.selectingDisplayPriorities([0: 1], existing: existing)
+        app.install(payload: appended, mode: .appendToCurrent)
+        precondition(app.currentCourses.count == 2 && app.currentCourses[0].id == existing[0].id)
+        precondition(app.currentCourses[0].displayPriority == nil && app.currentCourses[1].displayPriority == 1)
+        let preferExisting = incoming.selectingDisplayPriorities([0: 0], existing: app.currentCourses)
+        precondition(preferExisting.displayPriorityUpdates[existing[0].id] == 1)
 
         print("ImportConflictChecks passed")
     }

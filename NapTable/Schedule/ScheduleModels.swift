@@ -115,6 +115,7 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
     public let customId: String?
     public let custom: Bool
     public let orphaned: Bool
+    public let displayPriority: Int?
 
     public var id: String {
         if let customId = customId?.trimmedNonEmpty { return "custom:\(customId)" }
@@ -138,7 +139,8 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
         sourceKey: String? = nil,
         customId: String? = nil,
         custom: Bool = false,
-        orphaned: Bool = false
+        orphaned: Bool = false,
+        displayPriority: Int? = nil
     ) {
         self.liveActivitySourceID = liveActivitySourceID
         self.nativeId = nativeId?.trimmedNonEmpty
@@ -154,11 +156,12 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
         self.customId = customId?.trimmedNonEmpty
         self.custom = custom
         self.orphaned = orphaned
+        self.displayPriority = displayPriority
     }
 
     private enum CodingKeys: String, CodingKey {
         case liveActivitySourceID, nativeId, name, teacher, weeks, weekList, location, slotNote, startSlot, endSlot
-        case sourceKey, customId, custom, orphaned
+        case sourceKey, customId, custom, orphaned, displayPriority
     }
 
     public init(from decoder: Decoder) throws {
@@ -177,7 +180,8 @@ public struct NativeScheduleCourse: Codable, Identifiable, Equatable, Sendable {
             sourceKey: try values.decodeIfPresent(String.self, forKey: .sourceKey),
             customId: try values.decodeIfPresent(String.self, forKey: .customId),
             custom: try values.decodeIfPresent(Bool.self, forKey: .custom) ?? false,
-            orphaned: try values.decodeIfPresent(Bool.self, forKey: .orphaned) ?? false
+            orphaned: try values.decodeIfPresent(Bool.self, forKey: .orphaned) ?? false,
+            displayPriority: try values.decodeIfPresent(Int.self, forKey: .displayPriority)
         )
     }
 }

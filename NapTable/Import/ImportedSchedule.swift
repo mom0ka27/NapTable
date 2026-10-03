@@ -16,6 +16,9 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
     var termVersion: Int?
     var termWeekCount: Int?
     var termTimezone: String?
+    /// 目标学校是否分别启用统一放假和统一调休。
+    var unifiedHolidaysEnabled: Bool?
+    var unifiedMakeupEnabled: Bool?
     /// 分享携带的是发布时快照，不能被学校当前学期的自动刷新覆盖。
     var configurationFrozen: Bool
     /// 学期的调休安排，跟着学期配置一起进课表。
@@ -23,6 +26,9 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
     /// 页面上写的学年学期在服务端没有配置、只好套用当前学期时，说明两者对不上。
     /// 确认导入前要让用户再确认一次，免得把上学期的课当成本学期导进来。
     var termMismatch: String? = nil
+    var seasonalPeriods: [SeasonalClassTimes]? = nil
+    /// 追加导入时，对当前课表已有课程的显示优先级调整。0 表示未设优先级。
+    var displayPriorityUpdates: [Int: Int] = [:]
 
     init(
         name: String,
@@ -34,6 +40,8 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
         termVersion: Int? = nil,
         termWeekCount: Int? = nil,
         termTimezone: String? = nil,
+        unifiedHolidaysEnabled: Bool? = nil,
+        unifiedMakeupEnabled: Bool? = nil,
         configurationFrozen: Bool = false,
         calendarAdjustments: [CalendarAdjustment]? = nil
     ) {
@@ -42,6 +50,8 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
         self.classTimeList = classTimeList
         self.semesterStartMonday = semesterStartMonday
         self.schoolID = schoolID; self.termID = termID; self.termVersion = termVersion; self.termWeekCount = termWeekCount; self.termTimezone = termTimezone
+        self.unifiedHolidaysEnabled = unifiedHolidaysEnabled
+        self.unifiedMakeupEnabled = unifiedMakeupEnabled
         self.configurationFrozen = configurationFrozen
         self.calendarAdjustments = calendarAdjustments
     }
@@ -56,9 +66,12 @@ nonisolated struct ImportedSchedule: Equatable, Identifiable {
             && lhs.classTimeList == rhs.classTimeList
             && lhs.semesterStartMonday == rhs.semesterStartMonday
             && lhs.schoolID == rhs.schoolID && lhs.termID == rhs.termID && lhs.termVersion == rhs.termVersion && lhs.termWeekCount == rhs.termWeekCount && lhs.termTimezone == rhs.termTimezone
+            && lhs.unifiedHolidaysEnabled == rhs.unifiedHolidaysEnabled && lhs.unifiedMakeupEnabled == rhs.unifiedMakeupEnabled
             && lhs.configurationFrozen == rhs.configurationFrozen
             && lhs.calendarAdjustments == rhs.calendarAdjustments
             && lhs.termMismatch == rhs.termMismatch
+            && lhs.seasonalPeriods == rhs.seasonalPeriods
+            && lhs.displayPriorityUpdates == rhs.displayPriorityUpdates
     }
 }
 
@@ -103,18 +116,25 @@ nonisolated enum CoursePayloadCodec {
         let termVersion = (root["termVersion"] as? NSNumber)?.intValue ?? (root["term_version"] as? NSNumber)?.intValue
         let termWeekCount = (root["termWeekCount"] as? NSNumber)?.intValue ?? (root["term_week_count"] as? NSNumber)?.intValue
         let termTimezone = root["termTimezone"] as? String ?? root["term_timezone"] as? String
+        let unifiedHolidaysEnabled = root["unifiedHolidaysEnabled"] as? Bool ?? root["unified_holidays_enabled"] as? Bool
+        let unifiedMakeupEnabled = root["unifiedMakeupEnabled"] as? Bool ?? root["unified_makeup_enabled"] as? Bool
         let configurationFrozen = root["configurationFrozen"] as? Bool
             ?? (root["owner"] != nil && root["id"] != nil && termID != nil)
         let adjustments = decodeAdjustments(root["calendar_adjustments"] ?? root["calendarAdjustments"] ?? root["adjustments"])
-        return ImportedSchedule(
+        var schedule = ImportedSchedule(
             name: (name?.isEmpty == false ? name! : defaultTableName()),
             courses: rawCourses.compactMap(makeCourse),
             classTimeList: (classTimes?.isEmpty == false) ? classTimes : nil,
             semesterStartMonday: (startMonday?.isEmpty == false) ? startMonday : nil
             , schoolID: schoolID, termID: termID, termVersion: termVersion, termWeekCount: termWeekCount, termTimezone: termTimezone,
+            unifiedHolidaysEnabled: unifiedHolidaysEnabled, unifiedMakeupEnabled: unifiedMakeupEnabled,
             configurationFrozen: configurationFrozen,
             calendarAdjustments: adjustments
         )
+        if let value = root["seasonalPeriods"], let data = try? JSONSerialization.data(withJSONObject: value) {
+            schedule.seasonalPeriods = try JSONDecoder().decode([SeasonalClassTimes].self, from: data)
+        }
+        return schedule
     }
 
     /// 调休列表：服务端下发的对象数组，字段缺失或类型不对的行直接丢掉。
@@ -204,7 +224,8 @@ nonisolated enum CoursePayloadCodec {
             link: string(map, "link"),
             info: string(map, "info"),
             color: string(map, "color"),
-            courseKey: integer(map, "course_id", "courseId")
+            courseKey: integer(map, "course_id", "courseId"),
+            displayPriority: integer(map, "displayPriority", "display_priority")
         ).clamped()
     }
 
@@ -274,6 +295,12 @@ nonisolated enum ImportError: LocalizedError, Equatable {
     case cancelled
     case notReady(String)
 
+    /// 只有明确的页面未就绪可以自动等待；解析错误必须保留给用户查看。
+    var shouldRetryWhenPageLoads: Bool {
+        if case .notReady = self { return true }
+        return false
+    }
+
     var errorDescription: String? {
         switch self {
         case .malformedPayload(let message): return message
@@ -287,4 +314,18 @@ nonisolated enum ImportError: LocalizedError, Equatable {
         case .notReady(let message): return message
         }
     }
+}
+
+/// 重试的截止时间由第一次等待确定，后续失败不能延长等待窗口。
+nonisolated struct WebImportRetryWindow {
+    let timeout: TimeInterval
+    private(set) var deadline: Date?
+
+    mutating func canRetry(now: Date = Date()) -> Bool {
+        let end = deadline ?? now.addingTimeInterval(timeout)
+        deadline = end
+        return now < end
+    }
+
+    mutating func reset() { deadline = nil }
 }

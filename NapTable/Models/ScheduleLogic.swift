@@ -98,6 +98,7 @@ nonisolated struct ScheduleLogic {
                 guard let head = multiCourses[index].first else { continue }
                 if overlaps(course, head) {
                     multiCourses[index].append(course)
+                    consumed.append(course.id)
                     reorderFace(&multiCourses[index])
                     joined = true
                     break
@@ -128,17 +129,15 @@ nonisolated struct ScheduleLogic {
             || (b.startTime >= a.startTime && b.startTime <= a.endTime)
     }
 
-    /// `ScheduleModel._checkMultiCoursesElement`: the longest meeting that also
-    /// runs this week becomes the group's face.
+    /// 本周课程优先，再按用户指定的显示优先级和课程长度选组的首项。
     private func reorderFace(_ group: inout [Course]) {
-        var bestIndex = 0
-        var bestCount = 0
-        for (index, course) in group.enumerated() where course.timeCount > bestCount && course.weeks.contains(nowWeek) {
-            bestCount = course.timeCount
-            bestIndex = index
-        }
-        if bestIndex != 0 {
-            group.swapAt(0, bestIndex)
+        group.sort {
+            let leftActive = $0.weeks.contains(nowWeek), rightActive = $1.weeks.contains(nowWeek)
+            if leftActive != rightActive { return leftActive }
+            let left = $0.displayPriority ?? 0, right = $1.displayPriority ?? 0
+            if left != right { return left > right }
+            if $0.timeCount != $1.timeCount { return $0.timeCount > $1.timeCount }
+            return $0.id < $1.id
         }
     }
 }

@@ -61,8 +61,11 @@ enum SchoolTemplateResolver {
         result.termVersion = term.version
         result.termWeekCount = term.weekCount
         result.termTimezone = term.timezone
+        result.unifiedHolidaysEnabled = school.unifiedHolidaysEnabled ?? true
+        result.unifiedMakeupEnabled = school.unifiedMakeupEnabled ?? true
         result.semesterStartMonday = term.semesterStartMonday
         result.classTimeList = term.classTimes
+        result.seasonalPeriods = term.seasonalPeriods ?? school.seasonalPeriods ?? SeasonalClassTimes.defaults(for: school.id)
         result.calendarAdjustments = term.calendarAdjustments
         result.termMismatch = mismatch.map {
             "页面显示的是「\($0.trimmingCharacters(in: .whitespacesAndNewlines))」，和当前学期（\(semesterName(startMonday: term.semesterStartMonday, hint: ""))）不一致"

@@ -19,6 +19,7 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
     public let source: NativeScheduleSource
     public let fetchedAt: Date?
     public let periods: [NativeSchedulePeriod]
+    public let seasonalPeriods: [SeasonalClassTimes]?
     public let data: NativeScheduleResult?
     public let calendar: NativeScheduleCalendar?
     public let auth: NativeScheduleAuth
@@ -38,6 +39,7 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         source: NativeScheduleSource = .unknown,
         fetchedAt: Date? = nil,
         periods: [NativeSchedulePeriod] = [],
+        seasonalPeriods: [SeasonalClassTimes]? = nil,
         data: NativeScheduleResult? = nil,
         calendar: NativeScheduleCalendar? = nil,
         auth: NativeScheduleAuth = NativeScheduleAuth(),
@@ -54,6 +56,7 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         self.source = source
         self.fetchedAt = fetchedAt
         self.periods = periods.isEmpty ? NativeSchedulePeriod.bundledTimetable : periods
+        self.seasonalPeriods = seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
         self.data = data
         self.calendar = calendar
         self.auth = auth
@@ -62,5 +65,13 @@ public struct NativeScheduleSnapshot: Codable, Equatable, Sendable {
         self.termID = termID?.trimmedNonEmpty
         self.timeZone = timeZone?.trimmedNonEmpty
         self.error = error?.trimmedNonEmpty
+    }
+
+    func periods(on day: String) -> [NativeSchedulePeriod] {
+        SeasonalClassTimes.resolve(on: day,
+            base: periods.map { ClassTime(start: $0.startTime, end: $0.endTime) },
+            seasons: seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)).enumerated().map {
+                NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
+            }
     }
 }

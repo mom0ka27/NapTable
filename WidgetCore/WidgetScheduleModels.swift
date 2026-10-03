@@ -31,9 +31,12 @@ struct WidgetCourse: Codable, Identifiable, Equatable {
     let endTime: String?
     let startSlot: Int?
     let endSlot: Int?
+    var occurrenceID: String? = nil
+    var displayPriority: Int? = nil
 
     var id: String {
-        [name, startTime, endTime, location].compactMap { $0 }.joined(separator: "|")
+        if let occurrenceID { return occurrenceID }
+        return [name, startTime, endTime, location].compactMap { $0 }.joined(separator: "|")
     }
 
     var displayName: String { normalized(name) ?? "课程" }

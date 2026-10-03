@@ -10,6 +10,9 @@ swiftc -swift-version 5 -parse-as-library \
     NapTable/Views/ScheduleLayout.swift \
     NapTable/Schedule/SchedulePreferences.swift \
     NapTable/Import/ImportedSchedule.swift \
+    NapTable/Import/SchoolCatalog.swift \
+    NapTable/Import/RucLoginFlow.swift \
+    NapTable/Import/*Extractor.swift \
     NapTable/Import/SchoolTemplateResolver.swift \
     NapTable/Support/BundledConfig.swift \
     NapTable/Support/PlatformCompat.swift \

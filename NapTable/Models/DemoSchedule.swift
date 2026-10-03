@@ -21,7 +21,7 @@ nonisolated enum DemoSchedule {
         }
 
         return ImportedSchedule(
-            name: "计算机科学与技术 · 示例课表",
+            name: "示例课表",
             courses: [
                 meeting("数据结构", day: 1, start: 1, classroom: "教学楼 A101", teacher: "陈老师"),
                 meeting("计算机组成原理", day: 1, start: 5, classroom: "教学楼 A203", teacher: "李老师"),

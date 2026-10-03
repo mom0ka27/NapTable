@@ -6,6 +6,7 @@ struct ServiceClassPeriod: Codable, Identifiable, Equatable { var id: Int; var n
 struct ServiceTermConfiguration: Codable, Identifiable, Equatable {
     var id: String; var version: Int; var semesterStartMonday: String; var weekCount: Int; var periods: [ServiceClassPeriod]; var timezone: String; var note: String; var updatedAt: String?
     var current: Bool? = nil
+    var seasonalPeriods: [SeasonalClassTimes]? = nil
     /// 这个学期的调休安排。老服务端没有这个字段，解码成 `nil`。
     var adjustments: [CalendarAdjustment]?
     var classTimes: [ClassTime] { periods.map { ClassTime(start: $0.start, end: $0.end) } }
@@ -15,6 +16,10 @@ struct ServiceSchoolConfiguration: Codable, Identifiable, Equatable {
     var id: String; var name: String; var timezone: String; var terms: [ServiceTermConfiguration]; var note: String; var updatedAt: String?
     var periods: [ServiceClassPeriod]? = nil
     var currentTermID: String? = nil
+    var seasonalPeriods: [SeasonalClassTimes]? = nil
+    /// 服务端可分别关闭统一放假和统一调休；缺失字段兼容旧服务端，默认开启。
+    var unifiedHolidaysEnabled: Bool? = nil
+    var unifiedMakeupEnabled: Bool? = nil
     var currentTerm: ServiceTermConfiguration? {
         if let currentTermID, let term = terms.first(where: { $0.id == currentTermID }) { return term }
         return terms.first(where: { $0.current == true })
@@ -29,8 +34,8 @@ struct AnyCodable: Codable {
 enum ScheduleServiceError: LocalizedError { case invalidResponse, server(String), missingBaseURL; var errorDescription: String? { switch self { case .invalidResponse: return "服务返回格式错误"; case .server(let v): return v; case .missingBaseURL: return "未配置 NapTable 服务地址" } } }
 
 private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -> [ServiceSchoolConfiguration] {
-    // Only Nanjing University, Sun Yat-sen University and Nanjing Forestry University are currently visible in the client.
-    schools.filter { school in ["nju", "sysu", "njfu"].contains { $0.caseInsensitiveCompare(school.id) == .orderedSame } }
+    // 与开放的网页导入学校保持一致，也应用于离线缓存。
+    schools.filter { ServiceSchoolCatalog.isSupported($0.id) }
 }
 
 @MainActor final class ScheduleSharingService: ObservableObject {
@@ -90,6 +95,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
             "start": table.semesterStartMonday, "weeks": table.termWeekCount ?? 0,
             "timezone": table.termTimezone ?? "",
             "periods": try JSONSerialization.jsonObject(with: encoder.encode(table.effectiveClassTimeList)),
+            "seasonalPeriods": try JSONSerialization.jsonObject(with: encoder.encode(table.effectiveSeasonalPeriods ?? [])),
             "adjustments": try JSONSerialization.jsonObject(with: encoder.encode(table.calendarAdjustments ?? [])),
             "courses": rows]
         let data = try JSONSerialization.data(withJSONObject: calendar, options: [.sortedKeys])
@@ -159,4 +165,13 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
     /// share endpoints and needs the same transport.
     func request(path:String,method:String,body:Any?=nil,headers:[String:String]=[:]) async throws -> Data { guard let baseURL=validatedBaseURL, let url=URL(string:path,relativeTo:baseURL) else { throw ScheduleServiceError.missingBaseURL }; var r=URLRequest(url:url); r.httpMethod=method; r.setValue("application/json",forHTTPHeaderField:"Content-Type"); headers.forEach { r.setValue($1,forHTTPHeaderField:$0) }; if let body { r.httpBody=try JSONSerialization.data(withJSONObject:body) }; r=await AppAttestService.shared.signed(r); let (data,response)=try await URLSession.shared.data(for:r); AppAttestService.shared.observe(response); guard let http=response as? HTTPURLResponse else { throw ScheduleServiceError.invalidResponse }; guard (200..<300).contains(http.statusCode) else { let m=(try? JSONSerialization.jsonObject(with:data) as? [String:Any])?["error"] as? String ?? "HTTP \(http.statusCode)"; throw ScheduleServiceError.server(m) }; return data }
 }
-enum ServiceSchoolCatalog { static let nju=ServiceSchoolConfiguration(id:"nju",name:"南京大学",timezone:"Asia/Shanghai",terms:[],note:"服务端模板，需按校历校准") }
+enum ServiceSchoolCatalog {
+    // 网页导入、服务端配置和离线缓存共用这一份名单。
+    private static let supportedSchoolIDs: Set<String> = ["nju", "sysu", "njfu", "nau", "njtech", "fudan", "xjtu", "zju", "ruc"]
+
+    static func isSupported(_ schoolID: String) -> Bool {
+        supportedSchoolIDs.contains(schoolID.lowercased())
+    }
+
+    static let nju=ServiceSchoolConfiguration(id:"nju",name:"南京大学",timezone:"Asia/Shanghai",terms:[],note:"服务端模板，需按校历校准")
+}

@@ -4,15 +4,45 @@ import Foundation
 
 /// The bell schedule. Mirrors the Flutter app's `Constant.CLASS_TIME_LIST` and
 /// can be overridden per course table through `CourseTable.classTimeList`.
-nonisolated struct ClassTime: Codable, Equatable, Hashable, Identifiable {
-    var start: String
-    var end: String
+public nonisolated struct ClassTime: Codable, Equatable, Hashable, Identifiable, Sendable {
+    public var start: String
+    public var end: String
 
-    var id: String { "\(start)-\(end)" }
+    public var id: String { "\(start)-\(end)" }
 
-    init(start: String, end: String) {
+    public init(start: String, end: String) {
         self.start = start
         self.end = end
+    }
+}
+
+/// 每年从 MM-dd 起生效的作息。按实际上课日选择，调休来源日只决定课程内容。
+public nonisolated struct SeasonalClassTimes: Codable, Equatable, Hashable, Sendable {
+    public var from: String
+    public var periods: [ClassTime]
+
+    static func resolve(on day: String, base: [ClassTime], seasons: [Self]?) -> [ClassTime] {
+        guard day.count == 10, let seasons, !seasons.isEmpty else { return base }
+        let monthDay = String(day.suffix(5))
+        let ordered = seasons.filter { !$0.periods.isEmpty }.sorted { $0.from < $1.from }
+        return (ordered.last { $0.from <= monthDay } ?? ordered.last)?.periods ?? base
+    }
+
+    /// 西交大教务处标准作息：https://due.xjtu.edu.cn/xxfw/zxsj.htm
+    /// 创新港等采用其他作息的课表可以由服务端覆盖，空数组表示不按季节切换。
+    static func defaults(for schoolID: String?) -> [Self]? {
+        guard schoolID?.lowercased() == "xjtu" else { return nil }
+        let morning = [("08:00", "08:50"), ("09:00", "09:50"),
+                       ("10:10", "11:00"), ("11:10", "12:00")]
+        func times(_ afternoon: [(String, String)]) -> [ClassTime] {
+            (morning + afternoon).map { ClassTime(start: $0.0, end: $0.1) }
+        }
+        return [
+            Self(from: "05-01", periods: times([("14:30", "15:20"), ("15:30", "16:20"),
+                ("16:40", "17:30"), ("17:40", "18:30"), ("19:40", "20:30"), ("20:40", "21:30")])),
+            Self(from: "10-01", periods: times([("14:00", "14:50"), ("15:00", "15:50"),
+                ("16:10", "17:00"), ("17:10", "18:00"), ("19:10", "20:00"), ("20:10", "21:00")])),
+        ]
     }
 }
 
@@ -88,9 +118,11 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     /// Stable identity of the course this row belongs to. Imported rows from the
     /// same course share it; hand-written rows get their own.
     var courseKey: Int?
-    /// 导入时让位给同一时段另一节课的行。它留在课表里，但不参与显示、分享和
-    /// 通知，之后可以在「隐藏的课程」里恢复。旧存档没有这个键，所以用可选值。
+    /// 用户主动收起或旧版本导入时收起的行，不参与显示、分享和通知。
+    /// 可以在编辑页恢复。旧存档没有这个键，所以用可选值。
     var hidden: Bool?
+    /// 决定重叠课程和实时通知的显示顺序，不删除课程或改变实际上课安排。
+    var displayPriority: Int?
 
     init(
         id: Int = 0,
@@ -110,7 +142,8 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
         info: String? = nil,
         color: String? = nil,
         courseKey: Int? = nil,
-        hidden: Bool? = nil
+        hidden: Bool? = nil,
+        displayPriority: Int? = nil
     ) {
         self.id = id
         self.tableId = tableId
@@ -130,6 +163,7 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
         self.color = color
         self.courseKey = courseKey
         self.hidden = hidden
+        self.displayPriority = displayPriority
     }
 
     /// 让位给别的课、暂时不显示的行。
@@ -192,7 +226,7 @@ nonisolated enum CourseLimits {
 nonisolated extension Course {
     private enum CodingKeys: String, CodingKey {
         case id, tableId, name, weeks, weekTime, startTime, timeCount, importType
-        case classroom, classNumber, teacher, testTime, testLocation, link, info, color, courseKey, hidden
+        case classroom, classNumber, teacher, testTime, testLocation, link, info, color, courseKey, hidden, displayPriority
     }
 
     init(from decoder: Decoder) throws {
@@ -215,7 +249,8 @@ nonisolated extension Course {
             info: try c.decodeIfPresent(String.self, forKey: .info),
             color: try c.decodeIfPresent(String.self, forKey: .color),
             courseKey: try c.decodeIfPresent(Int.self, forKey: .courseKey),
-            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden)
+            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden),
+            displayPriority: try c.decodeIfPresent(Int.self, forKey: .displayPriority)
         )
         self = clamped()
     }
@@ -254,6 +289,10 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     /// 是否按服务端的统一假期安排（国务院放假调休）调整课程。`false` 时这张课表
     /// 无视所有放假、补班，照常按星期几显示；`nil`（旧存档）当作开启。
     var unifiedHolidaysEnabled: Bool?
+    /// 是否按服务端的统一补班安排调整课程；`nil`（旧存档）当作开启。
+    var unifiedMakeupEnabled: Bool?
+    /// nil 兼容旧存档；空数组明确关闭季节作息。
+    var seasonalPeriods: [SeasonalClassTimes]? = nil
 
     init(
         id: Int = 0,
@@ -267,7 +306,8 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         termTimezone: String? = nil,
         serviceConfigurationUpdatesEnabled: Bool? = nil,
         calendarAdjustments: [CalendarAdjustment]? = nil,
-        unifiedHolidaysEnabled: Bool? = nil
+        unifiedHolidaysEnabled: Bool? = nil,
+        unifiedMakeupEnabled: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -281,6 +321,7 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
         self.serviceConfigurationUpdatesEnabled = serviceConfigurationUpdatesEnabled
         self.calendarAdjustments = calendarAdjustments
         self.unifiedHolidaysEnabled = unifiedHolidaysEnabled
+        self.unifiedMakeupEnabled = unifiedMakeupEnabled
     }
 
     /// 日期 -> 调休，换算到 `anchor`（第一周周一）对应的教学周上。锚点由调用方
@@ -292,6 +333,14 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     /// The bell schedule actually used for rendering.
     var effectiveClassTimeList: [ClassTime] {
         classTimeList.isEmpty ? SchoolDefaults.classTimeList : classTimeList
+    }
+
+    var effectiveSeasonalPeriods: [SeasonalClassTimes]? {
+        seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
+    }
+
+    func classTimes(on day: String) -> [ClassTime] {
+        SeasonalClassTimes.resolve(on: day, base: effectiveClassTimeList, seasons: effectiveSeasonalPeriods)
     }
 
     var maxClasses: Int {
