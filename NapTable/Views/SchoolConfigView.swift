@@ -45,7 +45,11 @@ struct SchoolConfigView: View {
 
     private func adjustmentSummary(_ table: CourseTable) -> String {
         let list = store.calendarAdjustments(of: table)
-        guard !list.isEmpty else { return table.unifiedHolidaysEnabled == false ? "已关闭" : "无" }
+        guard !list.isEmpty else {
+            let holidays = table.unifiedHolidaysEnabled != false
+            let makeup = table.unifiedMakeupEnabled != false
+            return holidays && makeup ? "无" : holidays ? "仅放假已启用" : makeup ? "仅调休已启用" : "已关闭"
+        }
         let off = list.filter { $0.kind == .off }.count
         let swap = list.count - off
         return [off > 0 ? "放假 \(off) 天" : nil, swap > 0 ? "补课 \(swap) 天" : nil]

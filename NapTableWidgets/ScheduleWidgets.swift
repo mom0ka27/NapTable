@@ -1294,7 +1294,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
                 WidgetMessageView(
                     symbol: "rectangle.stack.badge.plus",
                     title: "等待课表同步",
-                    detail: "请打开 App，在课表右上角菜单进入“课表与设备设置”"
+                    detail: "请打开 App，导入一张课表"
                 )
             case .failed(let message):
                 WidgetMessageView(
@@ -2519,7 +2519,8 @@ private struct WidgetDateHeader: View {
             secondaryLine
                 // 竖线比字高，靠负边距把这行收回去，贴着上一行的文字底部。「明天的课」带着
                 // 胶囊底色，比字高，再往上收就压住上一行的「第 N 周」，反过来留一点空。
-                .padding(.top, dayHint == nil ? -2 : 4)
+                // 中号（2×1）的小组件里课表名紧跟在日期下方，额外留一点间隔更易读。
+                .padding(.top, dayHint == nil ? (family == .systemMedium ? 3 : -2) : 4)
         }
         // 第二行的 ViewThatFits 报的最小高度是最矮那种排法（倒计时不换行），外面的 VStack
         // 照这个预留，下面的课就会多分到一截、以为放得下，整块撑出组件。按实际高度占位。
@@ -3772,7 +3773,7 @@ enum WidgetGalleryViews {
 }
 #endif
 
-#if DEBUG && !WIDGET_GALLERY
+#if DEBUG && !WIDGET_GALLERY && false
 /// 在 Xcode 里看放假彩炮的真机效果：画布下方依次点三条时间线（平时 → 按下 → 平时），
 /// 系统会和桌面上一样在两条之间插值播动画。日期钉在国庆第二天。
 private enum FireworksPreview {

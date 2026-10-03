@@ -130,6 +130,75 @@ struct ManualScheduleChecks {
         app.setUnifiedHolidaysEnabled(true, tableId: table.id)
         precondition(app.calendarAdjustments(of: app.tables.first { $0.id == table.id }!) == unified)
 
+        let makeup = CalendarAdjustment(date: "2026-10-10", kind: .swap, source: "2026-10-08", note: "补班")
+        app.updateUnifiedCalendar(unified + [makeup])
+        app.setUnifiedMakeupEnabled(false, tableId: table.id)
+        precondition(app.calendarAdjustments(of: app.tables.first { $0.id == table.id }!).map(\.date) == unified.map(\.date))
+        app.setUnifiedMakeupEnabled(true, tableId: table.id)
+        precondition(app.calendarAdjustments(of: app.tables.first { $0.id == table.id }!).contains(makeup))
+
+        // 编辑不同周次的任意节次，拆成连续行后可以再次编辑整门课。
+        var original = math[0]
+        original.classNumber = "MATH-001"
+        original.link = "https://example.com/course"
+        original.color = "#123456"
+        original.displayPriority = 3
+        app.updateCourse(original)
+        let family = app.courseFamily(containing: original)
+        var editing = CourseScheduleDraft(courses: family)
+        editing.meetings[0].weeks = [1, 3, 5]
+        editing.meetings[0].slots = [1, 2, 5, 7, 8]
+        editing.meetings[1].weeks = [2, 4, 6]
+        editing.meetings[1].slots = [3, 4]
+        editing.meetings[1].classroom = "B202"
+        precondition(editing.problem(weekCount: 20, slotCount: 13) == nil)
+        // 编辑指定课表时，当前选中其他课表也不能把课程写错位置。
+        app.selectTable(other.id)
+        try! app.saveCourseSchedule(editing, tableID: table.id)
+        let edited = app.courseFamily(containing: original)
+        precondition(edited.count == 4)
+        precondition(edited.filter { $0.weekTime == 1 }.map(\.startTime) == [1, 5, 7])
+        precondition(edited.filter { $0.weekTime == 1 }.allSatisfy {
+            $0.weeks == [1, 3, 5] && $0.classNumber == "MATH-001"
+                && $0.link == original.link && $0.color == original.color
+        })
+        precondition(edited.first { $0.weekTime == 3 }?.classroom == "B202")
+        precondition(edited.allSatisfy { $0.tableId == table.id && $0.displayPriority == 3 })
+        precondition(Set(edited.map(\.id)).count == 4)
+        precondition(Set(edited.map(\.courseKey)).count == 1)
+        precondition(edited.contains { $0.id == original.id })
+        precondition(app.courses.filter { $0.tableId == table.id && $0.name == "物理实验" }.count == 1)
+        let reopened = CourseScheduleDraft(courses: edited)
+        try! app.saveCourseSchedule(reopened, tableID: table.id)
+        precondition(app.courseFamily(containing: original) == edited)
+
+        // 无周次、无节次、越界都拦住；自由时间不强制节次，旧收起状态保留。
+        editing.meetings[0].weeks = []
+        precondition(editing.problem(weekCount: 20, slotCount: 13) != nil)
+        editing.meetings[0].weeks = [21]
+        precondition(editing.problem(weekCount: 20, slotCount: 13) != nil)
+        editing.meetings[0].weeks = [1]
+        editing.meetings[0].slots = []
+        precondition(editing.problem(weekCount: 20, slotCount: 13) != nil)
+        editing.meetings[0].isFreeTime = true
+        editing.meetings[0].hidden = true
+        precondition(editing.problem(weekCount: 20, slotCount: 13) == nil)
+        let free = editing.rows(tableID: table.id)[0]
+        precondition(free.isFreeTime && free.isHidden && free.weeks == [1])
+
+        // 移除安排后，其他行保留；新增课程仍有教师和备注。
+        var trimmed = reopened
+        trimmed.meetings.removeLast()
+        try! app.saveCourseSchedule(trimmed, tableID: table.id)
+        precondition(app.courseFamily(containing: original).count == 3)
+        var added = CourseScheduleDraft(courses: [])
+        added.name = "新课程"
+        added.teacher = "新老师"
+        added.note = "备注"
+        try! app.saveCourseSchedule(added, tableID: other.id)
+        let newCourse = app.courses.first { $0.tableId == other.id && $0.name == "新课程" }!
+        precondition(newCourse.teacher == "新老师" && newCourse.info == "备注")
+
         print("ManualScheduleChecks passed")
     }
 }

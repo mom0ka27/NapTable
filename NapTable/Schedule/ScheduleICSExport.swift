@@ -8,6 +8,7 @@ enum NativeScheduleICSExporter {
         result: NativeScheduleResult,
         week: NativeCalendarWeek,
         periods: [NativeSchedulePeriod],
+        seasonalPeriods: [SeasonalClassTimes]? = nil,
         adjustments: [String: ResolvedCalendarAdjustment] = [:],
         timeZone: TimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
     ) -> String {
@@ -22,6 +23,11 @@ enum NativeScheduleICSExporter {
         for column in 1...7 {
             guard week.days.indices.contains(column - 1) else { continue }
             let dateText = week.days[column - 1]
+            let periods = SeasonalClassTimes.resolve(on: dateText,
+                base: periods.map { ClassTime(start: $0.startTime, end: $0.endTime) },
+                seasons: seasonalPeriods).enumerated().map {
+                    NativeSchedulePeriod(number: $0.offset + 1, startTime: $0.element.start, endTime: $0.element.end)
+                }
             guard let day = parseDate(dateText, zone: zone) else { continue }
             let adjustment = adjustments[dateText]
             if adjustment?.suppressesCourses == true { continue }
@@ -40,7 +46,7 @@ enum NativeScheduleICSExporter {
                           let endPeriod = periods.first(where: { $0.number == range.end }),
                           let start = date(day: day, time: startPeriod.startTime, zone: zone),
                           let end = date(day: day, time: endPeriod.endTime, zone: zone), end > start else { continue }
-                    let identity = course.nativeId ?? course.sourceKey ?? course.name
+                    let identity = course.customId ?? course.liveActivitySourceID ?? course.nativeId ?? course.sourceKey ?? course.id
                     let uid = "\(week.week)-\(column)-\(range.start)-\(range.end)-\(identity)"
                         .unicodeScalars.map { $0.value < 128 ? String($0) : String(format: "%02X", $0.value) }.joined()
                     lines.append("BEGIN:VEVENT")

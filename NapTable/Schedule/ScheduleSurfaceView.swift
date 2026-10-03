@@ -1,5 +1,11 @@
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
 // Ported from ../CPU-Web/ios_next (CpuTime) `NativeScheduleView.swift`.
 //
 // The layout and interaction model are kept close to the original; the surface
@@ -41,6 +47,12 @@ struct NativeScheduleView: View {
     @State private var monthAnchor = ""
     @State private var selectedMonthDate = ""
     @State private var pendingMonthDay: String?
+    @State private var monthDayDetails: MonthDaySelection?
+    @State private var pendingMonthAction: MonthDayAction?
+    @State private var transitionCapture = ScheduleTransitionCapture()
+    @State private var outgoingSchedule: PlatformImage?
+    @State private var outgoingOpacity = 0.0
+    @State private var sourceTransitionID = UUID()
 
     init(
         store: NativeScheduleStore,
@@ -69,7 +81,8 @@ struct NativeScheduleView: View {
     }
 
     private var showsFreeTimeEntry: Bool {
-        preferences.showFreeTimeCourses && store.result != nil && !weeklyFreeCourses().isEmpty
+        // 入口是否显示只取决于整张课表，翻周时仅更新角标，不改变顶栏尺寸。
+        preferences.showFreeTimeCourses && store.result != nil && !store.freeCourses.isEmpty
     }
 
     var body: some View {
@@ -82,14 +95,6 @@ struct NativeScheduleView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 8)
                     .background(chromeBackground)
-            }
-
-            if showsFreeTimeEntry {
-                freeTimeEntry(weeklyFreeCourses())
-                    .padding(.horizontal, Self.contentInset)
-                    .padding(.vertical, 8)
-                    .background(chromeBackground)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
             }
 
             ScheduleOuterContainer(scrolls: viewMode != .month) {
@@ -139,10 +144,17 @@ struct NativeScheduleView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .background(chromeBackground, ignoresSafeAreaEdges: [.horizontal, .bottom])
             }
-            // Keep slot heights stable when the pinned free-time entry changes.
-            // Smaller screens scroll to the final period instead of squeezing text.
+            .background { ScheduleTransitionAnchor(capture: transitionCapture) }
+            .overlay {
+                if let outgoingSchedule {
+                    Image(platformImage: outgoingSchedule)
+                        .resizable()
+                        .opacity(outgoingOpacity)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
         }
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: showsFreeTimeEntry)
         .environment(\.scheduleHasBackgroundImage, displayedBackground != nil)
         .background {
             ZStack {
@@ -192,14 +204,36 @@ struct NativeScheduleView: View {
         }
         .onChange(of: viewMode) { _, mode in
             // 进入月视图时跟随当前浏览到的那一天，而不是停在上次翻到的月份。
-            if mode == .month { seedMonthSelection(store.result, reset: true) }
+            if mode == .month {
+                seedMonthSelection(store.result, reset: true)
+            } else {
+                monthDayDetails = nil
+            }
+        }
+        .onChange(of: reduceMotion) { _, reduced in
+            if reduced { clearSourceTransition() }
+        }
+        .onDisappear { clearSourceTransition() }
+        .sheet(item: $monthDayDetails, onDismiss: finishMonthDayAction) { selection in
+            NativeScheduleMonthDayDetails(
+                day: selection.day,
+                slot: selection.slot,
+                onOpenDay: {
+                    pendingMonthAction = .openDay(selection.day.date)
+                    monthDayDetails = nil
+                },
+                onCourseSelected: { block in
+                    pendingMonthAction = .course(block, date: selection.day.date)
+                    monthDayDetails = nil
+                }
+            )
         }
         .sheet(item: $selectedCourse) { selection in
             Group {
                 if store.isReadOnly {
                     SharedCourseDetailView(course: selection.course)
                 } else {
-                    NativeCourseEditorSheet(selection: selection, store: store)
+                    NativeCourseEditorSheet(selection: selection, store: store, defaultWeek: Int(store.selectedWeek) ?? 1)
                 }
             }
                 .appSheetDetents([.large])
@@ -267,9 +301,7 @@ struct NativeScheduleView: View {
             ?? "教务原始课表发生了变化，请重新核对课程安排。"
     }
 
-    /// NapTable also stores courses with no fixed weekday ("自由时间课程").
-    /// CpuTime has no such concept, so instead of dropping them they get their
-    /// own opaque entry pinned above the scrolling timetable.
+    /// 自由时间课程按当前浏览周次筛选，通过顶栏的固定入口查看。
     private func weeklyFreeCourses() -> [NativeScheduleCourse] {
         let week = weekNumber(store.selectedWeek)
         return store.freeCourses.filter { course in
@@ -282,35 +314,33 @@ struct NativeScheduleView: View {
         Button {
             freeCoursesPresented = true
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "clock.badge.questionmark")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.cpuBrand)
-                Text("有 \(courses.count) 门自由时间课程")
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-            // A slim outlined row, not glass: it is content next to the
-            // timetable, and glass belongs to the floating controls.
-            .background { ScheduleSurface(cornerRadius: 12, isCard: true) }
-            .contentShape(Rectangle())
+            headerIcon("clock.badge.questionmark")
+                .overlay(alignment: .topTrailing) {
+                    Text(courses.count > 99 ? "99+" : String(courses.count))
+                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(courses.isEmpty ? Color.secondary : Color.white)
+                        .padding(.horizontal, 3)
+                        .frame(minWidth: 14, minHeight: 14)
+                        .background(courses.isEmpty ? AnyShapeStyle(.scheduleCanvas) : AnyShapeStyle(Color.cpuBrand), in: Capsule())
+                        .offset(x: -1, y: 1)
+                }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .accessibilityLabel("有 \(courses.count) 门自由时间课程，点击查看安排")
+        .accessibilityLabel("自由时间课程")
+        .accessibilityValue("本周 \(courses.count) 门，点击查看安排")
+        .transaction { $0.animation = nil }
     }
 
     private func freeTimeSheet() -> some View {
-        NavigationStack {
+        let courses = weeklyFreeCourses()
+        return NavigationStack {
             List {
                 Section {
-                    ForEach(weeklyFreeCourses()) { course in
+                    if courses.isEmpty {
+                        Text("本周没有自由时间课程")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(courses) { course in
                         Button {
                             selectedCourse = SelectedCourse(course: course, day: 0, bigSlot: 0, startSlot: 0, endSlot: 0)
                             freeCoursesPresented = false
@@ -476,7 +506,7 @@ struct NativeScheduleView: View {
             get: { store.selectedSemester },
             set: { value in
                 guard value != store.selectedSemester else { return }
-                Task { await store.selectSemester(value) }
+                Task { await switchSchedule(to: value) }
             }
         )
         return Menu {
@@ -519,15 +549,50 @@ struct NativeScheduleView: View {
                     .background(Color.cpuBrand.opacity(0.12), in: Circle())
             }
             .foregroundStyle(.primary)
-            .frame(minHeight: 36)
+            // Menu 会按标签的自然宽度居中；在标签内部固定靠左，长短名称共用起点。
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // A source change may also animate the free-time entry below the header.
-        // Keep the menu's anchor and label out of that layout animation.
+        // Keep the menu's anchor and label out of navigation animations.
         .transaction { $0.animation = nil }
         .accessibilityLabel("选择课表")
         .accessibilityValue(selected.map { $0.isShared ? "共享课表 \($0.label)" : $0.label } ?? "")
+    }
+
+    @MainActor
+    private func switchSchedule(to value: String) async {
+        let transitionID = UUID()
+        // 只截取屏幕上已有的画面；旧课表不会跟随新 store 重算，也无需再渲染一套网格。
+        let image = reduceMotion ? nil : transitionCapture.snapshot()
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            sourceTransitionID = transitionID
+            outgoingSchedule = image
+            outgoingOpacity = image == nil ? 0 : 1
+        }
+        await store.selectSemester(value)
+        guard image != nil else { return }
+        await Task.yield()
+        guard sourceTransitionID == transitionID, !reduceMotion else { return }
+        // 新课表一直保持完整不透明，旧画面从上方淡出，避免先变暗再恢复造成闪烁。
+        withAnimation(.easeInOut(duration: 0.22), completionCriteria: .removed) {
+            outgoingOpacity = 0
+        } completion: {
+            guard sourceTransitionID == transitionID else { return }
+            clearSourceTransition()
+        }
+    }
+
+    private func clearSourceTransition() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            sourceTransitionID = UUID()
+            outgoingSchedule = nil
+            outgoingOpacity = 0
+        }
     }
 
     /// Harmony's schedule surface keeps refresh, editing and presentation
@@ -575,6 +640,14 @@ struct NativeScheduleView: View {
                     headerIcon("applewatch")
                 }
                 .accessibilityLabel("Apple Watch 课表同步")
+            }
+
+            // 显示设置开启时始终保留这个按钮，切换课表不会增减工具栏宽度。
+            // 没有自由时间课程的课表显示灰色的 0，避免图标突然插入并挤动标题。
+            if preferences.showFreeTimeCourses {
+                freeTimeEntry(weeklyFreeCourses())
+                    .foregroundStyle(store.freeCourses.isEmpty ? Color.secondary : Color.primary)
+                    .disabled(store.freeCourses.isEmpty)
             }
 
             Button {
@@ -785,26 +858,44 @@ struct NativeScheduleView: View {
             dateIndex: monthDateIndex,
             blocks: { day, week in blocks(for: day, week: week, result: result) },
             adjustments: store.calendar?.adjustments ?? [:],
-            onSelect: { date in
-                selectMonthDate(date, result: result)
+            onSelect: { day in
+                selectMonthDate(day.date, result: result)
+                monthDayDetails = MonthDaySelection(day: day, slot: monthDateIndex[day.date])
             },
-            onMoveMonth: moveMonth,
-            onOpenDay: { date in
-                openDayView(date)
-            },
-            onCourseSelected: { block, date in
-                guard let slot = monthDateIndex[date] else { return }
-                let effective = effectiveSlot(day: slot.day, week: slot.week, result: result)
-                selectedCourse = SelectedCourse(
-                    course: block.course,
-                    day: effective.day,
-                    bigSlot: block.bigSlot,
-                    startSlot: block.startSlot,
-                    endSlot: block.endSlot
-                )
-            }
+            onMoveMonth: moveMonth
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private struct MonthDaySelection: Identifiable {
+        // 每次点击都有独立的呈现身份，同一日期在关闭后也能重新打开。
+        let id = UUID()
+        let day: NativeScheduleMonthView.Day
+        let slot: NativeScheduleMonthView.DaySlot?
+    }
+
+    private enum MonthDayAction {
+        case openDay(String)
+        case course(NativeScheduleCourseBlock, date: String)
+    }
+
+    private func finishMonthDayAction() {
+        guard let action = pendingMonthAction else { return }
+        pendingMonthAction = nil
+        switch action {
+        case .openDay(let date):
+            openDayView(date)
+        case .course(let block, let date):
+            guard let result = store.result, let slot = monthDateIndex[date] else { return }
+            let effective = effectiveSlot(day: slot.day, week: slot.week, result: result)
+            selectedCourse = SelectedCourse(
+                course: block.course,
+                day: effective.day,
+                bigSlot: block.bigSlot,
+                startSlot: block.startSlot,
+                endSlot: block.endSlot
+            )
+        }
     }
 
     /// 日期 -> 教学周与星期几。学期日历之外的日期查不到，月历会把它当成非教学日。
@@ -986,11 +1077,16 @@ struct NativeScheduleView: View {
             pages: pages,
             selection: Binding(
                 get: { NativeScheduleDayPage(week: store.selectedWeek.nilIfEmpty, day: selectedDay) },
-                set: { selectDayPage($0, result: result) }
+                set: {
+                    guard store.result?.currentSemester == result.currentSemester else { return }
+                    selectDayPage($0, result: result)
+                }
             ),
             width: width,
             content: page
         )
+        // 新课表从自己的浏览周次初始化，丢弃旧课表的惯性滚动和跳周动画。
+        .id(result.currentSemester)
     }
 
     private func weekPager<Page: View>(
@@ -1004,12 +1100,16 @@ struct NativeScheduleView: View {
             singlePageJumps: true,
             selection: Binding(
                 get: { store.selectedWeek },
-                set: { store.commitWeekSelection($0) }
+                set: {
+                    guard store.result?.currentSemester == result.currentSemester else { return }
+                    store.commitWeekSelection($0)
+                }
             ),
             width: width
         ) { week in
             page(weekNumber(week))
         }
+        .id(result.currentSemester)
     }
 
     private func selectDayPage(_ target: NativeScheduleDayPage, result: NativeScheduleResult) {
@@ -1033,8 +1133,10 @@ struct NativeScheduleView: View {
         showsDateHeader: Bool = true
     ) -> some View {
         let slotCount = slotCount(week: week, result: result)
+        let date = store.calendar?.weeks.first(where: { $0.week == week })?.days[safe: (days.first ?? 1) - 1]
         return HStack(alignment: .top, spacing: Self.columnGap) {
-            slotAxis(rowHeight: rowHeight, slotCount: slotCount, showsHeader: showsDateHeader)
+            slotAxis(rowHeight: rowHeight, slotCount: slotCount, showsHeader: showsDateHeader,
+                     clocks: date.map { store.periods(on: $0) })
 
             ForEach(days, id: \.self) { day in
                 let slot = effectiveSlot(day: day, week: week, result: result)
@@ -1069,7 +1171,8 @@ struct NativeScheduleView: View {
     private func slotAxis(
         rowHeight: CGFloat = NativeScheduleDayColumn.slotHeight,
         slotCount: Int = ScheduleSlot.all.count,
-        showsHeader: Bool = true
+        showsHeader: Bool = true,
+        clocks: [NativeSchedulePeriod]? = nil
     ) -> some View {
         VStack(spacing: 0) {
             if showsHeader {
@@ -1080,7 +1183,7 @@ struct NativeScheduleView: View {
             }
 
             VStack(spacing: NativeScheduleDayColumn.slotGap) {
-                ForEach(ScheduleSlot.all.prefix(slotCount), id: \.number) { slot in
+                ForEach((clocks?.map { ScheduleSlot(number: $0.number, start: $0.startTime, end: $0.endTime) } ?? ScheduleSlot.all).prefix(slotCount), id: \.number) { slot in
                     VStack(spacing: 2) {
                         Text("\(slot.number)")
                             .font(.caption.weight(.bold).monospacedDigit())
@@ -1341,75 +1444,42 @@ struct NativeScheduleView: View {
         requestLoad(force: true)
     }
 
-    /// Renders the currently visible grid into a shareable PNG. Ported from
-    /// CpuTime 4.0, which replaced the plain-text share with the actual image.
+    /// 分享图单独计算比例，课程和调休数据仍使用当前浏览的课表。
     @MainActor
     private func exportScheduleImage(_ result: NativeScheduleResult) {
         let week = Int(store.selectedWeek) ?? Int(result.currentWeek) ?? 1
         let isDayView = viewMode == .day
-        let canvasWidth: CGFloat = isDayView ? 620 : 980
-        let gridWidth = canvasWidth - 48
-        let exportDays = visibleDays
-        let columnWidth = isDayView
-            ? max(220, gridWidth - Self.slotAxisWidth - Self.columnGap)
-            : max(
-                72,
-                (gridWidth - Self.slotAxisWidth - CGFloat(exportDays.count - 1) * Self.columnGap)
-                    / CGFloat(exportDays.count)
-            )
-        let grid: AnyView
-        if isDayView {
-            grid = AnyView(
-                scheduleRows(
-                    result: result,
-                    week: week,
-                    days: [selectedDay],
-                    columnWidth: columnWidth,
-                    compactCards: false,
-                    rowHeight: dayGridRowHeight,
-                    showsDateHeader: false
-                )
-            )
-        } else {
-            grid = AnyView(
-                scheduleRows(
-                    result: result,
-                    week: week,
-                    days: exportDays,
-                    columnWidth: columnWidth,
-                    compactCards: false,
-                    rowHeight: weekGridRowHeight,
-                    showsDateHeader: preferences.showDateHeader
-                )
+        let exportDays = isDayView ? [selectedDay] : visibleDays
+        let layout = ScheduleShareImageLayout(
+            isDayView: isDayView,
+            slotCount: slotCount(week: week, result: result)
+        )
+        let date = isDayView
+            ? [dayLabel(selectedDay), dayDate(selectedDay, week: week, result: result)]
+                .compactMap { $0 }.joined(separator: " · ")
+            : weekRange(result)
+        let content = ScheduleShareImage(
+            layout: layout,
+            title: semesterTitle(result),
+            subtitle: date ?? "",
+            week: week
+        ) {
+            scheduleRows(
+                result: result,
+                week: week,
+                days: exportDays,
+                columnWidth: layout.columnWidth(
+                    dayCount: exportDays.count,
+                    axisWidth: Self.slotAxisWidth,
+                    gap: Self.columnGap
+                ),
+                compactCards: false,
+                rowHeight: layout.rowHeight,
+                showsDateHeader: !isDayView
             )
         }
-
-        let content = VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(AppBrand.name)
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.cpuBrand)
-                    Text("\(AppBrand.subtitle) · \(semesterTitle(result)) · 第 \(week) 周")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isDayView {
-                    Text("\(dayLabel(selectedDay)) · \(dayDate(selectedDay, week: week, result: result) ?? "")")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                } else if let range = weekRange(result), !range.isEmpty {
-                    Text(range)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            grid
-        }
-        .padding(24)
-        .frame(width: canvasWidth, alignment: .leading)
-        .background(.scheduleCanvas)
+        .environment(\.colorScheme, colorScheme)
+        .environment(\.appThemeBrand, NativeThemeSettings.shared.brandRGB)
 
         guard let data = content.platformRenderedImageData() else { return }
         let suffix = isDayView ? "日课表" : "周课表"
@@ -1430,6 +1500,7 @@ struct NativeScheduleView: View {
             result: result,
             week: weekData,
             periods: store.periods,
+            seasonalPeriods: store.seasonalPeriods,
             adjustments: calendar.adjustments,
             timeZone: store.timeZone
         )
@@ -1821,14 +1892,18 @@ struct NativeScheduleView: View {
             }
             if let current { merged.append(current) }
         }
-        var laneEnds: [Int] = []
-        return merged.sorted(by: { ($0.startSlot, $0.endSlot, $0.id) < ($1.startSlot, $1.endSlot, $1.id) }).map { block in
-            let lane = laneEnds.firstIndex(where: { $0 < block.startSlot }) ?? laneEnds.count
-            if lane == laneEnds.count {
-                laneEnds.append(block.endSlot)
-            } else {
-                laneEnds[lane] = block.endSlot
-            }
+        var laneRanges: [[ClosedRange<Int>]] = []
+        return merged.sorted(by: {
+            let left = $0.course.displayPriority ?? 0, right = $1.course.displayPriority ?? 0
+            if left != right { return left > right }
+            return ($0.startSlot, $0.endSlot, $0.id) < ($1.startSlot, $1.endSlot, $1.id)
+        }).map { block in
+            let range = block.startSlot...block.endSlot
+            let lane = laneRanges.firstIndex(where: { ranges in
+                ranges.allSatisfy { !$0.overlaps(range) }
+            }) ?? laneRanges.count
+            if lane == laneRanges.count { laneRanges.append([]) }
+            laneRanges[lane].append(range)
             return block.withLane(lane)
         }
     }
@@ -2036,19 +2111,10 @@ private struct SchedulePagingScrollView<PageID: Hashable, Content: View>: View {
     }
 
     var body: some View {
-        Group {
-            if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *) {
-                pager
-                    .onScrollPhaseChange { _, phase in
-                        // 拖动及减速期间只更新分页器内部位置，停稳后再发布周次。
-                        // 避免快速反向滑动时反复重排顶栏、外框和全部课程页面。
-                        if phase == .idle { commitVisiblePage() }
-                    }
-            } else {
-                pager
-                    .onChange(of: visiblePage) { _, _ in commitVisiblePage() }
-            }
-        }
+        pager
+        // 页标识变化时立即同步周次/日期；连续拖动或反向滑动无需等待 idle。
+        // 自由时间入口尺寸固定，更新周次不会再触发整个课表的横幅过渡。
+        .onChange(of: visiblePage) { _, _ in commitVisiblePage() }
         .opacity(jump == nil ? 1 : 0)
         .overlay(alignment: .topLeading) {
             if let jump {
@@ -2136,6 +2202,72 @@ private struct SchedulePagingScrollView<PageID: Hashable, Content: View>: View {
     }
 
 }
+
+/// 仅在用户切换课表时截取当前可见区域，过渡结束后释放图片。
+@MainActor
+private final class ScheduleTransitionCapture {
+    #if canImport(UIKit)
+    weak var anchor: UIView?
+
+    func snapshot() -> PlatformImage? {
+        guard let anchor, let window = anchor.window,
+              anchor.bounds.width > 0, anchor.bounds.height > 0 else { return nil }
+        // 只截取课表所在的控制器，避免把正在收起的菜单一起截入旧画面。
+        var root = anchor
+        while !(root.next is UIViewController), let parent = root.superview {
+            root = parent
+        }
+        let rect = anchor.convert(anchor.bounds, to: root)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = window.screen.scale
+        return UIGraphicsImageRenderer(size: rect.size, format: format).image { _ in
+            root.drawHierarchy(in: root.bounds.offsetBy(dx: -rect.minX, dy: -rect.minY),
+                               afterScreenUpdates: false)
+        }
+    }
+    #elseif canImport(AppKit)
+    weak var anchor: NSView?
+
+    func snapshot() -> PlatformImage? {
+        guard let anchor, let content = anchor.window?.contentView,
+              anchor.bounds.width > 0, anchor.bounds.height > 0 else { return nil }
+        let rect = anchor.convert(anchor.bounds, to: content)
+        guard let bitmap = content.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        content.cacheDisplay(in: rect, to: bitmap)
+        let image = NSImage(size: rect.size)
+        image.addRepresentation(bitmap)
+        return image
+    }
+    #endif
+}
+
+#if canImport(UIKit)
+private struct ScheduleTransitionAnchor: UIViewRepresentable {
+    let capture: ScheduleTransitionCapture
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        capture.anchor = view
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) { capture.anchor = view }
+}
+#elseif canImport(AppKit)
+private struct ScheduleTransitionAnchor: NSViewRepresentable {
+    let capture: ScheduleTransitionCapture
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        capture.anchor = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) { capture.anchor = view }
+}
+#endif
 
 /// 月视图固定外框，由内部分页器处理滚动和底部安全区；日/周保留纵向滚动。
 private struct ScheduleOuterContainer<Content: View>: View {

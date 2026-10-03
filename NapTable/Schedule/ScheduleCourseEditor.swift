@@ -19,500 +19,249 @@ func nativeCourseEditKey(day: Int, bigSlot: Int, course: NativeScheduleCourse) -
     ].joined(separator: "|")
 }
 
+/// 课表长按与设置列表共用同一个本地课程编辑器。
 struct NativeCourseEditorSheet: View {
     let selection: SelectedCourse?
     @ObservedObject var store: NativeScheduleStore
-    let defaultDay: Int
-    let defaultWeek: Int
-    let defaultStartSlot: Int
+    var defaultDay = 1
+    var defaultWeek = 1
+    var defaultStartSlot = 1
+    @EnvironmentObject private var app: AppStore
+
+    private var original: Course? {
+        guard let id = selection?.course.customId,
+              let rowID = Int(id.replacingOccurrences(of: "course:", with: "")) else { return nil }
+        return app.courses.first { $0.id == rowID }
+    }
+
+    var body: some View {
+        if store.isReadOnly {
+            Text("共享课表只读")
+        } else if selection != nil && original == nil {
+            Text("课程已不存在，请关闭后重新打开")
+        } else {
+            CourseScheduleEditorSheet(
+                tableID: original?.tableId ?? app.selectedTableId,
+                courses: original.map { app.courseFamily(containing: $0) } ?? [],
+                alternatives: original.map { app.coursesInTimeRange(of: $0) } ?? [],
+                defaultDay: defaultDay,
+                defaultWeek: defaultWeek,
+                defaultSlot: defaultStartSlot
+            )
+        }
+    }
+}
+
+struct CourseScheduleEditorSheet: View {
+    let tableID: Int
+    @EnvironmentObject private var app: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var name: String
-    @State private var teacher: String
-    @State private var location: String
-    @State private var note: String
-    @State private var day: Int
-    @State private var isFreeTime: Bool
-    @State private var startSlot: Int
-    @State private var endSlot: Int
-    @State private var weekMode: String
-    @State private var selectedWeeks: Set<Int>
-    @State private var saving = false
+    @State private var drafts: [CourseScheduleDraft]
+    @State private var selectedIndex = 0
+    @State private var deletedIDs: Set<Int> = []
     @State private var errorMessage: String?
     @State private var confirmingDelete = false
 
-    init(selection: SelectedCourse?, store: NativeScheduleStore, defaultDay: Int = 1, defaultWeek: Int = 1, defaultStartSlot: Int = 1) {
-        self.selection = selection
-        self.store = store
-        self.defaultDay = defaultDay
-        self.defaultWeek = defaultWeek
-        self.defaultStartSlot = defaultStartSlot
-        let course = selection?.course
-        _name = State(initialValue: course?.name ?? "")
-        _teacher = State(initialValue: course?.teacher ?? "")
-        _location = State(initialValue: course?.location ?? "")
-        _note = State(initialValue: course?.slotNote ?? "")
-        _day = State(initialValue: selection?.day ?? defaultDay)
-        _isFreeTime = State(initialValue: selection?.day == 0)
-        _startSlot = State(initialValue: selection?.startSlot ?? defaultStartSlot)
-        _endSlot = State(initialValue: selection?.endSlot ?? min(defaultStartSlot + 1, ScheduleSlot.all.count))
-        let list = course?.weekList ?? [defaultWeek]
-        _weekMode = State(initialValue: list.isEmpty ? "all" : (list == [defaultWeek] ? "current" : "custom"))
-        _selectedWeeks = State(initialValue: Set(list.isEmpty ? [defaultWeek] : list))
+    init(tableID: Int, courses: [Course], alternatives: [[Course]] = [], defaultDay: Int = 1, defaultWeek: Int = 1, defaultSlot: Int = 1) {
+        self.tableID = tableID
+        let otherFamilies = alternatives.filter { family in
+            !family.contains { row in courses.contains { $0.id == row.id } }
+        }
+        _drafts = State(initialValue: ([courses] + otherFamilies).map { family in
+            CourseScheduleDraft(courses: family, defaultDay: defaultDay, defaultWeek: defaultWeek, defaultSlot: defaultSlot)
+        })
     }
 
-    /// NapTable's grid renders one row per teaching slot, so the editor offers
-    /// the same range instead of the fixed eleven the CpuTime bridge used.
-    private var maxSlot: Int { max(1, ScheduleSlot.all.count) }
+    private var draft: CourseScheduleDraft {
+        get { drafts.indices.contains(selectedIndex) ? drafts[selectedIndex] : CourseScheduleDraft(courses: []) }
+        nonmutating set { if drafts.indices.contains(selectedIndex) { drafts[selectedIndex] = newValue } }
+    }
+    private var draftBinding: Binding<CourseScheduleDraft> {
+        Binding(get: { draft }, set: { draft = $0 })
+    }
+
+    private var table: CourseTable? { app.tables.first { $0.id == tableID } }
+    private var weekCount: Int { table.map(app.weekCount(of:)) ?? app.maxWeeks }
+    private var slotCount: Int {
+        max(SchoolDefaults.maxClasses, table?.effectiveClassTimeList.count ?? 0,
+            table?.seasonalPeriods?.map { $0.periods.count }.max() ?? 0)
+    }
+    private var hasOverlappingCourses: Bool {
+        app.hasCourseOverlap(in: drafts, selectedIndex: selectedIndex, tableID: tableID, deleting: deletedIDs)
+    }
+
+    private var priorityRank: Int {
+        max(app.courses.filter { $0.tableId == tableID }.compactMap(\.displayPriority).max() ?? 0,
+            drafts.compactMap(\.displayPriority).max() ?? 0)
+    }
+    private var isPreferred: Bool { (draft.displayPriority ?? 0) > 0 && draft.displayPriority == drafts.compactMap(\.displayPriority).max() }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let selection, selection.course.custom || selection.course.orphaned {
-                        editorCard { courseStatusCard(selection.course) }
-                    }
-
-                    Text("课程信息")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                    editorCard {
-                        editorFieldRow("课程") {
-                            TextField("课程名称", text: $name)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        editorFieldRow("老师") {
-                            TextField("选填", text: $teacher)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        editorFieldRow("地点") {
-                            TextField("选填", text: $location)
-                                .multilineTextAlignment(.trailing)
-                        }
-                        editorFieldRow("备注") {
-                            TextField("选填", text: $note)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("时间段")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        if canRestoreOriginalCourse, let sourceKey = selection?.course.sourceKey {
-                            Button { restoreOriginal(sourceKey: sourceKey) } label: {
-                                Label("使用教务安排", systemImage: "arrow.uturn.backward")
-                                    .font(.caption.weight(.semibold))
+            Form {
+                if drafts.count > 1 {
+                    Section {
+                        Picker("编辑课程", selection: $selectedIndex) {
+                            ForEach(drafts.indices, id: \.self) { index in
+                                Text(courseLabel(at: index)).tag(index)
                             }
-                            .foregroundStyle(Color.cpuBrand)
-                            .disabled(saving)
                         }
-                    }
-                    .padding(.horizontal, 4)
-
-                    editorCard {
-                        editorFieldRow("周数") {
-                            Picker("周次范围", selection: $weekMode) {
-                                Text("本周").tag("current")
-                                Text("全部周").tag("all")
-                                Text("指定周次").tag("custom")
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                        }
-                        if weekMode == "custom" {
-                            weekChipPicker
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                        } else {
-                            Text(weekMode == "all" ? "这门课会显示在全部周次" : "第 \(defaultWeek) 周")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 14)
-                                .padding(.bottom, 10)
-                        }
-                        Toggle("自由时间（无固定星期和节次）", isOn: $isFreeTime)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 48)
-                            .onChange(of: isFreeTime) { _, free in
-                                if free {
-                                    day = 0
-                                    startSlot = 0
-                                    endSlot = 0
-                                } else {
-                                    day = min(max(defaultDay, 1), 7)
-                                    startSlot = max(1, defaultStartSlot)
-                                    endSlot = max(startSlot, defaultStartSlot)
-                                }
-                            }
-                        if !isFreeTime {
-                            editorFieldRow("星期") {
-                                Picker("星期", selection: $day) {
-                                    ForEach(1...7, id: \.self) { Text(dayLabel($0)).tag($0) }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                            }
-                            // NapTable's bell schedule is per course table (13 slots
-                            // by default, up to 15 for some schools), so the editor
-                            // must offer every slot the grid actually renders.
-                            editorStepperRow("开始第 \(startSlot) 节", value: $startSlot, range: 1...maxSlot)
-                            editorStepperRow("结束第 \(endSlot) 节", value: $endSlot, range: startSlot...maxSlot)
-                        } else {
-                            Text("课程会显示在课表顶部，不会进入星期/节次网格。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 14)
-                                .padding(.bottom, 10)
-                        }
-                    }
-
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        .pickerStyle(.menu)
+                    } footer: {
+                        Text("同一时段共 \(drafts.count) 门课程，包含其他周次和已收起的安排。切换会保留修改，点保存一起生效。")
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .scrollIndicators(.hidden)
-            .navigationTitle(selection == nil ? "添加课程" : "编辑课程")
-            .appInlineNavigationTitle()
-            .onChange(of: weekMode) { _, mode in
-                if mode == "all" {
-                    selectedWeeks = Set(weekNumberOptions)
-                } else if mode == "current" {
-                    selectedWeeks = [defaultWeek]
+                if !drafts.isEmpty {
+                    Section("课程信息") {
+                        TextField("课程名称", text: draftBinding.name)
+                        TextField("教师（选填）", text: draftBinding.teacher)
+                        TextField("备注（选填）", text: draftBinding.note)
+                        if hasOverlappingCourses {
+                            Button {
+                                draft.displayPriority = priorityRank < Int.max ? priorityRank + 1 : priorityRank
+                            } label: {
+                                Label(isPreferred ? "当前优先显示" : "优先显示这门课", systemImage: isPreferred ? "checkmark.circle.fill" : "circle")
+                            }
+                            .disabled(isPreferred)
+                        }
+                    }
+                    ForEach(draftBinding.meetings) { $meeting in
+                        Section {
+                            TextField("教室（选填）", text: $meeting.classroom)
+                            Toggle("自由时间", isOn: $meeting.isFreeTime)
+                            if !meeting.isFreeTime {
+                                Picker("星期", selection: $meeting.day) {
+                                    ForEach(1...7, id: \.self) { day in
+                                        Text(WeekCalculator.weekdayName(day)).tag(day)
+                                    }
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("上课周次").font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Menu("快捷选择") {
+                                        Button("全部周") { meeting.weeks = Set(1...weekCount) }
+                                        Button("单周") { meeting.weeks = Set((1...weekCount).filter { $0 % 2 == 1 }) }
+                                        Button("双周") { meeting.weeks = Set((1...weekCount).filter { $0 % 2 == 0 }) }
+                                        Button("清空") { meeting.weeks = [] }
+                                    }
+                                    .font(.caption)
+                                }
+                                numberPicker(values: Array(1...weekCount), selection: $meeting.weeks, unit: "周")
+                            }
+                            .padding(.vertical, 6)
+                            if !meeting.isFreeTime {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("上课节次").font(.subheadline.weight(.semibold))
+                                    numberPicker(values: Array(1...slotCount), selection: $meeting.slots, unit: "节")
+                                }
+                                .padding(.vertical, 6)
+                            }
+                            Toggle("收起这组安排", isOn: $meeting.hidden)
+                            if draft.meetings.count > 1 {
+                                Button("移除这组安排", role: .destructive) {
+                                    draft.meetings.removeAll { $0.id == meeting.id }
+                                }
+                            }
+                        } header: {
+                            Text("上课安排 \(arrangementNumber(meeting.id))")
+                        } footer: {
+                            Text("可选择多个周次和节次。不同周的节次不同，可添加另一组安排。")
+                        }
+                    }
+                    Section {
+                        Button {
+                            var meeting = CourseScheduleMeeting(day: 1, weeks: Set(1...weekCount), slots: [1, 2])
+                            meeting.classroom = draft.meetings.last?.classroom ?? ""
+                            draft.meetings.append(meeting)
+                        } label: {
+                            Label("添加上课安排", systemImage: "plus.circle")
+                        }
+                    }
+                }
+                if !deletedIDs.isEmpty {
+                    Section { Text("已移除的课程将在保存后删除。").font(.caption).foregroundStyle(.secondary) }
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
-            // 删除从表单中段挪到导航栏：一直可见，红色图标也比灰蓝的文字按钮显眼。
-            // 删除和保存同组，删除在左、保存仍留在最右角；误触由确认弹窗兜底。
+            .appListBackground()
+            .navigationTitle(!drafts.isEmpty && draft.originals.isEmpty ? "添加课程" : "编辑课程")
+                .appInlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { dismiss() } label: {
-                        Label("取消", systemImage: "xmark")
-                            .labelStyle(.iconOnly)
+                        Label("取消", systemImage: "xmark").labelStyle(.iconOnly)
                     }
                 }
                 ToolbarItemGroup(placement: .confirmationAction) {
-                    if selection != nil {
+                    if !draft.originals.isEmpty {
                         Button(role: .destructive) { confirmingDelete = true } label: {
-                            Label("删除课程", systemImage: "trash")
-                                .labelStyle(.iconOnly)
+                            Label("删除课程", systemImage: "trash").labelStyle(.iconOnly)
                         }
                         .tint(.red)
-                        .foregroundStyle(.red)
-                        .disabled(saving)
-                        // 挂在垃圾桶按钮上，确认框从导航栏的按钮旁边弹出，而不是飘在表单中间。
-                        .confirmationDialog("删除这门课程？", isPresented: $confirmingDelete, titleVisibility: .visible) {
-                            Button("删除", role: .destructive) { deleteCourse() }
+                        .confirmationDialog("删除这门课的全部上课安排？", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                            Button("删除", role: .destructive) {
+                                deletedIDs.formUnion(draft.originals.map(\.id))
+                                drafts.remove(at: selectedIndex)
+                                selectedIndex = min(selectedIndex, max(0, drafts.count - 1))
+                            }
                             Button("取消", role: .cancel) {}
                         } message: {
-                            // NapTable 的课都在本机，删除就是真删；导入时收起的课在
-                            // 「课表设置 → 收起的课程」里恢复，编辑器里没有恢复区。
-                            Text("这门课会从课表中删除。")
+                            Text("只移除当前课程，其他课程的修改保留；点保存后生效。")
                         }
                     }
-                    Button { saveCourse() } label: {
-                        if saving {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("保存", systemImage: "checkmark")
-                                .labelStyle(.iconOnly)
-                                .font(.body.weight(.semibold))
-                        }
-                    }
-                    .disabled(saving)
-                }
-            }
-        }
-    }
-
-    private var canRestoreOriginalCourse: Bool {
-        guard let course = selection?.course else { return false }
-        return course.customId != nil && course.sourceKey != nil
-    }
-
-    @ViewBuilder
-    private func editorCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0, content: content)
-            .background(Color.appSecondaryGroupedBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func editorFieldRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(.body)
-                .foregroundStyle(.primary)
-            Spacer(minLength: 8)
-            content()
-                .font(.body)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: 190, alignment: .trailing)
-        }
-        .frame(minHeight: 48)
-        .padding(.horizontal, 14)
-        .overlay(alignment: .bottom) {
-            Divider().padding(.horizontal, 14)
-        }
-    }
-
-    private func editorStepperRow(_ title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(.body)
-                .foregroundStyle(.primary)
-            Spacer(minLength: 8)
-            Stepper("", value: value, in: range)
-                .labelsHidden()
-        }
-        .frame(minHeight: 48)
-        .padding(.horizontal, 14)
-        .overlay(alignment: .bottom) {
-            Divider().padding(.horizontal, 14)
-        }
-    }
-
-    @ViewBuilder
-    private func courseStatusCard(_ course: NativeScheduleCourse) -> some View {
-        // 这张卡片和下面的字段卡片共用 14pt 的左右内边距，图标徽章沿用设置页
-        // 的品牌色圆角底，需要核对的课程换成橙色以示区分。
-        let needsCheck = course.orphaned
-        let tint = needsCheck ? Color.orange : Color.cpuBrand
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: statusIcon(for: course))
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 28, height: 28)
-                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(needsCheck ? "这门课的安排需要核对" : statusTitle(for: course))
-                        .font(.subheadline.weight(.semibold))
-                    Text(statusMessage(for: course))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-            if needsCheck {
-                Divider()
-                Text("继续用自己的安排，可保留为自定义课程；以教务为准，可选择“使用教务安排”。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("保留为自定义课程") { saveCourse(keepAsCustom: true) }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(tint)
-                    .disabled(saving)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
-
-    private func statusIcon(for course: NativeScheduleCourse) -> String {
-        if course.orphaned { return "exclamationmark.triangle.fill" }
-        if course.custom { return "square.and.pencil" }
-        if course.sourceKey != nil { return "pencil" }
-        return "building.columns"
-    }
-
-    private func statusTitle(for course: NativeScheduleCourse) -> String {
-        if course.custom { return "自定义课程" }
-        if course.sourceKey != nil { return "已编辑课程" }
-        return "教务课程"
-    }
-
-    private func statusMessage(for course: NativeScheduleCourse) -> String {
-        if course.orphaned {
-            return "当前教务课表与保存编辑时的信息未能对应，可能是时间、周次、老师或地点变化，不表示课程已取消。这里仍保留着你的编辑。"
-        }
-        if course.sourceKey != nil {
-            return "这是你编辑过的课程，可通过“使用教务安排”移除个人修改。"
-        }
-        if course.custom {
-            return "这是你添加或保留的自定义课程，不属于教务课表。"
-        }
-        return "这是来自教务系统的课程安排。"
-    }
-
-    private func saveCourse(keepAsCustom: Bool = false) {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { errorMessage = "请填写课程名称"; return }
-        let maxSlot = max(1, ScheduleSlot.all.count)
-        let freeTime = isFreeTime
-        let start = freeTime ? 0 : min(max(startSlot, 1), maxSlot)
-        let end = freeTime ? 0 : min(max(endSlot, start), maxSlot)
-        let weekList: [Int]
-        if weekMode == "all" {
-            weekList = []
-        } else if weekMode == "current" {
-            weekList = [defaultWeek]
-        } else {
-            weekList = selectedWeeks.sorted()
-            guard !weekList.isEmpty else {
-                errorMessage = "请选择至少一个周次"
-                return
-            }
-        }
-        let weeks = weekList.isEmpty ? "全部周" : "第 \(weekList.map(String.init).joined(separator: ",")) 周"
-        let source = selection?.course
-        let editingSourceKey: String? = source.flatMap {
-            // A pure custom course has no official source to hide or restore.
-            if $0.customId != nil, $0.sourceKey == nil { return nil }
-            return nativeCourseEditKey(
-                day: selection?.day ?? day,
-                bigSlot: selection?.bigSlot ?? (freeTime ? 0 : Int(ceil(Double(start) / 2))),
-                course: $0
-            )
-        }
-        let savedSourceKey = keepAsCustom ? nil : editingSourceKey
-        let customID = source?.customId ?? "custom-\(UUID().uuidString.lowercased())"
-        let item = NativeScheduleCustomItem(
-            id: customID,
-            sourceKey: savedSourceKey,
-            day: freeTime ? 0 : day,
-            bigSlot: freeTime ? 0 : Int(ceil(Double(start) / 2)),
-            course: NativeScheduleCourse(
-                name: trimmedName,
-                teacher: teacher,
-                weeks: weeks,
-                weekList: weekList,
-                location: location,
-                slotNote: note.isEmpty ? (freeTime ? "自由时间" : "第 \(start)-\(end) 节") : note,
-                startSlot: freeTime ? nil : start,
-                endSlot: freeTime ? nil : end,
-                sourceKey: savedSourceKey,
-                customId: customID,
-                custom: true
-            )
-        )
-        saving = true
-        Task { @MainActor in
-            do {
-                var edits = try await store.loadScheduleEdits()
-                if let source {
-                    if let customId = source.customId {
-                        edits.custom.removeAll { $0.id == customId }
-                    } else {
-                        if !keepAsCustom, let key = editingSourceKey, !key.isEmpty && !edits.hidden.contains(key) {
-                            edits.hidden.append(key)
-                        }
-                        if let editingSourceKey {
-                            edits.custom.removeAll { $0.sourceKey == editingSourceKey }
-                        }
+                    Button { saveAll() } label: {
+                        Label("保存", systemImage: "checkmark").labelStyle(.iconOnly)
                     }
                 }
-                edits.custom.removeAll { $0.id == item.id }
-                edits.custom.append(item)
-                try await store.saveScheduleEdits(edits)
-                dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
             }
-            saving = false
         }
     }
 
-    private func deleteCourse() {
-        guard let source = selection?.course else { return }
-        saving = true
-        Task { @MainActor in
-            do {
-                var edits = try await store.loadScheduleEdits()
-                if let customId = source.customId {
-                    edits.custom.removeAll { $0.id == customId }
-                } else {
-                    let key = nativeCourseEditKey(day: selection?.day ?? 1, bigSlot: selection?.bigSlot ?? 1, course: source)
-                    if !key.isEmpty && !edits.hidden.contains(key) { edits.hidden.append(key) }
-                    edits.custom.removeAll { $0.sourceKey == key }
-                }
-                try await store.saveScheduleEdits(edits)
-                dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            saving = false
-        }
+    private func saveAll() {
+        do {
+            try app.saveCourseSchedules(drafts, tableID: tableID, deleting: deletedIDs)
+            dismiss()
+        } catch { errorMessage = error.localizedDescription }
     }
 
-    private func restoreOriginal(sourceKey: String) {
-        saving = true
-        Task { @MainActor in
-            do {
-                var edits = try await store.loadScheduleEdits()
-                edits.hidden.removeAll { $0 == sourceKey }
-                edits.custom.removeAll { $0.sourceKey == sourceKey }
-                try await store.saveScheduleEdits(edits)
-                dismiss()
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            saving = false
-        }
+    private func courseLabel(at index: Int) -> String {
+        let value = drafts[index]
+        let room = value.meetings.first?.classroom ?? ""
+        let weeks = WeekSeries.summary(Array(value.meetings.first?.weeks ?? []))
+        return "\(index + 1). \(value.name)" + (room.isEmpty ? "" : " · \(room)") + " · \(weeks)"
     }
 
-    private func dayLabel(_ value: Int) -> String {
-        ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].indices.contains(value - 1)
-            ? ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][value - 1] : "周\(value)"
+    private func arrangementNumber(_ id: UUID) -> Int {
+        (draft.meetings.firstIndex { $0.id == id } ?? 0) + 1
     }
 
-    private var weekNumberOptions: [Int] {
-        let values = (store.result?.weeks ?? []).compactMap { Int($0.value) }.filter { $0 > 0 }
-        if !values.isEmpty { return Array(Set(values)).sorted() }
-        let maxWeek = max(defaultWeek, 20)
-        return Array(1...maxWeek)
-    }
-
-    private var weekChipPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("指定周")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 30), spacing: 6), count: 6), spacing: 6) {
-                    ForEach(weekNumberOptions, id: \.self) { week in
-                        Button {
-                            if selectedWeeks.contains(week) {
-                                selectedWeeks.remove(week)
-                            } else {
-                                selectedWeeks.insert(week)
-                            }
-                        } label: {
-                            Text("\(week)")
-                                .font(.caption.weight(.medium))
-                                .frame(maxWidth: .infinity, minHeight: 30)
-                                .foregroundStyle(selectedWeeks.contains(week) ? Color.cpuBrand : .secondary)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(selectedWeeks.contains(week) ? Color.cpuBrand.opacity(0.14) : Color.appSecondaryGroupedBackground)
-                                }
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .stroke(selectedWeeks.contains(week) ? Color.cpuBrand : Color.appSeparator.opacity(0.45), lineWidth: 1)
-                                }
+    private func numberPicker(values: [Int], selection: Binding<Set<Int>>, unit: String) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 8) {
+            ForEach(values, id: \.self) { value in
+                let selected = selection.wrappedValue.contains(value)
+                Button {
+                    if selected { selection.wrappedValue.remove(value) }
+                    else { selection.wrappedValue.insert(value) }
+                } label: {
+                    Text("\(value)\(unit)")
+                        .font(.caption.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .foregroundStyle(selected ? Color.cpuBrand : .secondary)
+                        .background(selected ? Color.cpuBrand.opacity(0.14) : Color.appSecondaryGroupedBackground,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(selected ? Color.cpuBrand : Color.appSeparator.opacity(0.4), lineWidth: 1)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(saving)
-                        .accessibilityLabel("第 \(week) 周")
-                        .accessibilityAddTraits(selectedWeeks.contains(week) ? .isSelected : [])
-                    }
                 }
-                .padding(.vertical, 2)
+                .buttonStyle(.plain)
+                .accessibilityLabel("第 \(value) \(unit)")
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
-            .frame(maxHeight: 132)
         }
     }
 }

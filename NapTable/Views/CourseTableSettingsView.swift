@@ -172,7 +172,14 @@ struct CourseTableSettingsView: View {
                 get: { table.unifiedHolidaysEnabled != false },
                 set: { store.setUnifiedHolidaysEnabled($0, tableId: tableId) }
             )) {
-                Label("统一假期安排", systemImage: "calendar.badge.clock")
+                Label("统一放假", systemImage: "calendar.badge.clock")
+            }
+
+            Toggle(isOn: Binding(
+                get: { table.unifiedMakeupEnabled != false },
+                set: { store.setUnifiedMakeupEnabled($0, tableId: tableId) }
+            )) {
+                Label("统一调休补班", systemImage: "arrow.triangle.swap")
             }
 
             let adjustments = store.calendarAdjustments(of: table)
@@ -199,9 +206,18 @@ struct CourseTableSettingsView: View {
         } header: {
             Text("作息")
         } footer: {
-            Text(table.unifiedHolidaysEnabled == false
-                 ? "已关闭：法定假日、调休补班都不影响这张课表，每天照常显示课程。"
-                 : "按国务院放假安排调整课程：放假那天不显示课，补班那天上调过来的课。")
+            Text(scheduleAdjustmentFooter(table))
+        }
+    }
+
+    private func scheduleAdjustmentFooter(_ table: CourseTable) -> String {
+        let holidays = table.unifiedHolidaysEnabled != false
+        let makeup = table.unifiedMakeupEnabled != false
+        switch (holidays, makeup) {
+        case (true, true): return "按统一安排调整课程：放假日停课，补班日上调休来源日的课。"
+        case (true, false): return "只按统一放假安排停课，补班日按普通星期几显示。"
+        case (false, true): return "只按统一调休安排补班，放假日按普通星期几显示。"
+        case (false, false): return "已关闭统一放假和统一调休，课表每天按普通星期几显示。"
         }
     }
 
