@@ -150,7 +150,9 @@ struct SettingsView: View {
     private var backgroundSummary: String {
         let light = schedulePreferences.hasOwnBackground(dark: false)
         let dark = schedulePreferences.hasOwnBackground(dark: true)
-        guard light || dark else { return "未设置" }
+        guard light || dark else {
+            return schedulePreferences.usesDefaultBackground ? "沿用默认背景" : "未设置"
+        }
         guard schedulePreferences.backgroundEnabled else { return "已隐藏" }
         let percent = { (value: Double) in "\(Int((value * 100).rounded()))%" }
         return (light && dark ? "浅色、深色各一张" : "两种模式共用一张")

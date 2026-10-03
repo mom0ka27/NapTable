@@ -7,6 +7,7 @@ import SwiftUI
 struct CourseTableSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var purchases = PurchaseManager.shared
     let tableId: Int
 
     @State private var renaming = false
@@ -166,6 +167,19 @@ struct CourseTableSettingsView: View {
                 systemImage: "clock"
             ) {
                 ClassTimesEditor(tableId: tableId)
+            }
+
+            SettingsDestinationRow(
+                title: "背景图片",
+                detail: purchases.allowsPerTableBackgrounds
+                    ? "浅色与深色模式可分别设置"
+                    : "专业版功能",
+                systemImage: "photo.on.rectangle"
+            ) {
+                ScheduleBackgroundSettingsScreen(tableId: tableId)
+                    .navigationTitle("背景图片")
+                    .appInlineNavigationTitle()
+                    .appSoftTopScrollEdge()
             }
 
             Toggle(isOn: Binding(

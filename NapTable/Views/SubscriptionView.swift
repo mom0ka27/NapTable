@@ -526,7 +526,7 @@ private struct EntitlementCard: View {
                     .strokeBorder(accent.opacity(0.14), lineWidth: 0.5)
             }
 
-            benefit("photo.on.rectangle.angled", title: "高级主题设置", detail: "浅色与深色模式分别设置独立背景图")
+            benefit("photo.on.rectangle.angled", title: "高级主题设置", detail: "每张课表可为浅色与深色模式分别设置背景图")
         }
     }
 

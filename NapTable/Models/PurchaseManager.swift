@@ -61,6 +61,11 @@ final class PurchaseManager: ObservableObject {
     var isBeta: Bool { accessMode == .beta }
     var allowsLiveActivities: Bool { isBeta || (accessMode == .paid && state.isEntitled) }
 
+    /// Pro-only display customizations. Beta builds intentionally receive the
+    /// same entitlement so they can exercise the complete product surface.
+    var allowsProFeatures: Bool { isBeta || (accessMode == .paid && state.isEntitled) }
+    var allowsPerTableBackgrounds: Bool { allowsProFeatures }
+
     func start() {
         guard !started else { return }
         started = true

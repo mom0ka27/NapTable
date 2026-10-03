@@ -6,6 +6,7 @@ import ActivityKit
 @main
 struct MyApp: App {
     @StateObject private var store = AppStore()
+    @StateObject private var themeSettings = NativeThemeSettings.shared
 
     init() {
         PurchaseManager.shared.start()
@@ -59,6 +60,8 @@ struct MyApp: App {
         WindowGroup {
             AppEntryView()
                 .environmentObject(store)
+                .environment(\.appThemeBrand, themeSettings.brandRGB)
+                .environment(\.appThemeBackgroundEnabled, themeSettings.themeBackgroundEnabled)
         }
         #if os(macOS)
         .defaultSize(width: 900, height: 720)

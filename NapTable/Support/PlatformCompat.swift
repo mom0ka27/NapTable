@@ -56,41 +56,33 @@ extension Color {
 }
 
 extension EnvironmentValues {
-    /// 当前主题色。深色页面底色按它调出来；主题一换，环境跟着变，用到底色的
-    /// 页面都会重画。`ContentView` 从 `NativeThemeSettings` 注入。
+    /// 当前主题色。页面底色按它调出来；主题一换，环境跟着变，用到底色的
+    /// 页面都会重画。`MyApp` 从 `NativeThemeSettings` 注入。
     @Entry var appThemeBrand: ScheduleLiveActivityRGB = NextWidgetConfiguration.globalBrandColor
+    @Entry var appThemeBackgroundEnabled = true
 }
 
-#if canImport(UIKit)
-/// 深色模式的页面底色：主题色的深色版本，不用纯黑。取主题色的色相，饱和度
-/// 压到一半左右、亮度压到 0.11，只留一点颜色倾向；系统的分组卡片叠在上面仍分得出层次。
-/// 自定义主题挑了灰色时饱和度本来就低，自然退回中性深灰。
-func appDarkCanvas(brand: ScheduleLiveActivityRGB) -> UIColor {
-    var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0
-    UIColor(red: brand.red, green: brand.green, blue: brand.blue, alpha: 1)
-        .getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
-    return UIColor(hue: hue, saturation: saturation * 0.55, brightness: 0.11, alpha: 1)
-}
-#endif
-
-/// 整页底色。浅色跟系统走；深色用主题色的深色版本。弹出的 sheet 系统本来就会
-/// 抬亮，那里照旧用系统色。
+/// 整页底色：关闭主题背景时使用系统默认颜色，开启时融入少量主题色。
 struct AppBackgroundStyle: ShapeStyle {
-    /// 分组列表（Form / List）的底色，否则是普通页面底色。
     var grouped = false
 
     func resolve(in environment: EnvironmentValues) -> Color {
-        #if canImport(UIKit)
-        let dark = appDarkCanvas(brand: environment.appThemeBrand)
-        let system: UIColor = grouped ? .systemGroupedBackground : .systemBackground
-        return Color(uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark && traits.userInterfaceLevel != .elevated
-                ? dark
-                : system.resolvedColor(with: traits)
-        })
-        #else
-        return Color(nsColor: .windowBackgroundColor)
-        #endif
+        guard environment.appThemeBackgroundEnabled else {
+            #if canImport(UIKit)
+            return Color(uiColor: grouped ? .systemGroupedBackground : .systemBackground)
+            #else
+            return Color(nsColor: .windowBackgroundColor)
+            #endif
+        }
+        let dark = environment.colorScheme == .dark
+        let base = dark ? 0.0 : 1.0
+        let amount = dark ? 0.10 : 0.05
+        let brand = environment.appThemeBrand.clamped
+        return Color(
+            red: base * (1 - amount) + brand.red * amount,
+            green: base * (1 - amount) + brand.green * amount,
+            blue: base * (1 - amount) + brand.blue * amount
+        )
     }
 }
 
@@ -100,8 +92,7 @@ extension ShapeStyle where Self == AppBackgroundStyle {
 }
 
 extension View {
-    /// 设置、导入这些 Form / List 页面换成 `appGroupedBackground`，深色时是主题色
-    /// 的深色版本，不是系统的纯黑底。
+    /// 设置、导入等 Form / List 页面的底色跟随主题背景偏好。
     func appListBackground() -> some View {
         scrollContentBackground(.hidden)
             .background(.appGroupedBackground)

@@ -44,6 +44,15 @@ final class NativeSchedulePreferences: ObservableObject {
 
     private let defaults: UserDefaults
     private var ready = false
+    /// Background images are kept outside the course data because they are
+    /// large binary files. Each timetable gets its own profile; the old
+    /// unscoped profile remains the fallback for upgraded installations.
+    private var tableBackgroundProfiles: [String: TableBackgroundProfile] = [:]
+    private var globalBackgroundProfile = TableBackgroundProfile()
+    private var activeTableKey: String?
+    /// Nil means this table is still inheriting the legacy/default profile.
+    private var activeStorageKey: String?
+    private var switchingProfile = false
 
 
     private enum Key {
@@ -61,6 +70,17 @@ final class NativeSchedulePreferences: ObservableObject {
         static let backgroundPathDark = "nativeSchedule.backgroundPathDark"
         static let backgroundEnabled = "nativeSchedule.backgroundEnabled"
         static let backgroundPlacementDark = "nativeSchedule.backgroundPlacementDark"
+        static let tableBackgroundProfiles = "nativeSchedule.tableBackgroundProfiles"
+    }
+
+    private struct TableBackgroundProfile: Codable, Equatable {
+        var backgroundPath = ""
+        var backgroundPathDark = ""
+        var backgroundEnabled = true
+        var backgroundOpacity = NativeSchedulePreferences.defaultBackgroundOpacity
+        var backgroundOpacityDark = NativeSchedulePreferences.defaultDarkOpacity(
+            light: NativeSchedulePreferences.defaultBackgroundOpacity
+        )
     }
 
     /// 背景图在编辑页里的摆放。原图和它一起留着，下次打开编辑页能接着上次调。
@@ -96,7 +116,111 @@ final class NativeSchedulePreferences: ObservableObject {
         backgroundImage = nil
         backgroundImageDark = nil
         loadBackgroundImage()
+        globalBackgroundProfile = currentBackgroundProfile
+        if let data = defaults.data(forKey: Key.tableBackgroundProfiles),
+           let profiles = try? JSONDecoder().decode([String: TableBackgroundProfile].self, from: data) {
+            tableBackgroundProfiles = profiles
+        }
         ready = true
+    }
+
+    /// Switches the background profile used by the timetable surface and by
+    /// the per-table settings page. A nil id means a shared/default profile
+    /// (for example while viewing a followed shared timetable).
+    func activate(tableID: Int?) {
+        let key = tableID.map { "table:\($0)" }
+        guard key != activeTableKey else { return }
+        if ready { saveCurrentBackgroundProfile(promote: false) }
+        activeTableKey = key
+        activeStorageKey = key.flatMap { tableBackgroundProfiles[$0] == nil ? nil : $0 }
+        let profile = key.flatMap { tableBackgroundProfiles[$0] } ?? globalBackgroundProfile
+        switchingProfile = true
+        backgroundPath = profile.backgroundPath
+        backgroundPathDark = profile.backgroundPathDark
+        backgroundEnabled = profile.backgroundEnabled
+        backgroundOpacity = Self.clampedOpacity(profile.backgroundOpacity)
+        backgroundOpacityDark = Self.clampedOpacity(profile.backgroundOpacityDark)
+        switchingProfile = false
+        loadBackgroundImage()
+        objectWillChange.send()
+    }
+
+    var activeTableID: Int? {
+        guard let key = activeTableKey, key.hasPrefix("table:") else { return nil }
+        return Int(key.dropFirst("table:".count))
+    }
+
+    var usesDefaultBackground: Bool {
+        activeTableKey != nil && activeStorageKey == nil && (backgroundImage != nil || backgroundImageDark != nil)
+    }
+
+    private var currentBackgroundProfile: TableBackgroundProfile {
+        TableBackgroundProfile(
+            backgroundPath: backgroundPath,
+            backgroundPathDark: backgroundPathDark,
+            backgroundEnabled: backgroundEnabled,
+            backgroundOpacity: Self.clampedOpacity(backgroundOpacity),
+            backgroundOpacityDark: Self.clampedOpacity(backgroundOpacityDark)
+        )
+    }
+
+    private func saveCurrentBackgroundProfile(promote: Bool = true) {
+        if promote { promoteActiveTableIfNeeded() }
+        let profile = currentBackgroundProfile
+        if let activeTableKey {
+            tableBackgroundProfiles[activeTableKey] = profile
+            if let data = try? JSONEncoder().encode(tableBackgroundProfiles) {
+                defaults.set(data, forKey: Key.tableBackgroundProfiles)
+            }
+        } else {
+            globalBackgroundProfile = profile
+        }
+    }
+
+    /// Creates a private copy only when the user edits an inherited table.
+    /// Until then the table continues to follow the existing default image.
+    private func promoteActiveTableIfNeeded() {
+        guard let key = activeTableKey, activeStorageKey == nil else { return }
+        let copied = materializeGlobalProfile(for: key)
+        activeStorageKey = key
+        switchingProfile = true
+        backgroundPath = copied.backgroundPath
+        backgroundPathDark = copied.backgroundPathDark
+        switchingProfile = false
+        tableBackgroundProfiles[key] = copied
+        if let data = try? JSONEncoder().encode(tableBackgroundProfiles) {
+            defaults.set(data, forKey: Key.tableBackgroundProfiles)
+        }
+    }
+
+    private func materializeGlobalProfile(for tableKey: String) -> TableBackgroundProfile {
+        var profile = globalBackgroundProfile
+        for dark in [false, true] {
+            let source = Self.backgroundFileURL(dark: dark, tableKey: nil)
+            let destination = Self.backgroundFileURL(dark: dark, tableKey: tableKey)
+            guard !path(dark: dark).isEmpty,
+                  FileManager.default.fileExists(atPath: source.path) else {
+                if dark { profile.backgroundPathDark = "" } else { profile.backgroundPath = "" }
+                continue
+            }
+            do {
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.copyItem(at: source, to: destination)
+                if dark { profile.backgroundPathDark = destination.path } else { profile.backgroundPath = destination.path }
+                let sourceURL = Self.backgroundSourceURL(dark: dark, tableKey: nil)
+                let destinationSource = Self.backgroundSourceURL(dark: dark, tableKey: tableKey)
+                if FileManager.default.fileExists(atPath: sourceURL.path) {
+                    try? FileManager.default.copyItem(at: sourceURL, to: destinationSource)
+                }
+                if let placement = defaults.data(forKey: Self.placementKey(dark: dark)) {
+                    defaults.set(placement, forKey: placementKey(dark: dark, tableKey: tableKey))
+                }
+            } catch {
+                if dark { profile.backgroundPathDark = "" } else { profile.backgroundPath = "" }
+            }
+        }
+        return profile
     }
 
     static let viewOptions = ["week", "day", "month"]
@@ -139,7 +263,7 @@ final class NativeSchedulePreferences: ObservableObject {
 
     /// 这个外观有没有自己的一张图（而不是沿用另一个外观的）。
     func hasOwnBackground(dark: Bool) -> Bool {
-        !path(dark: dark).isEmpty
+        (activeTableKey == nil || activeStorageKey != nil) && !path(dark: dark).isEmpty
     }
 
     static let defaultHideSlotsAfter = 9
@@ -256,10 +380,26 @@ final class NativeSchedulePreferences: ObservableObject {
         return directory.appendingPathComponent(dark ? "schedule-background-dark.jpg" : "schedule-background.jpg")
     }
 
+    /// Per-table files live in separate directories so switching tables never
+    /// overwrites another table's light or dark image.
+    private static func backgroundFileURL(dark: Bool, tableKey: String?) -> URL {
+        guard let tableKey else { return backgroundFileURL(dark: dark) }
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("NapTable", isDirectory: true)
+            .appendingPathComponent("backgrounds", isDirectory: true)
+            .appendingPathComponent(tableKey.replacingOccurrences(of: ":", with: "-"), isDirectory: true)
+        return directory.appendingPathComponent(dark ? "dark.jpg" : "light.jpg")
+    }
+
     /// 裁剪前的原图（已缩到长边 3000 像素）。课表页只读裁好的那张。
     static func backgroundSourceURL(dark: Bool) -> URL {
         backgroundFileURL(dark: dark).deletingLastPathComponent()
             .appendingPathComponent(dark ? "schedule-background-dark-source.jpg" : "schedule-background-source.jpg")
+    }
+
+    private static func backgroundSourceURL(dark: Bool, tableKey: String?) -> URL {
+        backgroundFileURL(dark: dark, tableKey: tableKey).deletingLastPathComponent()
+            .appendingPathComponent(dark ? "dark-source.jpg" : "light-source.jpg")
     }
 
     static var backgroundFileURL: URL { backgroundFileURL(dark: false) }
@@ -275,6 +415,11 @@ final class NativeSchedulePreferences: ObservableObject {
 
     private static func placementKey(dark: Bool) -> String {
         dark ? Key.backgroundPlacementDark : Key.backgroundPlacement
+    }
+
+    private func placementKey(dark: Bool, tableKey: String?) -> String {
+        guard let tableKey else { return Self.placementKey(dark: dark) }
+        return "\(Self.placementKey(dark: dark)).\(tableKey)"
     }
 
     func reset() {
@@ -297,9 +442,10 @@ final class NativeSchedulePreferences: ObservableObject {
     /// 直接换一张已经裁好的图（从备份恢复时），传 nil 就是移除这个外观的图。
     /// 它和旧原图对不上，所以旧原图和摆放一并清掉，之后再调整就以这张图本身为原图。
     func setBackgroundData(_ data: Data?, dark: Bool = false) throws {
-        let url = Self.backgroundFileURL(dark: dark)
-        try? FileManager.default.removeItem(at: Self.backgroundSourceURL(dark: dark))
-        defaults.removeObject(forKey: Self.placementKey(dark: dark))
+        promoteActiveTableIfNeeded()
+        let url = Self.backgroundFileURL(dark: dark, tableKey: activeStorageKey)
+        try? FileManager.default.removeItem(at: Self.backgroundSourceURL(dark: dark, tableKey: activeStorageKey))
+        defaults.removeObject(forKey: placementKey(dark: dark, tableKey: activeStorageKey))
         if let data {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
@@ -312,11 +458,12 @@ final class NativeSchedulePreferences: ObservableObject {
 
     /// 编辑页按「使用」：裁好的图给课表页显示，原图和摆放留着下次再调。
     func setBackground(cropped: Data, source: Data, placement: BackgroundPlacement, dark: Bool = false) throws {
-        let url = Self.backgroundFileURL(dark: dark)
+        promoteActiveTableIfNeeded()
+        let url = Self.backgroundFileURL(dark: dark, tableKey: activeStorageKey)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try source.write(to: Self.backgroundSourceURL(dark: dark), options: .atomic)
+        try source.write(to: Self.backgroundSourceURL(dark: dark, tableKey: activeStorageKey), options: .atomic)
         try cropped.write(to: url, options: .atomic)
-        defaults.set(try? JSONEncoder().encode(placement), forKey: Self.placementKey(dark: dark))
+        defaults.set(try? JSONEncoder().encode(placement), forKey: placementKey(dark: dark, tableKey: activeStorageKey))
         // 路径不变时 didSet 照样会触发，裁好的新图会被重新读进来。
         setPath(url.path, dark: dark)
     }
@@ -325,14 +472,14 @@ final class NativeSchedulePreferences: ObservableObject {
     /// 就拿裁好的那张顶上。
     func backgroundSourceData(dark: Bool = false) -> Data? {
         guard hasOwnBackground(dark: dark) else { return nil }
-        return FileManager.default.contents(atPath: Self.backgroundSourceURL(dark: dark).path)
-            ?? FileManager.default.contents(atPath: Self.backgroundFileURL(dark: dark).path)
+        return FileManager.default.contents(atPath: Self.backgroundSourceURL(dark: dark, tableKey: activeStorageKey).path)
+            ?? FileManager.default.contents(atPath: Self.backgroundFileURL(dark: dark, tableKey: activeStorageKey).path)
     }
 
     /// 上次的摆放；只有原图还在时才有意义，否则从头摆。
     func backgroundPlacement(dark: Bool = false) -> BackgroundPlacement {
-        guard FileManager.default.fileExists(atPath: Self.backgroundSourceURL(dark: dark).path),
-              let data = defaults.data(forKey: Self.placementKey(dark: dark)),
+        guard FileManager.default.fileExists(atPath: Self.backgroundSourceURL(dark: dark, tableKey: activeStorageKey).path),
+              let data = defaults.data(forKey: placementKey(dark: dark, tableKey: activeStorageKey)),
               let placement = try? JSONDecoder().decode(BackgroundPlacement.self, from: data) else {
             return BackgroundPlacement()
         }
@@ -340,15 +487,15 @@ final class NativeSchedulePreferences: ObservableObject {
     }
 
     private func loadBackgroundImage() {
-        backgroundImage = Self.loadImage(path: backgroundPath, dark: false)
-        backgroundImageDark = Self.loadImage(path: backgroundPathDark, dark: true)
+        backgroundImage = loadImage(path: backgroundPath, dark: false)
+        backgroundImageDark = loadImage(path: backgroundPathDark, dark: true)
     }
 
     /// 存下来的绝对路径只当「设过背景」的标记用：沙盒目录的 UUID 会在
     /// App 更新或重装后变掉，按旧路径读会让背景图在升级后凭空消失。
-    private static func loadImage(path: String, dark: Bool) -> ScheduleBackgroundImage? {
+    private func loadImage(path: String, dark: Bool) -> ScheduleBackgroundImage? {
         guard !path.isEmpty else { return nil }
-        let file = backgroundFileURL(dark: dark).path
+        let file = Self.backgroundFileURL(dark: dark, tableKey: activeStorageKey).path
         #if canImport(UIKit)
         return UIImage(contentsOfFile: file)
         #else
@@ -357,7 +504,7 @@ final class NativeSchedulePreferences: ObservableObject {
     }
 
     private func persist() {
-        guard ready else { return }
+        guard ready, !switchingProfile else { return }
         defaults.set(showWeekend, forKey: Key.showWeekend)
         defaults.set(showDateHeader, forKey: Key.showDateHeader)
         defaults.set(showFreeTimeCourses, forKey: Key.showFreeTimeCourses)
@@ -365,10 +512,15 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(Self.densityOptions.contains(density) ? density : "comfortable", forKey: Key.density)
         defaults.set(hideLateSlots, forKey: Key.hideLateSlots)
         defaults.set(Self.clampedHideSlotsAfter(hideSlotsAfter), forKey: Key.hideSlotsAfter)
-        defaults.set(backgroundPath, forKey: Key.backgroundPath)
-        defaults.set(backgroundPathDark, forKey: Key.backgroundPathDark)
-        defaults.set(backgroundEnabled, forKey: Key.backgroundEnabled)
-        defaults.set(Self.clampedOpacity(backgroundOpacity), forKey: Key.backgroundOpacity)
-        defaults.set(Self.clampedOpacity(backgroundOpacityDark), forKey: Key.backgroundOpacityDark)
+        // The legacy keys represent the shared/default profile. A table edit
+        // must never overwrite that profile for the next app launch.
+        if activeTableKey == nil {
+            defaults.set(backgroundPath, forKey: Key.backgroundPath)
+            defaults.set(backgroundPathDark, forKey: Key.backgroundPathDark)
+            defaults.set(backgroundEnabled, forKey: Key.backgroundEnabled)
+            defaults.set(Self.clampedOpacity(backgroundOpacity), forKey: Key.backgroundOpacity)
+            defaults.set(Self.clampedOpacity(backgroundOpacityDark), forKey: Key.backgroundOpacityDark)
+        }
+        saveCurrentBackgroundProfile()
     }
 }

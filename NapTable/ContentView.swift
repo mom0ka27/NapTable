@@ -109,8 +109,6 @@ struct ContentView: View {
             Text(restorationFailure ?? "")
         }
         #endif
-        // 深色页面底色按主题色调，挂在最外层，弹出的页面也拿得到。
-        .environment(\.appThemeBrand, themeSettings.brandRGB)
     }
 
     /// The surface brings its own header, so it only has to be told about the

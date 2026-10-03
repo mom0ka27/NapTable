@@ -22,6 +22,7 @@ import SwiftUI
 struct NativeScheduleView: View {
     @ObservedObject private var store: NativeScheduleStore
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
     private let onAddTable: () -> Void
     private let onLogin: () -> Void
     private let showsWatch: Bool
@@ -74,6 +75,12 @@ struct NativeScheduleView: View {
         preferences.visibleBackgroundImage(dark: colorScheme == .dark)
     }
 
+    private var displayedTableID: Int? {
+        guard purchases.allowsPerTableBackgrounds,
+              !store.selectedSemester.hasPrefix("share:") else { return nil }
+        return Int(store.selectedSemester)
+    }
+
     /// 顶栏和课表区域自己的底色。有背景图片时必须透明，否则整张图会被这层
     /// 底色盖住；图片下面那层 `scheduleCanvas` 由 `body` 的背景统一铺满全屏。
     private var chromeBackground: AnyShapeStyle {
@@ -97,61 +104,69 @@ struct NativeScheduleView: View {
                     .background(chromeBackground)
             }
 
-            ScheduleOuterContainer(scrolls: viewMode != .month) {
-                VStack(alignment: .leading, spacing: 16) {
-                    // A timetable already on screen is never replaced by a
-                    // state card. Authorization and refresh problems appear as
-                    // a banner above it instead.
-                    if let result = store.result {
-                        if isUnauthorized {
-                            authorizationBanner
-                                .padding(.horizontal, Self.contentInset)
-                        } else if !isLoading, let message = errorMessage {
-                            errorBanner(message)
-                                .padding(.horizontal, Self.contentInset)
-                        }
+            // 视口始终占满顶栏下的空间，不随课表节数变化；旧截图在这个固定视口里淡出。
+            GeometryReader { viewport in
+                ScheduleOuterContainer(scrolls: viewMode != .month) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // A timetable already on screen is never replaced by a
+                        // state card. Authorization and refresh problems appear as
+                        // a banner above it instead.
+                        if let result = store.result {
+                            if isUnauthorized {
+                                authorizationBanner
+                                    .padding(.horizontal, Self.contentInset)
+                            } else if !isLoading, let message = errorMessage {
+                                errorBanner(message)
+                                    .padding(.horizontal, Self.contentInset)
+                            }
 
-                        let adjustments = visibleAdjustments(result)
-                        if !adjustments.isEmpty {
-                            adjustmentBanner(adjustments)
+                            let adjustments = visibleAdjustments(result)
+                            if !adjustments.isEmpty {
+                                adjustmentBanner(adjustments)
+                                    .padding(.horizontal, Self.contentInset)
+                            }
+
+                            switch viewMode {
+                            case .week:
+                                weekGrid(result)
+                            case .day:
+                                dayGrid(result)
+                            case .month:
+                                monthCalendar(result)
+                            }
+                        } else if isUnauthorized {
+                            authorizationState
+                                .padding(.horizontal, Self.contentInset)
+                        } else if isLoading {
+                            loadingState
+                                .padding(.horizontal, Self.contentInset)
+                        } else if let message = errorMessage {
+                            errorState(message)
+                                .padding(.horizontal, Self.contentInset)
+                        } else {
+                            loadingState
                                 .padding(.horizontal, Self.contentInset)
                         }
-
-                        switch viewMode {
-                        case .week:
-                            weekGrid(result)
-                        case .day:
-                            dayGrid(result)
-                        case .month:
-                            monthCalendar(result)
-                        }
-                    } else if isUnauthorized {
-                        authorizationState
-                            .padding(.horizontal, Self.contentInset)
-                    } else if isLoading {
-                        loadingState
-                            .padding(.horizontal, Self.contentInset)
-                    } else if let message = errorMessage {
-                        errorState(message)
-                            .padding(.horizontal, Self.contentInset)
-                    } else {
-                        loadingState
-                            .padding(.horizontal, Self.contentInset)
                     }
+                    .padding(.top, 8)
+                    .padding(.bottom, viewMode == .month ? 0 : 8)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(chromeBackground, ignoresSafeAreaEdges: [.horizontal, .bottom])
                 }
-                .padding(.top, 8)
-                .padding(.bottom, viewMode == .month ? 0 : 8)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(chromeBackground, ignoresSafeAreaEdges: [.horizontal, .bottom])
-            }
-            .background { ScheduleTransitionAnchor(capture: transitionCapture) }
-            .overlay {
-                if let outgoingSchedule {
-                    Image(platformImage: outgoingSchedule)
-                        .resizable()
-                        .opacity(outgoingOpacity)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+                .frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading)
+                .background { ScheduleTransitionAnchor(capture: transitionCapture) }
+                .overlay(alignment: .topLeading) {
+                    if let outgoingSchedule {
+                        Image(platformImage: outgoingSchedule)
+                            .resizable()
+                            // 截图保留捕获时的尺寸，不按新课表的高度缩放或居中。
+                            .frame(width: outgoingSchedule.size.width, height: outgoingSchedule.size.height)
+                            .frame(width: viewport.size.width, height: viewport.size.height, alignment: .topLeading)
+                            .clipped()
+                            .opacity(outgoingOpacity)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
                 }
             }
         }
@@ -171,6 +186,7 @@ struct NativeScheduleView: View {
             .ignoresSafeArea()
         }
         .task {
+            preferences.activate(tableID: displayedTableID)
             viewMode = SurfaceViewMode(rawValue: preferences.defaultView) ?? .week
             adoptSelectionIfNeeded()
             if viewMode == .month { seedMonthSelection(store.result) }
@@ -186,6 +202,17 @@ struct NativeScheduleView: View {
         }
         .onChange(of: store.result?.currentSemester) { _, _ in
             adoptSelectionIfNeeded()
+        }
+        .onChange(of: store.selectedSemester, initial: true) { _, _ in
+            preferences.activate(tableID: displayedTableID)
+        }
+        .onChange(of: purchases.allowsPerTableBackgrounds) { _, _ in
+            preferences.activate(tableID: displayedTableID)
+        }
+        .onAppear {
+            // Settings can temporarily activate another table while this view
+            // remains alive in the tab bar.
+            preferences.activate(tableID: displayedTableID)
         }
         .onChange(of: store.result?.currentWeek) { _, _ in
             adoptSelectionIfNeeded()
@@ -807,6 +834,7 @@ struct NativeScheduleView: View {
             ), alignment: .top)
             .clipped()
             .contentShape(Rectangle())
+            .animation(nil, value: result.currentSemester)
         }
     }
 
@@ -841,6 +869,7 @@ struct NativeScheduleView: View {
             ), alignment: .top)
             .clipped()
             .contentShape(Rectangle())
+            .animation(nil, value: result.currentSemester)
         }
     }
 
@@ -1480,6 +1509,7 @@ struct NativeScheduleView: View {
         }
         .environment(\.colorScheme, colorScheme)
         .environment(\.appThemeBrand, NativeThemeSettings.shared.brandRGB)
+        .environment(\.appThemeBackgroundEnabled, NativeThemeSettings.shared.themeBackgroundEnabled)
 
         guard let data = content.platformRenderedImageData() else { return }
         let suffix = isDayView ? "日课表" : "周课表"

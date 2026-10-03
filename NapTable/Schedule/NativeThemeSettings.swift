@@ -9,14 +9,17 @@ final class NativeThemeSettings: ObservableObject {
     @Published private(set) var theme: ScheduleLiveActivityTheme
     @Published private(set) var customColor: ScheduleLiveActivityRGB
     @Published private(set) var solidCourseColors: Bool
+    @Published private(set) var themeBackgroundEnabled: Bool
 
     private let defaults: UserDefaults?
+    private static let themeBackgroundKey = "scheduleThemeBackgroundEnabled"
 
     private init() {
         defaults = UserDefaults(suiteName: NextWidgetConfiguration.appGroup)
         theme = NextWidgetConfiguration.globalTheme
         customColor = NextWidgetConfiguration.globalCustomColor
         solidCourseColors = NextWidgetConfiguration.solidCourseColors
+        themeBackgroundEnabled = defaults?.object(forKey: Self.themeBackgroundKey) as? Bool ?? true
     }
 
     var brandRGB: ScheduleLiveActivityRGB {
@@ -47,6 +50,11 @@ final class NativeThemeSettings: ObservableObject {
     func setSolidCourseColors(_ value: Bool) {
         solidCourseColors = value
         persist()
+    }
+
+    func setThemeBackgroundEnabled(_ value: Bool) {
+        themeBackgroundEnabled = value
+        defaults?.set(value, forKey: Self.themeBackgroundKey)
     }
 
     private func persist() {

@@ -77,24 +77,10 @@ extension EnvironmentValues {
     @Entry var scheduleHasBackgroundImage = false
 }
 
-/// 课表页的底色。浅色是一层带点冷调的近白，白色的格子和卡片靠一圈细边浮
-/// 出来（学的是网页版课表）；深色是主题色的深色版本，不用纯黑。
+/// 课表页与设置列表共用背景偏好，关闭主题背景时使用系统分组背景色。
 struct ScheduleCanvasStyle: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color {
-        #if canImport(UIKit)
-        let dark = appDarkCanvas(brand: environment.appThemeBrand)
-        return Color(uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? dark
-                : UIColor(red: 0.965, green: 0.971, blue: 0.984, alpha: 1)
-        })
-        #else
-        return Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor.windowBackgroundColor
-                : NSColor(red: 0.965, green: 0.971, blue: 0.984, alpha: 1)
-        })
-        #endif
+        AppBackgroundStyle(grouped: true).resolve(in: environment)
     }
 }
 

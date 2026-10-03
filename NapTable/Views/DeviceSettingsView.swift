@@ -82,11 +82,29 @@ struct ScheduleDisplaySettingsScreen: View {
 /// 里的 Section 上，惰性加载的行不一定在屏幕上，跳转可能触发不了。
 struct ScheduleBackgroundSettingsScreen: View {
     @ObservedObject private var preferences = NativeSchedulePreferences.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
+    let tableId: Int?
     @State private var editingBackground: PendingBackground?
+
+    init(tableId: Int? = nil) {
+        self.tableId = tableId
+    }
 
     var body: some View {
         Form {
-            if preferences.hasAnyBackground {
+            if isPerTable && !purchases.allowsPerTableBackgrounds {
+                Section {
+                    Label("按课表设置背景图片是专业版功能", systemImage: "lock.fill")
+                        .foregroundStyle(.secondary)
+                    NavigationLink {
+                        SubscriptionView()
+                    } label: {
+                        Label("升级到专业版", systemImage: "sparkles")
+                    }
+                } footer: {
+                    Text("专业版可以为每张课表分别设置浅色和深色模式的背景图片。")
+                }
+            } else if preferences.hasAnyBackground {
                 Section {
                     Toggle("显示背景图片", isOn: $preferences.backgroundEnabled)
                 } footer: {
@@ -118,6 +136,16 @@ struct ScheduleBackgroundSettingsScreen: View {
                 }
             )
         }
+        .onAppear { preferences.activate(tableID: entitledTableID) }
+        .onChange(of: purchases.allowsPerTableBackgrounds) { _, _ in
+            preferences.activate(tableID: entitledTableID)
+        }
+    }
+
+    private var isPerTable: Bool { tableId != nil }
+    private var entitledTableID: Int? {
+        guard purchases.allowsPerTableBackgrounds else { return nil }
+        return tableId
     }
 }
 
@@ -198,6 +226,7 @@ private struct ScheduleBackgroundSection: View {
     var body: some View {
         let ownImage = preferences.hasOwnBackground(dark: dark) ? ownBackground : nil
         let followsOther = ownImage == nil && preferences.hasOwnBackground(dark: !dark)
+        let followsDefault = ownImage == nil && !followsOther && preferences.usesDefaultBackground
         Section {
             if let image = ownImage {
                 Image(platformImage: image)
@@ -208,6 +237,8 @@ private struct ScheduleBackgroundSection: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else if followsOther {
                 LabeledContent("当前", value: "跟随\(otherName)的图片")
+            } else if followsDefault {
+                LabeledContent("当前", value: "沿用默认背景")
             }
 
             PhotosPicker(selection: $selectedBackground, matching: .images) {
@@ -245,7 +276,8 @@ private struct ScheduleBackgroundSection: View {
             if ownImage == nil {
                 Text(followsOther
                      ? "未单独设置时，\(name)沿用\(otherName)的图片。"
-                     : (dark ? "仅设置一张时，浅色与深色模式共用。" : ""))
+                     : (followsDefault ? "当前沿用默认背景；设置后将只对这张课表生效。"
+                        : (dark ? "仅设置一张时，浅色与深色模式共用。" : "")))
             }
         }
         .onChange(of: selectedBackground) { _, item in
@@ -284,7 +316,8 @@ private struct ScheduleBackgroundSection: View {
     private func pickerTitle(hasOwn: Bool, followsOther: Bool) -> String {
         if backgroundBusy { return "正在读取图片…" }
         if hasOwn { return "更换图片" }
-        return followsOther ? "为\(name)单独设置" : (dark ? "为深色模式单独设置" : "选择背景图片")
+        return followsOther || preferences.usesDefaultBackground
+            ? "为\(name)单独设置" : (dark ? "为深色模式单独设置" : "选择背景图片")
     }
 
     /// 用留着的原图和上次的摆放重新打开编辑页。
@@ -434,6 +467,15 @@ struct GlobalThemeSettingsSection: View {
             Text("主题色")
         } footer: {
             Text("应用于课表、小组件、实时活动与灵动岛。")
+        }
+
+        Section {
+            Toggle("主题色应用到背景", isOn: Binding(
+                get: { settings.themeBackgroundEnabled },
+                set: { settings.setThemeBackgroundEnabled($0) }
+            ))
+        } footer: {
+            Text("开启后，背景融入少量当前主题色；关闭时，使用系统默认背景色。")
         }
 
         Section {
