@@ -41,11 +41,11 @@ struct WebImporterView: View {
     @State private var conflictChoice: [Int: Int] = [:]
     /// 页面上的学期和当前学期对不上时，点「导入」先问一次。
     @State private var confirmingTermMismatch = false
-    /// 人大本科平台登录前后使用同一个单页地址，首次解析失败时短暂轮询，
-    /// 等待登录完成和课表页面渲染出来。
-    @State private var automaticRucRetryTask: Task<Void, Never>?
-    @State private var rucRetryWindow = WebImportRetryWindow(timeout: 240)
-    @State private var latestRucWaitMessage = ""
+    /// 人大单页平台和上科大门户 iframe 需要等待异步初始化；
+    /// 只在明确的页面未就绪错误后轮询，等待登录及课表加载完成。
+    @State private var automaticPageRetryTask: Task<Void, Never>?
+    @State private var pageRetryWindow = WebImportRetryWindow(timeout: 240)
+    @State private var latestPageWaitMessage = ""
 
     /// `initialMode` is the destination chosen on the import hub. Without it the
     /// sheet always started on `.replaceCurrent`, which made the hub's
@@ -86,8 +86,8 @@ struct WebImporterView: View {
                 _ = try? await ScheduleSharingService.shared.loadSchools()
             }
             .onDisappear {
-                automaticRucRetryTask?.cancel()
-                automaticRucRetryTask = nil
+                automaticPageRetryTask?.cancel()
+                automaticPageRetryTask = nil
             }
             .safeAreaInset(edge: .bottom) {
                 if requiresCourses && parsed?.courses.isEmpty == true {
@@ -257,9 +257,9 @@ struct WebImporterView: View {
     /// page the user navigated to: reloading the entry page there would throw
     /// them back to the login screen.
     private func retry() {
-        automaticRucRetryTask?.cancel()
-        automaticRucRetryTask = nil
-        rucRetryWindow.reset()
+        automaticPageRetryTask?.cancel()
+        automaticPageRetryTask = nil
+        pageRetryWindow.reset()
         didStartExtraction = false
         if state == .loaded || state == .finished || state == .failed {
             state = .loaded
@@ -303,9 +303,9 @@ struct WebImporterView: View {
     private func handleExtraction(_ result: Result<String, Error>) {
         switch result {
         case .success(let payload):
-            automaticRucRetryTask?.cancel()
-            automaticRucRetryTask = nil
-            rucRetryWindow.reset()
+            automaticPageRetryTask?.cancel()
+            automaticPageRetryTask = nil
+            pageRetryWindow.reset()
             state = .importing
             statusMessage = "正在整理课表…"
             ImportPipeline.shared.ingest(payload: payload, school: school) { outcome in
@@ -324,34 +324,34 @@ struct WebImporterView: View {
             }
         case .failure(let error):
             // 只等待明确的登录/页面未就绪；格式变化和脚本异常直接显示错误。
-            if school.serviceSchoolID == "ruc",
+            if ["ruc", "shanghaitech"].contains(school.serviceSchoolID),
                let importError = error as? ImportError, importError.shouldRetryWhenPageLoads {
-                latestRucWaitMessage = error.localizedDescription
-                if rucRetryWindow.canRetry() {
+                latestPageWaitMessage = error.localizedDescription
+                if pageRetryWindow.canRetry() {
                     state = .loaded
-                    statusMessage = "正在等待登录和课表页面完成，随后会自动重试…\n" + latestRucWaitMessage
-                    scheduleAutomaticRucRetry()
+                    statusMessage = "正在等待登录和课表页面完成，随后会自动重试…\n" + latestPageWaitMessage
+                    scheduleAutomaticPageRetry()
                 } else {
-                    finishRucWait()
+                    finishPageWait()
                 }
                 return
             }
-            automaticRucRetryTask?.cancel()
-            automaticRucRetryTask = nil
+            automaticPageRetryTask?.cancel()
+            automaticPageRetryTask = nil
             state = .failed
             statusMessage = error.localizedDescription
         }
     }
 
-    private func scheduleAutomaticRucRetry() {
-        guard automaticRucRetryTask == nil else { return }
-        automaticRucRetryTask = Task { @MainActor in
+    private func scheduleAutomaticPageRetry() {
+        guard automaticPageRetryTask == nil else { return }
+        automaticPageRetryTask = Task { @MainActor in
             // 最长等待约四分钟；用户仍可随时点「重新解析」或返回。
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled, parsed == nil, state == .loaded else { return }
-                guard rucRetryWindow.canRetry() else {
-                    finishRucWait()
+                guard pageRetryWindow.canRetry() else {
+                    finishPageWait()
                     return
                 }
                 extractToken += 1
@@ -359,11 +359,11 @@ struct WebImporterView: View {
         }
     }
 
-    private func finishRucWait() {
-        automaticRucRetryTask?.cancel()
-        automaticRucRetryTask = nil
+    private func finishPageWait() {
+        automaticPageRetryTask?.cancel()
+        automaticPageRetryTask = nil
         state = .failed
-        statusMessage = "等待课表页面超时。请确认网页已显示课表，再点「重新解析」。\n" + latestRucWaitMessage
+        statusMessage = "等待课表页面超时。请确认网页已显示课表，再点「重新解析」。\n" + latestPageWaitMessage
     }
 }
 

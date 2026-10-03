@@ -109,6 +109,19 @@ struct SchoolTemplateResolverChecks {
         precondition(importableIDs.contains("njtech"))
         precondition(importableIDs.contains("xjtu"))
         precondition(importableIDs.contains("ruc"))
+        precondition(importableIDs.contains("shanghaitech"))
+        let shanghaitech = SchoolCatalog.all.first { $0.serviceSchoolID == "shanghaitech" }!
+        precondition(shanghaitech.title == "上海科技大学研究生课表")
+        precondition(shanghaitech.initialURL == "https://graduate.shanghaitech.edu.cn/gsapp/sys/yjsemaphome/portal/index.do")
+        precondition(shanghaitech.hasExtractor && shanghaitech.extractJS == SchoolCatalog.shanghaitechExtractJS)
+        precondition(shanghaitech.semesterStartMonday == nil && shanghaitech.classTimeList == nil)
+        let shanghaitechUndergraduate = SchoolCatalog.all.first { $0.pinyin == "shanghaikejidaxuebenkeshengkebiao" }!
+        precondition(shanghaitechUndergraduate.serviceSchoolID == "shanghaitech")
+        precondition(shanghaitechUndergraduate.title == "上海科技大学本科生课表")
+        precondition(shanghaitechUndergraduate.initialURL.hasPrefix("https://ids.shanghaitech.edu.cn/authserver/login"))
+        precondition(shanghaitechUndergraduate.targetURL == "https://eams.shanghaitech.edu.cn/eams/*")
+        precondition(shanghaitechUndergraduate.hasExtractor
+                     && shanghaitechUndergraduate.extractJS == SchoolCatalog.shanghaitechUndergraduateExtractJS)
         precondition(SchoolCatalog.all.filter { $0.serviceSchoolID == "ruc" }.count == 2)
         let rucUndergraduate = SchoolCatalog.all.first { $0.pinyin == "zhongguorenmindaxuebenkejiaowu" }!
         precondition(rucUndergraduate.serviceSchoolID == "ruc")
@@ -137,6 +150,19 @@ struct SchoolTemplateResolverChecks {
         let xjtuResolved = try SchoolTemplateResolver.applying(to: xjtuSchedule, schoolID: "xjtu", schools: loaded)
         precondition(xjtuResolved.schoolID == "xjtu" && xjtuResolved.termID == term.id)
         precondition(xjtuResolved.classTimeList?.first?.start == "08:10")
+        let shanghaitechSchedule = ImportedSchedule(name: "上海科技大学研究生课表 2026-2027学年第一学期", courses: [])
+        let shanghaitechResolved = try SchoolTemplateResolver.applying(
+            to: shanghaitechSchedule, schoolID: "shanghaitech", schools: loaded)
+        precondition(shanghaitechResolved.schoolID == "shanghaitech" && shanghaitechResolved.termID == term.id)
+        precondition(shanghaitechResolved.classTimeList == term.classTimes)
+        precondition(shanghaitechResolved.semesterStartMonday == term.semesterStartMonday)
+        let shanghaitechUndergraduateSchedule = ImportedSchedule(
+            name: "上海科技大学本科生课表 2026-2027学年第一学期", courses: [])
+        let shanghaitechUndergraduateResolved = try SchoolTemplateResolver.applying(
+            to: shanghaitechUndergraduateSchedule, schoolID: "shanghaitech", schools: loaded)
+        precondition(shanghaitechUndergraduateResolved.schoolID == "shanghaitech"
+                     && shanghaitechUndergraduateResolved.termID == term.id)
+        precondition(shanghaitechUndergraduateResolved.classTimeList == term.classTimes)
 
         SchoolConfigurationStubProtocol.offline = true
         let cached = try await service.loadSchools()
@@ -147,6 +173,9 @@ struct SchoolTemplateResolverChecks {
         let cachedXjtu = try SchoolTemplateResolver.applying(to: xjtuSchedule, schoolID: "xjtu", schools: cached)
         precondition(cachedXjtu.schoolID == "xjtu" && cachedXjtu.termID == term.id)
         precondition(cachedXjtu.classTimeList == xjtuResolved.classTimeList)
+        let cachedShanghaitech = try SchoolTemplateResolver.applying(
+            to: shanghaitechSchedule, schoolID: "shanghaitech", schools: cached)
+        precondition(cachedShanghaitech == shanghaitechResolved)
         print("PASS: all importable schools survive server and offline-cache filtering; NJTECH and XJTU use their configured terms and class times")
     }
 }

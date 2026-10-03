@@ -76,7 +76,7 @@ xcrun simctl get_app_container booted com.niyiwei.naptable groups
 
 ## 测试与验证
 
-Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh`、`check-njfu-extractor.sh`、`check-nau-extractor.sh`、`check-njtech-extractor.sh`、`check-fudan-extractor.sh`、`check-xjtu-extractor.sh`、`check-zju-extractor.sh`、`check-ruc-extractor.sh` 用 Node 运行中山大学、南京林业大学、南京审计大学、南京工业大学、复旦大学、西安交通大学、浙江大学、中国人民大学导入脚本）：
+Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh`、`check-njfu-extractor.sh`、`check-nau-extractor.sh`、`check-njtech-extractor.sh`、`check-fudan-extractor.sh`、`check-xjtu-extractor.sh`、`check-zju-extractor.sh`、`check-ruc-extractor.sh`、`check-shanghaitech-extractor.sh`、`check-shanghaitech-undergraduate-extractor.sh` 用 Node 运行中山大学、南京林业大学、南京审计大学、南京工业大学、复旦大学、西安交通大学、浙江大学、中国人民大学、上海科技大学研究生和本科生导入脚本）：
 
 ```sh
 for script in tests/check-*.sh; do bash "$script" || break; done

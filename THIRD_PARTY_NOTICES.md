@@ -131,3 +131,26 @@ NapTable 在 `NapTable/Import/RucExtractor.swift` 中以独立 JavaScript 重新
 - 上游许可证：GPL-3.0
 
 浙江大学本科生教务导入参考 Celechron 的 ZDBK 登录后课表请求流程、`xnm/xqm` 学期参数、`kbList` 字段和 `dsz`/`djj`/`skcd` 课表解析规则。NapTable 在 `NapTable/Import/ZjuExtractor.swift` 中以独立 JavaScript 重新实现，仅在已登录的 WebView 中读取课表，不引入上游登录、账号密码或 Flutter 代码。
+
+## shanghaitech-timetable
+
+- 项目：<https://github.com/Benedict999/shanghaitech-timetable>
+- 上游许可证：MIT（Copyright (c) 2026 夜斗绽星明）
+- 许可证原文：[`LICENSES/shanghaitech-timetable-MIT.txt`](LICENSES/shanghaitech-timetable-MIT.txt)
+- 参考版本：`014a606a1da60e9fd4cbb1f5c84d1dd36186220a`
+
+上海科技大学研究生课表导入参考该项目的研究生综合服务平台入口、
+`iframeContent_wdkbappshtechxskcb` 同源框架、`query_xnxq` 学期选择器、
+`xskbBy/loadPkjg.do` 查询参数，以及 `jgList` 中的课程、周次、星期和起止节次字段。
+`NapTable/Import/ShanghaitechExtractor.swift` 在已登录的 WebView 中独立实现转换，
+测试仅使用虚构课程数据；不引入上游 Flutter 界面、品牌素材或真实学生数据。
+
+## ShangHaITech
+
+- 项目：<https://github.com/Lceoliu/ShangHaITech>
+
+上海科技大学本科生入口参考该项目对校园统一入口、课程和待办信息集中呈现的产品定位，
+并使用学校官方本科教务系统（EAMS）作为课表来源。NapTable 的本科提取脚本
+`NapTable/Import/ShanghaitechUndergraduateExtractor.swift` 是独立实现，只读取用户已登录
+WebView 中的课表明细或课表网格；没有复制该项目的 Flutter 界面、后端代码、账号处理或品牌素材。
+该项目仓库当前未提供可适用的许可证声明，因此这里仅作产品思路来源致谢，不将其代码或资源重新授权。

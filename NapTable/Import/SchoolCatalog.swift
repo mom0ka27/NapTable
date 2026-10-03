@@ -30,7 +30,7 @@ struct SchoolConfig: Identifiable, Equatable, Hashable {
     /// All login/import routes of one university share its server configuration.
     var serviceSchoolID: String {
         let host = URL(string: initialURL)?.host?.lowercased() ?? ""
-        for id in ["nju", "seu", "ucas", "sysu", "njfu", "nau", "njtech", "fudan", "xjtu", "zju", "ruc"] {
+        for id in ["nju", "seu", "ucas", "sysu", "njfu", "nau", "njtech", "fudan", "xjtu", "zju", "ruc", "shanghaitech"] {
             if host == "\(id).edu.cn" || host.hasSuffix(".\(id).edu.cn") { return id }
         }
         return pinyin
@@ -48,6 +48,40 @@ enum SchoolCatalog {
 
     // Keep other importers available for future re-enabling.
     private static let builtIn: [SchoolConfig] = [
+        SchoolConfig(
+            title: "上海科技大学研究生课表",
+            pinyin: "shanghaikejidaxueyanjiushengkebiao",
+            summary: "统一认证登录后读取研究生学生课程表",
+            pageTitle: "上海科技大学统一身份认证",
+            initialURL: "https://graduate.shanghaitech.edu.cn/gsapp/sys/yjsemaphome/portal/index.do",
+            redirectURL: "",
+            targetURL: "https://graduate.shanghaitech.edu.cn/gsapp/*",
+            preExtractJS: "",
+            delayTime: 1,
+            extractJS: SchoolCatalog.shanghaitechExtractJS,
+            bannerContent: "登录研究生综合服务平台后，请进入「学生课程表」（我的课表）并选择学期，课程会自动读取；也可点右上角「重新解析」。",
+            bannerAction: nil,
+            bannerURL: nil,
+            classTimeList: nil,
+            semesterStartMonday: nil
+        ),
+        SchoolConfig(
+            title: "上海科技大学本科生课表",
+            pinyin: "shanghaikejidaxuebenkeshengkebiao",
+            summary: "统一认证登录后读取本科生当前学期课表",
+            pageTitle: "上海科技大学本科教务系统",
+            initialURL: "https://ids.shanghaitech.edu.cn/authserver/login?service=https%3A%2F%2Feams.shanghaitech.edu.cn%2Feams%2Fhome.action",
+            redirectURL: "",
+            targetURL: "https://eams.shanghaitech.edu.cn/eams/*",
+            preExtractJS: "",
+            delayTime: 1,
+            extractJS: SchoolCatalog.shanghaitechUndergraduateExtractJS,
+            bannerContent: "登录后进入「学习管理」→「我的课表」，选择学年学期并显示课表；也可点右上角「重新解析」。本科教务系统使用学校官方统一认证，App 不会读取或保存密码。",
+            bannerAction: nil,
+            bannerURL: nil,
+            classTimeList: nil,
+            semesterStartMonday: nil
+        ),
         SchoolConfig(
             title: "浙江大学本科生教务系统",
             pinyin: "zhejiangdaxuebenkejiaowu",

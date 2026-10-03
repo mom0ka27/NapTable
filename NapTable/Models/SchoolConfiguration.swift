@@ -167,7 +167,7 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
 }
 enum ServiceSchoolCatalog {
     // 网页导入、服务端配置和离线缓存共用这一份名单。
-    private static let supportedSchoolIDs: Set<String> = ["nju", "sysu", "njfu", "nau", "njtech", "fudan", "xjtu", "zju", "ruc"]
+    private static let supportedSchoolIDs: Set<String> = ["nju", "sysu", "njfu", "nau", "njtech", "fudan", "xjtu", "zju", "ruc", "shanghaitech"]
 
     static func isSupported(_ schoolID: String) -> Bool {
         supportedSchoolIDs.contains(schoolID.lowercased())
