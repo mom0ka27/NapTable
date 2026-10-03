@@ -33,12 +33,16 @@ nonisolated enum CloudSyncPayload: Codable, Equatable {
     case table(CloudTable)
     case shared(FollowedSchedule)
     case credential(CloudCredential)
+    case caring(CloudCaringSelection)
+    case notifications(LegacyCloudNotificationPreferences)
 
     var key: String {
         switch self {
         case .table(let value): return "table:" + (value.table.syncID ?? "")
         case .shared(let value): return "shared:" + value.meta.code
         case .credential(let value): return "credential:" + value.credential.code
+        case .caring: return "settings:caring"
+        case .notifications: return "settings:notifications"
         }
     }
 }
@@ -46,6 +50,7 @@ nonisolated enum CloudSyncPayload: Codable, Equatable {
 nonisolated struct CloudSyncEntry: Codable, Equatable {
     var modifiedAt: Date
     var writer: String
+    var writerName: String? = nil
     /// nil is a durable deletion marker, including deletions made offline.
     var payload: CloudSyncPayload?
 
@@ -56,13 +61,14 @@ nonisolated struct CloudSyncEntry: Codable, Equatable {
 }
 
 nonisolated struct CloudSyncDocument: Codable, Equatable {
-    var version = 1
+    var version = 2
     var entries: [String: CloudSyncEntry] = [:]
 
     func validated() throws -> Self {
-        guard version == 1 else { throw CloudSyncFailure.unsupportedVersion }
+        guard (1...2).contains(version) else { throw CloudSyncFailure.unsupportedVersion }
         for (key, entry) in entries {
-            guard ["table:", "shared:", "credential:"].contains(where: { key.hasPrefix($0) }),
+            guard (["table:", "shared:", "credential:"].contains(where: { key.hasPrefix($0) })
+                   || ["settings:caring", "settings:notifications"].contains(key)),
                   !entry.writer.isEmpty, entry.modifiedAt.timeIntervalSince1970.isFinite else {
                 throw CloudSyncFailure.invalidData
             }
@@ -80,9 +86,26 @@ nonisolated struct CloudSyncDocument: Codable, Equatable {
 
     func merged(with other: Self) -> Self {
         var result = self
-        for (key, entry) in other.entries {
+        result.entries.removeValue(forKey: "settings:notifications")
+        result.version = max(version, other.version)
+        for (key, entry) in other.entries where key != "settings:notifications" {
             if let existing = result.entries[key], !entry.isNewer(than: existing) { continue }
             result.entries[key] = entry
+        }
+        // Removing/revoking a share also clears a stale caring selection. Use
+        // the newer operation's provenance for the automatic settings update.
+        if let caring = result.entries["settings:caring"], case .caring(let selection) = caring.payload,
+           let code = selection.code {
+            let shared = result.entries["shared:" + code]
+            let available: Bool
+            if case .shared(let value) = shared?.payload { available = !value.isRevoked }
+            else { available = false }
+            if !available {
+                let origin = shared.map { $0.isNewer(than: caring) ? $0 : caring } ?? caring
+                result.entries["settings:caring"] = CloudSyncEntry(
+                    modifiedAt: origin.modifiedAt.addingTimeInterval(0.001), writer: origin.writer,
+                    writerName: origin.writerName, payload: .caring(CloudCaringSelection(code: nil)))
+            }
         }
         return result
     }
@@ -92,20 +115,26 @@ nonisolated struct CloudSyncDocument: Codable, Equatable {
 /// local deletion from a cloud item this device has never downloaded.
 nonisolated struct CloudSyncJournal: Codable {
     var writer = UUID().uuidString
+    var writerName: String? = nil
     var document = CloudSyncDocument()
     var baseline: [String: CloudSyncPayload] = [:]
     var accountID: String?
 
     mutating func capture(_ values: [String: CloudSyncPayload], now: Date = Date()) {
-        let changed = Set(baseline.keys).union(values.keys).filter { baseline[$0] != values[$0] }
+        // Migrate old sync journals without creating a new device-settings edit.
+        document.entries.removeValue(forKey: "settings:notifications")
+        baseline.removeValue(forKey: "settings:notifications")
+        let syncValues = values.filter { $0.key != "settings:notifications" }
+        let changed = Set(baseline.keys).union(syncValues.keys).filter { baseline[$0] != syncValues[$0] }
         guard !changed.isEmpty else { return }
+        document.version = 2
         let latest = document.entries.values.map(\.modifiedAt).max() ?? .distantPast
         // Observing a remote future timestamp must not make later local edits lose.
         let stamp = max(now, latest.addingTimeInterval(0.001))
         for key in changed {
-            document.entries[key] = CloudSyncEntry(modifiedAt: stamp, writer: writer, payload: values[key])
+            document.entries[key] = CloudSyncEntry(modifiedAt: stamp, writer: writer, writerName: writerName, payload: syncValues[key])
         }
-        baseline = values
+        baseline = syncValues
     }
 }
 

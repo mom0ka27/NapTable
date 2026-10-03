@@ -64,6 +64,16 @@ struct SettingsView: View {
                 message: $message
             ))
         }
+        #if os(macOS)
+        .onAppear { cloudSync.usesSettingsReviewHost = true }
+        .onDisappear { cloudSync.usesSettingsReviewHost = false }
+        .sheet(isPresented: Binding(
+            get: { cloudSync.usesSettingsReviewHost && cloudSync.isReviewPresented },
+            set: { if !$0 { cloudSync.deferReview() } }
+        )) {
+            NavigationStack { ICloudSyncReviewView() }.environmentObject(store)
+        }
+        #endif
     }
 
     // MARK: Top-level groups

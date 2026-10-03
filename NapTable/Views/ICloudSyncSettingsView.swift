@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ICloudSyncSettingsView: View {
     @ObservedObject private var sync = ICloudSyncService.shared
+    var presentsReviewDuringOnboarding = false
 
     var body: some View {
         Form {
@@ -18,69 +19,157 @@ struct ICloudSyncSettingsView: View {
                         Text(date, format: .dateTime.month().day().hour().minute())
                     }
                 }
-                Button("立即同步") { Task { await sync.syncNow() } }
+                if sync.pendingReview != nil {
+                    Button("查看云端课表更新") { sync.isReviewPresented = true }
+                }
+                Button("立即同步") { Task { await sync.syncNow(refreshReview: true) } }
                     .disabled(!sync.isEnabled || sync.isSyncing)
             } footer: {
-                Text("在使用同一 Apple 账号的设备上分别开启。打开 App 时自动同步，离线修改会在联网后重试。关闭后保留本机和云端已有数据。")
+                Text("在使用同一 Apple 账号的设备上分别开启。本机修改和设置自动同步；发现云端课表有内容更新时，列出修改项与来源设备，由你确认是否接收。关闭后保留已有数据。")
             }
             Section {
                 Label("自己的课表、课程、学期与节次设置", systemImage: "calendar")
                 Label("已保存的共享课表及备注", systemImage: "person.2")
                 Label("分享管理记录，可在其他设备更新或撤销分享", systemImage: "link")
+                Label("关心对象", systemImage: "person.crop.circle.badge.checkmark")
             } header: {
                 Text("同步内容")
             } footer: {
-                Text("显示偏好、当前选中的课表和通知设置由各设备分别保存。共享课表仍通过分享码与他人分享；iCloud 用于你自己的设备间同步。")
+                Text("关心对象、课表配置和共享备注自动同步，不弹出确认。实时活动开关、提前显示时间、分节计时、系统权限、显示偏好和当前选中的课表均由本机保存。")
             }
             Section("数据与隐私") {
-                Text("开启后，上述数据（包括课程名称、教师、教室以及分享管理凭证）会上传到你个人的 iCloud 私有数据库，由 Apple 提供存储。学校账号和密码不会上传。")
-                Text("首次同步会合并已有课表。删除课表也会同步到其他设备；同时修改同一张课表时，以较新的修改为准。被替换前的本机数据会保存恢复副本。")
+                Text("开启后，上述数据（包括课程名称、教师、教室、分享管理凭证与修改设备名称）会保存到你个人的 iCloud 私有数据库。App 不单独保存学校账号和密码，也不会将它们纳入同步；学校网页的登录会话保留在本机。")
+                Text("远程新增、删除或课程内容变更须确认。接收自己的课表时，可更新对应课表、替换当前课表或新建课表；同一课表并发修改以较新版本为准。")
                 Text("如需清空云端课表，请保持同步开启，删除自己的课表和已保存的共享课表，再等待同步完成。分享管理记录可从分享管理页面移除或撤销。")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
-            Section {
-                NavigationLink("恢复同步前的课表") { CloudSyncRecoveryView() }
-            } footer: {
-                Text("保留最近 5 份同步替换前的本机副本，可将其中自己的课表恢复为新课表。")
-            }
         }
         .appListBackground()
         .navigationTitle("iCloud 同步")
         .appInlineNavigationTitle()
         .appSoftTopScrollEdge()
+        .sheet(isPresented: Binding(
+            get: { presentsReviewDuringOnboarding && sync.isReviewPresented },
+            set: { if !$0 { sync.deferReview() } }
+        )) {
+            NavigationStack { ICloudSyncReviewView() }
+        }
     }
 }
 
-private struct CloudSyncRecoveryView: View {
+struct ICloudSyncReviewView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var message: String?
+    @ObservedObject private var sync = ICloudSyncService.shared
+    @State private var destinations: [String: String] = [:]
 
     var body: some View {
-        List {
-            if store.cloudRecoveryCopies.isEmpty {
-                Text("尚无恢复副本").foregroundStyle(.secondary)
-            }
-            ForEach(store.cloudRecoveryCopies) { copy in
-                Button {
-                    do {
-                        try store.restoreCloudRecovery(copy)
-                        message = "已追加恢复为新课表，可在「我的课表」中查看。"
-                    } catch { message = error.localizedDescription }
-                } label: {
-                    Label {
-                        Text(copy.date, format: .dateTime.year().month().day().hour().minute().second())
-                    } icon: {
-                        Image(systemName: "clock.arrow.circlepath")
-                    }
+        Form {
+            if let review = sync.pendingReview {
+                Section {
+                    Text("发现云端课表更新，要接收吗？")
+                    Text(sync.statusText).font(.footnote).foregroundStyle(.secondary)
+                } footer: {
+                    Text("确认前保留本机课程内容。设置与本机修改继续自动同步；可以暂不接收，稍后从 iCloud 同步设置继续。")
                 }
+                changeSection(review, direction: .download, title: "云端课表更新")
+                Section {
+                    Text("替换当前课表会覆盖其课程与课表配置，并与云端课表使用同一同步身份，其他设备也会收到这个结果。选择新建课表可保留本机版本和云端版本。一次只能将一张云端课表替换到当前课表。")
+                }.font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("没有待确认的修改").foregroundStyle(.secondary)
             }
         }
         .appListBackground()
-        .navigationTitle("恢复同步前的课表")
+        .navigationTitle("接收课表更新")
         .appInlineNavigationTitle()
-        .alert("恢复课表", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
-            Button("确定") { message = nil }
-        } message: { Text(message ?? "") }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("暂不接收") { sync.deferReview() }.disabled(sync.isSyncing)
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("确认接收") {
+                    guard let review = sync.pendingReview else { return }
+                    let choices = tableChoices(review)
+                    Task { await sync.confirmReview(review.id, destinations: choices) }
+                }
+                .disabled(sync.isSyncing || sync.pendingReview == nil || !choicesAreValid)
+            }
+        }
+        .onChange(of: sync.pendingReview?.id) { _, _ in destinations = [:] }
+        .interactiveDismissDisabled(sync.isSyncing)
+    }
+
+    private var choicesAreValid: Bool {
+        destinations.values.filter { $0.hasPrefix("current:") }.count <= 1
+    }
+
+    private func changeSection(_ review: CloudSyncReview, direction: CloudSyncChange.Direction, title: String) -> some View {
+        let changes = review.changes.filter { $0.direction == direction }
+        return Section(title) {
+            if changes.isEmpty { Text("没有修改").foregroundStyle(.secondary) }
+            ForEach(changes) { change in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(change.title).font(.headline)
+                    Text("修改设备：\(change.device)").font(.caption).foregroundStyle(.secondary)
+                    Text(change.modifiedAt, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(change.details.prefix(4).enumerated()), id: \.offset) { _, detail in
+                        Text(detail).font(.subheadline)
+                    }
+                    if change.details.count > 4 {
+                        DisclosureGroup("其余 \(change.details.count - 4) 项修改") {
+                            ForEach(Array(change.details.dropFirst(4).enumerated()), id: \.offset) { _, detail in
+                                Text(detail).font(.subheadline)
+                            }
+                        }
+                    }
+                    if change.incomingTable != nil {
+                        Picker("接收方式", selection: Binding(
+                            get: { destinations[change.key] ?? defaultDestination(change) },
+                            set: { destinations[change.key] = $0 }
+                        )) {
+                            if let matching = store.tables.first(where: { "table:" + ($0.syncID ?? "") == change.key }) {
+                                Text("更新对应课表：\(matching.name)").tag("matching")
+                            }
+                            if let selected = store.selectedTable,
+                               "table:" + (selected.syncID ?? "") != change.key,
+                               !review.changes.contains(where: { $0.key == "table:" + (selected.syncID ?? "") && $0.incomingTable != nil }) {
+                                Text("替换当前课表：\(selected.name)").tag("current:\(selected.id)")
+                            }
+                            Text("新建一个课表").tag("new")
+                        }
+                        if let choice = destinations[change.key], choice.hasPrefix("current:"),
+                           let id = Int(choice.dropFirst(8)),
+                           let target = store.tables.first(where: { $0.id == id }),
+                           case .table(let old) = store.cloudSnapshot()["table:" + (target.syncID ?? "")],
+                           let incoming = change.incomingTable {
+                            DisclosureGroup("替换「\(target.name)」后的修改") {
+                                ForEach(Array(CloudSyncReview.tableDetails(old, incoming).enumerated()), id: \.offset) { _, detail in
+                                    Text(detail).font(.subheadline)
+                                }
+                                Text("相关分享管理记录也会关联到接收的课表。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func defaultDestination(_ change: CloudSyncChange) -> String {
+        store.tables.contains { "table:" + ($0.syncID ?? "") == change.key } ? "matching" : "new"
+    }
+
+    private func tableChoices(_ review: CloudSyncReview) -> [String: CloudTableDestination] {
+        Dictionary(uniqueKeysWithValues: review.changes.filter { $0.incomingTable != nil }.map { change in
+            let choice = destinations[change.key] ?? defaultDestination(change)
+            let destination: CloudTableDestination
+            if choice == "new" { destination = .new }
+            else if choice.hasPrefix("current:"), let id = Int(choice.dropFirst(8)) { destination = .current(id) }
+            else { destination = .matching }
+            return (change.key, destination)
+        })
     }
 }

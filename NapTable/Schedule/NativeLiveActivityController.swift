@@ -159,7 +159,21 @@ final class NativeLiveActivityController: ObservableObject {
         defaults.set(Self.lead(value) ?? Self.defaultLeadMinutes, forKey: Self.sharedLeadMinutesKey)
         rebuild()
     }
-    func setPerPeriod(_ value: Bool) { defaults.set(value, forKey: Self.perPeriodKey); rebuild() }
+    func setPerPeriod(_ value: Bool) {
+        defaults.set(value, forKey: Self.perPeriodKey)
+        rebuild()
+    }
+    func refreshLocalPreferences() {
+        #if os(iOS)
+        reminderAllowed = PurchaseManager.shared.allowsLiveActivities
+        #endif
+        objectWillChange.send()
+        let enabled = isEnabled
+        if enabled { rebuild() } else { clearDismissalNotice(); end(); status = .disabled }
+        #if os(iOS)
+        if #available(iOS 17.2, *) { LiveActivityPushService.shared.enabledDidChange(enabled) }
+        #endif
+    }
     /// Conflict choices of the displayed table, `date:period` → source.
     var choices: [String: String] {
         guard let scope = currentScheduleMetadata?.scheduleScope else { return [:] }

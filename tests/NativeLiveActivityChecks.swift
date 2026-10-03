@@ -40,12 +40,20 @@ struct NativeLiveActivityChecks {
 
         // MARK: Settings and consent
         let controller = NativeLiveActivityController(now: { now }, privacyDefaults: defaults)
+        controller.refreshLocalPreferences()
+        precondition(defaults.object(forKey: NativeLiveActivityController.enabledKey) == nil && !controller.isEnabled,
+                     "Refreshing local settings must not change the user's enabled preference")
         controller.setEnabled(true)
         precondition(!controller.isEnabled, "Live activities require explicit privacy consent")
         let consent = PrivacyConsent(defaults: defaults)
         consent.acceptBasic(liveActivities: false)
         controller.setEnabled(true)
         precondition(!controller.isEnabled, "Basic consent does not authorize live activities")
+        defaults.set(true, forKey: NativeLiveActivityController.enabledKey)
+        let consentVersion = defaults.integer(forKey: PrivacyPolicy.liveKey)
+        controller.refreshLocalPreferences()
+        precondition(!controller.isEnabled && defaults.integer(forKey: PrivacyPolicy.liveKey) == consentVersion,
+                     "The enabled preference must not grant local privacy consent")
         consent.setLiveConsent(true)
         controller.setEnabled(true)
         controller.setLeadMinutes(30)

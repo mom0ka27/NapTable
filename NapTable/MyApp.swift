@@ -23,7 +23,9 @@ struct MyApp: App {
             } else {
                 // An upgraded app may still have older local reservations or
                 // server registration; clear them before showing the privacy gate.
-                NativeLiveActivityController.shared.setEnabled(false)
+                // Retire this device's reminders without overwriting a local
+                // preference merely because local consent has not been granted.
+                NativeLiveActivityController.shared.refreshLocalPreferences()
             }
         }
         #if DEBUG

@@ -6,6 +6,7 @@ struct AppEntryView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var consent = PrivacyConsent.shared
+    @ObservedObject private var cloudSync = ICloudSyncService.shared
 
     private var needsOnboarding: Bool {
         !consent.basicAccepted || !consent.onboardingCompleted
@@ -64,6 +65,12 @@ struct AppEntryView: View {
                 await reportUsage()
                 await ScheduleSharingService.shared.refreshCurrentTerms(in: store)
             }
+        }
+        .sheet(isPresented: Binding(
+            get: { !needsOnboarding && !cloudSync.usesSettingsReviewHost && cloudSync.isReviewPresented },
+            set: { if !$0 { cloudSync.deferReview() } }
+        )) {
+            NavigationStack { ICloudSyncReviewView() }.environmentObject(store)
         }
     }
     private func reportUsage() async {
@@ -178,7 +185,7 @@ struct OnboardingView: View {
             consent.completeOnboarding(hasImportedCourses: hasCourses)
         }) {
             NavigationStack {
-                ICloudSyncSettingsView()
+                ICloudSyncSettingsView(presentsReviewDuringOnboarding: true)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("完成") { showCloudSync = false }

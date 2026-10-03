@@ -971,6 +971,14 @@ final class AppStore: ObservableObject {
     func saveNow() -> Bool {
         guard didLoad, let fileURL, !saveBlocked else { return false }
         normalizeCloudIDs()
+        #if canImport(UIKit)
+        let deviceName = UIDevice.current.name
+        #elseif os(macOS)
+        let deviceName = Host.current().localizedName ?? "Mac"
+        #else
+        let deviceName = "设备"
+        #endif
+        cloudSync.writerName = "\(deviceName) · \(cloudSync.writer.prefix(4))"
         let previousDocument = cloudSync.document
         cloudSync.capture(cloudSnapshot())
         var state = AppStateFile()
@@ -1027,6 +1035,12 @@ final class AppStore: ObservableObject {
             let payload = CloudSyncPayload.credential(CloudCredential(credential: credential, tableSyncID: tableSyncID))
             values[payload.key] = payload
         }
+        // A fresh installation's empty caring selection must not override
+        // a choice already saved by another device.
+        if sharing.followedCode != nil || cloudSync.document.entries["settings:caring"] != nil {
+            let payload = CloudSyncPayload.caring(CloudCaringSelection(code: sharing.followedCode))
+            values[payload.key] = payload
+        }
         return values
     }
 
@@ -1036,23 +1050,72 @@ final class AppStore: ObservableObject {
         guard saveNow() else { throw CloudSyncFailure.localStorage }
     }
 
-    /// Apply all entities before publishing the saved journal. Local selection,
-    /// appearance and notification permissions never come from the cloud.
-    func applyCloudDocument(_ incoming: CloudSyncDocument) throws {
+    /// Build the exact result of the user's table choices without changing the
+    /// store. Replacing the current table joins its identity to the cloud table;
+    /// making a copy of an existing table preserves both versions in the library.
+    func reviewedCloudDocument(_ review: CloudSyncReview, destinations: [String: CloudTableDestination]) throws
+        -> (document: CloudSyncDocument, tableIDs: [String: Int]) {
+        var document = review.merged
+        var tableIDs: [String: Int] = [:]
+        var usedTargets = Set<Int>()
+        let stamp = max(Date(), (document.entries.values.map(\.modifiedAt).max() ?? .distantPast).addingTimeInterval(0.001))
+        func written(_ payload: CloudSyncPayload?) -> CloudSyncEntry {
+            CloudSyncEntry(modifiedAt: stamp, writer: cloudSync.writer, writerName: cloudSync.writerName, payload: payload)
+        }
+        for (key, destination) in destinations.sorted(by: { $0.key < $1.key }) {
+            guard review.changes.contains(where: { $0.key == key && $0.incomingTable != nil }),
+                  case .table(let source) = review.merged.entries[key]?.payload else { throw CloudSyncFailure.invalidData }
+            switch destination {
+            case .matching: break
+            case .new:
+                guard let existing = cloudSnapshot()[key] else { continue }
+                document.entries[key] = written(existing)
+                var copy = source
+                copy.table.syncID = UUID().uuidString
+                let names = Set(document.entries.values.compactMap { entry -> String? in
+                    if case .table(let table) = entry.payload { return table.table.name }
+                    return nil
+                })
+                if names.contains(copy.table.name) {
+                    let base = copy.table.name + "（云端副本）"
+                    copy.table.name = base
+                    var suffix = 2
+                    while names.contains(copy.table.name) {
+                        copy.table.name = "\(base)（\(suffix)）"
+                        suffix += 1
+                    }
+                }
+                let payload = CloudSyncPayload.table(copy)
+                document.entries[payload.key] = written(payload)
+            case .current(let id):
+                guard let target = tables.first(where: { $0.id == id }), let targetSyncID = target.syncID,
+                      usedTargets.insert(id).inserted else { throw CloudSyncFailure.invalidData }
+                guard targetSyncID != source.table.syncID else { continue }
+                // A table being separately reviewed cannot also be consumed as
+                // another table's destination.
+                guard !review.changes.contains(where: { $0.key == "table:" + targetSyncID && $0.incomingTable != nil }) else {
+                    throw CloudSyncFailure.invalidData
+                }
+                document.entries["table:" + targetSyncID] = written(nil)
+                tableIDs[key] = id
+                for (credentialKey, entry) in document.entries {
+                    if case .credential(var credential) = entry.payload, credential.tableSyncID == targetSyncID {
+                        credential.tableSyncID = source.table.syncID
+                        document.entries[credentialKey] = written(.credential(credential))
+                    }
+                }
+            }
+        }
+        return (try document.validated(), tableIDs)
+    }
+
+    /// Apply approved timetable content or automatic settings changes. The
+    /// caller excludes any timetable content still awaiting confirmation.
+    func applyCloudDocument(_ incoming: CloudSyncDocument, tableIDs: [String: Int] = [:]) throws {
         let incoming = try incoming.validated()
         guard saveNow() else { throw CloudSyncFailure.localStorage }
         let merged = cloudSync.document.merged(with: incoming)
         let before = cloudSnapshot()
-        // Keep a recovery copy before replacing any local content, including
-        // concurrent edits to the same timetable. No backup is uploaded.
-        if merged.entries.contains(where: { key, entry in
-            before[key] != nil && before[key] != entry.payload
-        }), let fileURL {
-            let backup = fileURL.deletingLastPathComponent().appendingPathComponent("before-icloud-\(UUID().uuidString).json")
-            try FileManager.default.copyItem(at: fileURL, to: backup)
-            for old in cloudRecoveryCopies.dropFirst(5) { try? FileManager.default.removeItem(at: old.url) }
-        }
-
         for (key, entry) in merged.entries.sorted(by: { $0.key < $1.key }) where key.hasPrefix("table:") {
             let syncID = String(key.dropFirst("table:".count))
             let existing = tables.first { $0.syncID == syncID }
@@ -1063,8 +1126,13 @@ final class AppStore: ObservableObject {
                 continue
             }
             var table = value.table
-            table.id = existing?.id ?? nextTableId
-            if existing == nil { nextTableId += 1 }
+            table.id = tableIDs[key] ?? existing?.id ?? nextTableId
+            if tableIDs[key] != nil {
+                let removedIDs = Set(tables.filter { $0.id == table.id || $0.syncID == syncID }.map(\.id))
+                tables.removeAll { removedIDs.contains($0.id) }
+                courses.removeAll { removedIDs.contains($0.tableId) }
+                if removedIDs.contains(selectedTableId) { selectedTableId = table.id }
+            } else if existing == nil { nextTableId += 1 }
             if let index = tables.firstIndex(where: { $0.syncID == syncID }) { tables[index] = table }
             else { tables.append(table) }
             var keys: [Int: Int] = [:]
@@ -1090,6 +1158,9 @@ final class AppStore: ObservableObject {
             return credential
         }.sorted { $0.code < $1.code }
         ScheduleSharingService.shared.applyCloudLibrary(shared: shared, credentials: credentials)
+        if case .caring(let selection) = merged.entries["settings:caring"]?.payload {
+            ScheduleSharingService.shared.applyCloudCaringSelection(selection.code)
+        }
         cloudSync.document = merged
         cloudSync.baseline = cloudSnapshot()
         // Resolve independently created equal names in the same order everywhere.
@@ -1099,26 +1170,4 @@ final class AppStore: ObservableObject {
         guard saveNow() else { throw CloudSyncFailure.localStorage }
     }
 
-    struct CloudRecoveryCopy: Identifiable {
-        let url: URL
-        let date: Date
-        var id: URL { url }
-    }
-
-    var cloudRecoveryCopies: [CloudRecoveryCopy] {
-        guard let directory = fileURL?.deletingLastPathComponent(),
-              let files = try? FileManager.default.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: [.creationDateKey]
-              ) else { return [] }
-        return files.filter { $0.lastPathComponent.hasPrefix("before-icloud-") && $0.pathExtension == "json" }
-            .map { CloudRecoveryCopy(url: $0, date: (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast) }
-            .sorted { $0.date > $1.date }
-    }
-
-    func restoreCloudRecovery(_ copy: CloudRecoveryCopy) throws {
-        guard cloudRecoveryCopies.contains(where: { $0.url == copy.url }) else { throw CloudSyncFailure.invalidData }
-        let state = try JSONDecoder().decode(AppStateFile.self, from: Data(contentsOf: copy.url))
-        restore(ExportDocument(settings: state.settings, tables: state.tables, courses: state.courses, display: nil))
-        guard saveNow() else { throw CloudSyncFailure.localStorage }
-    }
 }

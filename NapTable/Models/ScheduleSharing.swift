@@ -286,6 +286,7 @@ extension ScheduleSharingService {
     private func caringSelectionChanged() {
         objectWillChange.send()
         NotificationCenter.default.post(name: .naptableCaringSelectionChanged, object: nil)
+        NotificationCenter.default.post(name: .naptableCloudContentChanged, object: nil)
     }
 
     /// Re-download only when the share actually moved. The meta document is a
@@ -342,8 +343,7 @@ extension ScheduleSharingService {
         NotificationCenter.default.post(name: .naptableCloudContentChanged, object: nil)
     }
 
-    /// Restoring a library does not opt this device into somebody else's
-    /// notifications. Only an already selected source has its cache refreshed.
+    /// Refresh the library before applying its reviewed caring selection.
     func applyCloudLibrary(shared: [FollowedSchedule], credentials: [ShareCredential]) {
         let previousShared = sharedSchedules
         if myShares != credentials { store(credentials) }
@@ -355,6 +355,12 @@ extension ScheduleSharingService {
             else { unfollow() }
         }
         sourceChanged()
+    }
+
+    func applyCloudCaringSelection(_ code: String?) {
+        if let code, let schedule = sharedSchedules.first(where: { $0.meta.code == code && !$0.isRevoked }) {
+            follow(schedule)
+        } else if followedCode != nil { unfollow() }
     }
 
     private func fetchFollowed(_ code: String) async throws -> FollowedSchedule {

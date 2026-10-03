@@ -33,6 +33,10 @@ final class CloudKitScheduleTransport: CloudSyncTransport {
             throw CloudSyncFailure.invalidData
         }
         let data = try Data(contentsOf: url)
+        struct Format: Decodable { let version: Int }
+        guard (1...2).contains(try JSONDecoder().decode(Format.self, from: data).version) else {
+            throw CloudSyncFailure.unsupportedVersion
+        }
         return (try JSONDecoder().decode(CloudSyncDocument.self, from: data).validated(), record)
     }
 
@@ -61,6 +65,9 @@ final class ICloudSyncService: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var lastSyncedAt: Date?
     @Published private(set) var statusText = "未开启"
+    @Published private(set) var pendingReview: CloudSyncReview?
+    @Published var isReviewPresented = false
+    @Published var usesSettingsReviewHost = false
 
     private weak var store: AppStore?
     private let transport: any CloudSyncTransport
@@ -105,6 +112,8 @@ final class ICloudSyncService: ObservableObject {
         isEnabled = enabled
         defaults.set(enabled, forKey: Self.enabledKey)
         pendingTask?.cancel()
+        pendingReview = nil
+        isReviewPresented = false
         retryAfter = .distantPast
         statusText = enabled ? "等待同步" : "已关闭，课表保留在本机和 iCloud"
         if enabled { scheduleSync() }
@@ -138,52 +147,143 @@ final class ICloudSyncService: ObservableObject {
         }
     }
 
-    func syncNow() async {
+    /// Local edits and settings sync automatically. Only incoming timetable
+    /// content is staged for confirmation.
+    func syncNow(refreshReview: Bool = false) async {
         guard isEnabled, !isSyncing, Date() >= retryAfter, let store else { return }
         let session = generation
         isSyncing = true
         statusText = "正在同步…"
-        defer {
-            isSyncing = false
-            if needsSync {
-                needsSync = false
-                scheduleSync()
-            }
-        }
+        defer { completeTask() }
         do {
-            let account = try await transport.accountID()
+            try await performSync(store: store, session: session, approvedReview: nil, destinations: [:])
+            if refreshReview && pendingReview != nil { isReviewPresented = true }
+        } catch { handle(error, session: session) }
+    }
+
+    func deferReview() {
+        isReviewPresented = false
+        if pendingReview != nil { statusText = "有云端课表更新等待确认" }
+    }
+
+    func confirmReview(_ reviewID: UUID, destinations: [String: CloudTableDestination]) async {
+        guard isEnabled, !isSyncing, Date() >= retryAfter, let store,
+              let review = pendingReview, review.id == reviewID else { return }
+        let session = generation
+        isSyncing = true
+        statusText = "正在接收课表…"
+        defer { completeTask() }
+        do {
+            try await performSync(store: store, session: session, approvedReview: review, destinations: destinations)
+        } catch { handle(error, session: session) }
+    }
+
+    private func performSync(store: AppStore, session: Int, approvedReview: CloudSyncReview?,
+                             destinations: [String: CloudTableDestination]) async throws {
+        let account = try await transport.accountID()
+        try checkSession(session)
+        if let approvedReview, approvedReview.account != account { throw CloudSyncFailure.accountChanged }
+        try store.bindCloudAccount(account)
+        var approval = approvedReview
+        for attempt in 0..<3 {
+            let (fetched, record) = try await transport.fetch()
             try checkSession(session)
-            try store.bindCloudAccount(account)
-            // A stale server revision is never overwritten. Re-fetch and merge
-            // on a competing write, with a bounded retry count.
-            for attempt in 0..<3 {
-                let (remote, record) = try await transport.fetch()
-                try checkSession(session)
-                guard try await transport.accountID() == account else { throw CloudSyncFailure.accountChanged }
-                try checkSession(session)
-                guard store.saveNow() else { throw CloudSyncFailure.localStorage }
-                let merged = store.cloudSync.document.merged(with: try remote.validated())
-                if merged != remote {
-                    do { try await transport.save(merged, record: record) }
-                    catch let error as CKError where error.code == .serverRecordChanged && attempt < 2 { continue }
+            guard try await transport.accountID() == account else { throw CloudSyncFailure.accountChanged }
+            try checkSession(session)
+            guard store.saveNow() else { throw CloudSyncFailure.localStorage }
+            let remote = try fetched.validated()
+            let review = CloudSyncReview(account: account, local: store.cloudSync.document, remote: remote)
+            if let accepted = approval {
+                let targetsUnchanged = destinations.values.allSatisfy { destination in
+                    guard case .current(let id) = destination else { return true }
+                    guard let target = store.tables.first(where: { $0.id == id }), let syncID = target.syncID else { return false }
+                    let key = "table:" + syncID
+                    return CloudSyncReview.sameCourseContent(accepted.local.entries[key]?.payload,
+                                                            review.local.entries[key]?.payload)
                 }
-                try checkSession(session)
-                guard try await transport.accountID() == account else { throw CloudSyncFailure.accountChanged }
-                try checkSession(session)
-                // Fetching/uploading can suspend while the user edits locally.
-                // AppStore captures those edits again before applying the merge.
-                try store.applyCloudDocument(merged)
-                lastSyncedAt = Date()
-                defaults.set(lastSyncedAt, forKey: Self.lastSyncKey)
-                if store.cloudSync.document != merged {
-                    statusText = "有修改等待同步"
-                    scheduleSync()
-                } else { statusText = "已同步" }
+                if !accepted.hasSameCourseChanges(as: review) || !targetsUnchanged { approval = nil }
+            }
+            let plan: (document: CloudSyncDocument, tableIDs: [String: Int])
+            if approval != nil {
+                plan = try store.reviewedCloudDocument(review, destinations: destinations)
+            } else {
+                // Preserve unapproved remote entries on the server while
+                // independently uploading local edits and settings.
+                plan = (review.merged, [:])
+            }
+            if plan.document != remote {
+                do { try await transport.save(plan.document, record: record) }
+                catch let error as CKError where error.code == .serverRecordChanged && attempt < 2 { continue }
+            }
+            try checkSession(session)
+            guard try await transport.accountID() == account else { throw CloudSyncFailure.accountChanged }
+            try checkSession(session)
+            guard store.saveNow() else { throw CloudSyncFailure.localStorage }
+            if store.cloudSync.document != review.local {
+                // An edit during upload must survive, including edits to a
+                // replacement target. Retry uploads without extending approval.
+                approval = nil
+                if attempt < 2 { continue }
+                needsSync = true
+                statusText = "有本机修改等待上传"
                 return
             }
-        } catch is CancellationError {
+            if approval != nil {
+                try store.applyCloudDocument(plan.document, tableIDs: plan.tableIDs)
+            } else {
+                let automatic = review.automaticDocument()
+                if automatic != store.cloudSync.document { try store.applyCloudDocument(automatic) }
+            }
+            stageReview(account: account, remote: plan.document, store: store)
+            if approvedReview != nil && approval == nil && pendingReview != nil {
+                statusText = "课表内容已变化，请重新确认接收"
+            }
+            // Name normalization or a dependent setting can produce another
+            // local edit. It is uploaded automatically on the next pass.
+            if store.cloudSync.document.merged(with: plan.document) != plan.document {
+                needsSync = true
+                if pendingReview == nil { statusText = "有本机修改等待上传" }
+            }
+            return
+        }
+    }
+
+    private func stageReview(account: String, remote: CloudSyncDocument, store: AppStore) {
+        let review = CloudSyncReview(account: account, local: store.cloudSync.document, remote: remote)
+        if review.changes.isEmpty {
+            pendingReview = nil
+            isReviewPresented = false
+            markSynced()
+        } else if let previous = pendingReview, previous.hasSameCourseChanges(as: review) {
+            // Refresh automatically synced settings without resetting choices
+            // or repeatedly opening a review the user has deferred.
+            pendingReview = CloudSyncReview(account: account, local: review.local, remote: remote, id: previous.id)
+            statusText = "有 \(review.changes.count) 项云端课表更新等待确认"
+        } else {
+            pendingReview = review
+            isReviewPresented = true
+            statusText = "有 \(review.changes.count) 项云端课表更新等待确认"
+        }
+    }
+
+    private func markSynced() {
+        lastSyncedAt = Date()
+        defaults.set(lastSyncedAt, forKey: Self.lastSyncKey)
+        statusText = "已同步"
+    }
+
+    private func completeTask() {
+        isSyncing = false
+        if needsSync {
+            needsSync = false
+            scheduleSync()
+        }
+    }
+
+    private func handle(_ error: Error, session: Int) {
+        if error is CancellationError {
             if session == generation { statusText = "等待同步" }
-        } catch {
+        } else {
             guard session == generation else { return }
             if case CloudSyncFailure.accountChanged = error { setEnabled(false) }
             if let cloudError = error as? CKError {
