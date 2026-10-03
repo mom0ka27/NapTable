@@ -1,8 +1,8 @@
-import http.client, json, os, re, sqlite3, tempfile, threading, unittest
+import hashlib, http.client, json, os, re, sqlite3, tempfile, threading, unittest
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from server.naptable_server import MAX_REQUEST_BYTES, Store
+from server.naptable_server import MAX_REQUEST_BYTES, STATIC_ROOT, Store
 from tests.server_support import LiveServer
 
 class ServerTests(unittest.TestCase):
@@ -56,12 +56,18 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(Exception): self.req('POST','/v1/admin/schools/nju/terms',value)
         old=os.environ.get('NAPTABLE_ADMIN_TOKEN'); os.environ['NAPTABLE_ADMIN_TOKEN']='admin-test'
         try:
-            self.req('POST','/v1/admin/schools/nju',{'name':'南京大学','periods':periods},{'X-Admin-Token':'admin-test'})
+            self.req('POST','/v1/admin/schools/nju',{'name':'南京大学','periods':periods,'unifiedHolidaysEnabled':False,'unifiedMakeupEnabled':True},{'X-Admin-Token':'admin-test'})
             self.req('POST','/v1/admin/schools/nju/terms',value,{'X-Admin-Token':'admin-test'})
+            self.req('POST','/v1/admin/calendar',{'adjustments':[
+                {'date':'2027-01-01','kind':'off','note':'放假'},
+                {'date':'2027-01-02','kind':'swap','source':'2026-12-31','note':'补班'}
+            ]},{'X-Admin-Token':'admin-test'})
             school=self.req('GET','/v1/schools')['schools'][0]
+            self.assertFalse(school['unifiedHolidaysEnabled']); self.assertTrue(school['unifiedMakeupEnabled'])
             term=next(item for item in school['terms'] if item['id']=='2027-spring')
-            self.assertEqual(term['semesterStartMonday'],'2027-02-22'); self.assertEqual(term['periods'][0]['start'],'07:30'); self.assertEqual(term['version'],1)
+            self.assertEqual(term['semesterStartMonday'],'2027-02-22'); self.assertEqual(term['periods'][0]['start'],'07:30'); self.assertEqual(term['version'],2)
             self.assertTrue(term['current']); self.assertEqual(school['currentTermID'],'2027-spring')
+            self.assertEqual([item['kind'] for item in term['adjustments']], ['swap'])
         finally:
             if old is None: os.environ.pop('NAPTABLE_ADMIN_TOKEN',None)
             else: os.environ['NAPTABLE_ADMIN_TOKEN']=old
@@ -116,6 +122,10 @@ class ServerTests(unittest.TestCase):
     def test_admin_web_routes_are_served(self):
         html=self.req_text('GET','/admin')
         self.assertIn('NapTable 管理台', html); self.assertIn('/static/admin.js', html)
+        for name in ('admin.css', 'admin.js'):
+            digest = hashlib.sha256((STATIC_ROOT / name).read_bytes()).hexdigest()[:16]
+            self.assertIn(f'/static/{name}?v={digest}', html)
+        self.assertNotIn('__ADMIN_', html)
         self.assertIn('NapTable 管理台', self.req_text('GET','/admin/'))
         self.assertIn('text/css', self.req_headers('GET','/static/admin.css')['Content-Type'])
         self.assertIn('application/javascript', self.req_headers('GET','/static/admin.js')['Content-Type'])

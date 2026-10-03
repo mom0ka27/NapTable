@@ -9,6 +9,7 @@ swiftc -swift-version 5 -emit-library -emit-module -module-name ActivityKit \
 swiftc -swift-version 5 -D LIVE_ACTIVITY_CHECKS -D LIVE_SERVICE_CHECKS -I "$check_dir" -L "$check_dir" -lActivityKit \
     -Xlinker -rpath -Xlinker "$check_dir" \
     "$repo_dir/NapTable/Models/PrivacyConsent.swift" \
+    "$repo_dir/NapTable/Models/PurchaseManager.swift" \
     "$repo_dir/NapTable/Models/AppAttestService.swift" \
     "$repo_dir/NapTable/Models/Course.swift" \
     "$repo_dir/NapTable/Utils/WeekCalculator.swift" \

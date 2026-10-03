@@ -56,8 +56,8 @@ final class NativeLiveActivityController: ObservableObject {
     /// service reconciles the server's registrations.
     var activityTokensDidChange: (() -> Void)?
     /// Whether the server lets this device have reminders today, as the last
-    /// sync said. False only once a subscription is required and this device
-    /// has none: the app then starts no
+    /// sync said. False when a trial or lifetime entitlement is required and
+    /// this device has none: the app then starts no
     /// activity of its own on entry either.
     var reminderAllowed = true {
         didSet { if oldValue != reminderAllowed { rebuild() } }
@@ -84,7 +84,7 @@ final class NativeLiveActivityController: ObservableObject {
     }
     private let privacyDefaults: UserDefaults
     private let defaults: UserDefaults
-    /// Activity ID → hex push token. Subscriptions live only as long as the process.
+    /// Activity ID → hex push token. Activity registrations live only as long as the process.
     private var activityTokens: [String: String] = [:]
     private var tokenObservers: [String: Task<Void, Never>] = [:]
     private var announcedTokens: [String] = []
@@ -278,7 +278,7 @@ final class NativeLiveActivityController: ObservableObject {
             self?.tokenObservers[id] = nil
         }
     }
-    /// Tokens can rotate and subscriptions die with the process, so every pass
+    /// Tokens can rotate and registrations die with the process, so every pass
     /// re-attaches to each token-mode activity still around.
     private func observeTokenActivities() {
         let current = Activity<ScheduleLiveActivityAttributes>.activities.filter { $0.activityState != .ended && $0.activityState != .dismissed }
@@ -353,7 +353,7 @@ final class NativeLiveActivityController: ObservableObject {
         guard let stored = defaults.dictionary(forKey: Self.channelsKey), stored["scope"] as? String == display.scope,
               let channels = stored["channels"] as? [String: String], let snapshot = currentScheduleMetadata,
               let zone = TimeZone(identifier: snapshot.timeZone ?? TimeZone.current.identifier),
-              let period = snapshot.periods.first(where: {
+              let period = snapshot.periods(on: occurrence.dateKey).first(where: {
                   LiveActivityTimeline.instant(day: occurrence.dateKey, clock: $0.endTime, zone: zone) == occurrence.end
               }) else { return nil }
         return channels[String(period.number)]
@@ -471,8 +471,8 @@ final class NativeLiveActivityController: ObservableObject {
         defer { announceTokens() }
         guard valid(generation) else { return }
         guard reminderAllowed else {
-            coverage = "需要订阅"
-            status = .unavailable("实时活动需要订阅。")
+            coverage = "需要试用或买断"
+            status = .unavailable("实时活动需要 30 天试用或一次买断。")
             return
         }
         if canStartForegroundActivity {

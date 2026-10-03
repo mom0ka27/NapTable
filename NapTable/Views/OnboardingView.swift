@@ -60,6 +60,7 @@ struct AppEntryView: View {
             guard consent.basicAccepted else { return }
             store.refreshForToday()
             Task {
+                await PurchaseManager.shared.load()
                 await reportUsage()
                 await ScheduleSharingService.shared.refreshCurrentTerms(in: store)
             }
@@ -75,12 +76,14 @@ struct OnboardingView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.colorScheme) private var scheme
     @ObservedObject private var consent = PrivacyConsent.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
     @StateObject private var scheduleStore = NativeScheduleStore()
     @State private var basicChecked: Bool
     @State private var liveChecked: Bool
     @State private var showImport = false
     @State private var showCloudSync = false
     @State private var initialSchool: String?
+    @State private var liveActivationTask: Task<Void, Never>?
     /// Where the user is. Navigation is explicit: skipping a page only moves
     /// past it, so going back (or forward again) still passes through it.
     @State private var step: Step
@@ -148,6 +151,14 @@ struct OnboardingView: View {
             #endif
         }
         .tint(colors.accent)
+        .alert("实时活动提示", isPresented: Binding(
+            get: { step == .live && purchases.errorMessage != nil },
+            set: { if !$0 { purchases.errorMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) { purchases.errorMessage = nil }
+        } message: {
+            Text(purchases.errorMessage ?? "")
+        }
         .sheet(isPresented: $showImport) {
             ImportView(requiresImport: true, initialSchool: initialSchool) {
                 store.saveNow()
@@ -158,6 +169,10 @@ struct OnboardingView: View {
             .interactiveDismissDisabled()
         }
         .onAppear { scheduleStore.connect(store) }
+        .task(id: step) {
+            if step == .live { await purchases.load() }
+        }
+        .onDisappear { liveActivationTask?.cancel() }
         .sheet(isPresented: $showCloudSync, onDismiss: {
             let hasCourses = !store.courses.isEmpty || ScheduleSharingService.shared.sharedSchedules.contains { !$0.courses.isEmpty }
             consent.completeOnboarding(hasImportedCourses: hasCourses)
@@ -179,7 +194,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 20) {
                 switch step {
                 case .privacy: welcome; privacyStep
-                case .live: LiveActivityIntroContent()
+                case .live: LiveActivityIntroContent(accessMode: purchases.accessMode)
                 case .importing: welcome; importStep
                 }
             }
@@ -229,7 +244,7 @@ struct OnboardingView: View {
                 Button("跳过") { finishLiveStep() }
                     .font(.subheadline.weight(.medium)).foregroundStyle(colors.accent)
                     .frame(minWidth: 44, minHeight: 44)
-                    .accessibilityHint("不开启实时活动，之后可在设置中开启")
+                    .accessibilityHint("继续导入课表，之后可在设置中开启实时活动")
             }
         }
     }
@@ -245,19 +260,21 @@ struct OnboardingView: View {
 
     private func goBack() {
         guard stepIndex > 0 else { return }
+        if step == .live { liveActivationTask?.cancel() }
         if steps[stepIndex - 1] == .privacy { basicChecked = consent.basicAccepted }
         go(to: steps[stepIndex - 1])
     }
 
     /// Accepting the basic agreement moves on to the next page.
     private func acceptPrivacy() {
-        // The Live Activity consent is given on its own page, by signing in.
+        // The optional Live Activity consent is given on its own page.
         consent.acceptBasic(liveActivities: consent.liveAccepted)
         if Self.offersLiveActivities { go(to: .live) } else { enterImport() }
     }
 
     /// Past the Live Activity page, whether by turning it on or skipping.
     private func finishLiveStep() {
+        liveActivationTask?.cancel()
         liveStepDone = true
         enterImport()
     }
@@ -274,11 +291,24 @@ struct OnboardingView: View {
     }
 
     private func enableLive() {
-        consent.setLiveConsent(true)
+        guard liveChecked, purchases.isBeta || (!purchases.busy && purchases.accessMode == .paid) else { return }
         #if os(iOS)
-        NativeLiveActivityController.shared.setEnabled(true)
-        #endif
+        liveActivationTask?.cancel()
+        liveActivationTask = Task {
+            if !purchases.allowsLiveActivities {
+                if purchases.trialConsumed { await purchases.buyLifetime() }
+                else { await purchases.beginTrial() }
+                guard purchases.state.isEntitled else { return }
+            }
+            // Continuing or going back cancels this activation attempt.
+            guard !Task.isCancelled, step == .live, liveChecked, purchases.allowsLiveActivities else { return }
+            consent.setLiveConsent(true)
+            NativeLiveActivityController.shared.setEnabled(true)
+            finishLiveStep()
+        }
+        #else
         finishLiveStep()
+        #endif
     }
 
     private var progress: some View {
@@ -329,7 +359,7 @@ struct OnboardingView: View {
             OnboardingPermissionCard(
                 title: "基础隐私协议",
                 summary: "上传学校标识、系统版本、设备型号、App 版本与随机安装标识，用于使用统计与兼容性改进。",
-                symbol: "chart.bar.xaxis", optional: false, accepted: $basicChecked
+                symbol: "chart.bar.xaxis", optional: false
             )
             Label("基础统计不包含课程内容或学校账号密码", systemImage: "lock.shield")
                 .font(.caption2).foregroundStyle(colors.secondary)
@@ -392,17 +422,21 @@ struct OnboardingView: View {
 
             demoCard
 
-            ScheduleUsageGuideView()
-
-            VStack(alignment: .leading, spacing: 0) {
-                importInstruction("1", title: "选择教务入口", detail: "找到适合你的本科生或研究生系统。", last: false)
-                importInstruction("2", title: "登录并确认课程", detail: "在学校页面登录，核对课程与学期。", last: false)
-                importInstruction("3", title: "开始使用课表", detail: "完成导入后，课表和小组件就准备好了。", last: true)
+            NavigationLink {
+                ScheduleUsageGuideScreen(usesOnboardingStyle: true)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle")
+                    Text("使用指南")
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(colors.accent)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
-            .padding(19)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(colors.surface, in: RoundedRectangle(cornerRadius: 21))
-            .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
+            .buttonStyle(.plain)
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.shield").font(.caption)
                 Text("账号密码仅在学校页面输入。也可以先用示例课表体验，之后再导入自己的课程。")
@@ -428,7 +462,7 @@ struct OnboardingView: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("导入示例课表").font(.headline).foregroundStyle(colors.ink)
-                        Text("计算机科学与技术 · 无需登录")
+                        Text("体验课表功能")
                             .font(.caption).foregroundStyle(colors.secondary)
                     }
                     Spacer(minLength: 4)
@@ -445,7 +479,7 @@ struct OnboardingView: View {
             .contentShape(RoundedRectangle(cornerRadius: 21))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("导入计算机科学与技术示例课表")
+        .accessibilityLabel("导入示例课表")
         .accessibilityHint("无需登录，包含单双周、指定周次和自由时间课程，导入后开始使用")
     }
 
@@ -477,23 +511,6 @@ struct OnboardingView: View {
         .accessibilityLabel("选择\(name)教务入口并导入课表")
     }
 
-    private func importInstruction(_ number: String, title: String, detail: String, last: Bool) -> some View {
-        HStack(alignment: .top, spacing: 13) {
-            VStack(spacing: 5) {
-                Text(number).font(.system(.caption2, design: .rounded).weight(.semibold))
-                    .foregroundStyle(colors.accent).frame(width: 25, height: 25)
-                    .background(colors.soft, in: Circle())
-                if !last { Rectangle().fill(colors.line).frame(width: 1, height: 26) }
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(colors.ink)
-                Text(detail).font(.caption).foregroundStyle(colors.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.bottom, last ? 0 : 21)
-        }
-    }
-
     @ViewBuilder private var bottomAction: some View {
         switch step {
         case .privacy: primaryAction
@@ -505,13 +522,46 @@ struct OnboardingView: View {
 
     private var liveAction: some View {
         VStack(spacing: 10) {
-            LiveActivityConsentNote(agreed: $liveChecked)
-            Button { enableLive() } label: {
-                HStack { Spacer(); Text(consent.liveAccepted ? "已开启，继续" : "开启实时活动"); Spacer(); Image(systemName: "arrow.right").font(.subheadline.weight(.semibold)) }
+            OnboardingConsentNote(agreed: $liveChecked, liveActivities: true)
+            Button {
+                if purchases.accessMode == .unavailable { Task { await purchases.load() } }
+                else { enableLive() }
+            } label: {
+                HStack {
+                    Spacer()
+                    if purchases.isBeta {
+                        Text("免费开启并继续")
+                    } else if purchases.accessMode == .loading {
+                        ProgressView().controlSize(.small)
+                        Text("正在连接服务器…")
+                    } else if purchases.accessMode == .unavailable {
+                        Text("重新连接")
+                    } else if purchases.busy || purchases.state == .loading {
+                        ProgressView().controlSize(.small)
+                        Text(purchases.busy ? "正在确认…" : "正在读取购买信息…")
+                    } else {
+                        Text(purchases.state.isEntitled ? "开启并继续" : (purchases.trialConsumed ? "一次买断并开启" : "开始 30 天试用并开启"))
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.right").font(.subheadline.weight(.semibold))
+                }
                     .padding(.horizontal, 20)
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
-            .disabled(!liveChecked)
+            .disabled(!liveChecked || purchases.accessMode == .loading || (!purchases.isBeta && purchases.accessMode == .paid && (purchases.busy || purchases.state == .loading || purchases.state == .unavailable)))
+            if purchases.isBeta {
+                Text("Beta 版本免费使用，无需试用或购买。")
+                    .font(.caption2).foregroundStyle(colors.secondary)
+                    .multilineTextAlignment(.center)
+            } else if purchases.accessMode == .unavailable {
+                Text("连接失败，请重试或点右上角「跳过」。")
+                    .font(.caption2).foregroundStyle(colors.secondary)
+                    .multilineTextAlignment(.center)
+            } else if purchases.state == .unavailable {
+                Text("试用与购买暂不可用，可点右上角「跳过」，之后在设置中开启。")
+                    .font(.caption2).foregroundStyle(colors.secondary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .padding(.horizontal, 24).padding(.top, 15).padding(.bottom, 10)
         .frame(maxWidth: 570)
@@ -522,6 +572,7 @@ struct OnboardingView: View {
 
     private var primaryAction: some View {
         VStack(spacing: 10) {
+            OnboardingConsentNote(agreed: $basicChecked)
             Button { acceptPrivacy() } label: {
                 HStack {
                     Spacer()

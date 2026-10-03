@@ -19,21 +19,23 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import app_attest, holidays, live_activity, subscriptions
+    from . import app_attest, entitlements, holidays, live_activity, school_times
     from .live_activity_timeline import ProtocolError, identifier
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import app_attest, holidays, live_activity, subscriptions
+    import app_attest, entitlements, holidays, live_activity, school_times
     from live_activity_timeline import ProtocolError, identifier
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 SITE_ROOT = STATIC_ROOT / "site"
 # The public website: a fixed list, so no request path ever reaches the filesystem.
-SITE_ASSETS = {"site.css": "text/css; charset=utf-8",
-               **{f"img/{name}.jpg": "image/jpeg" for name in ("week-view", "week-view-dark", "day-view", "month-view",
-                                                                 "onboarding-import")},
-               **{f"img/{name}.png": "image/png" for name in ("icon", "favicon", "upcoming-widget", "two-day-widget",
-                                                                "live-lock-screen", "live-island-expanded",
-                                                                "live-island-compact")}}
+SITE_ASSETS = {"site.css": "text/css; charset=utf-8", "site.js": "application/javascript; charset=utf-8", "theme.js": "application/javascript; charset=utf-8"}
+for _name in ("week-view", "week-view-dark", "day-view", "month-view", "onboarding-import", "month-preview-light", "month-preview-dark"):
+    SITE_ASSETS[f"img/{_name}.jpg"] = "image/jpeg"
+for _name in ("icon", "favicon", "live-lock-screen", "live-island-expanded", "live-island-compact", "upcoming-widget", "two-day-widget"):
+    SITE_ASSETS[f"img/{_name}.png"] = "image/png"
+for _name in ("widget-small", "widget-small-two", "widget-medium", "widget-today-list", "widget-today-timeline", "widget-twoday-list", "widget-twoday-timeline", "widget-inline", "widget-circular", "widget-rectangular", "holiday-national", "holiday-midautumn"):
+    for _scheme in ("light", "dark"):
+        SITE_ASSETS[f"img/{_name}-{_scheme}.png"] = "image/png"
 # Usage days follow the school clock, not UTC: "today" starts at 00:00 UTC+8.
 USAGE_ZONE = timezone(timedelta(hours=8))
 
@@ -57,7 +59,9 @@ CREATE TABLE IF NOT EXISTS apns_config (
 );
 CREATE TABLE IF NOT EXISTS school_configs (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, semester_start TEXT NOT NULL,
- periods_json TEXT NOT NULL, note TEXT NOT NULL, updated_at TEXT NOT NULL
+ periods_json TEXT NOT NULL, note TEXT NOT NULL, updated_at TEXT NOT NULL,
+ unified_holidays_enabled INTEGER NOT NULL DEFAULT 1,
+ unified_makeup_enabled INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS school_terms (
  school_id TEXT NOT NULL, term_id TEXT NOT NULL, version INTEGER NOT NULL,
@@ -66,6 +70,9 @@ CREATE TABLE IF NOT EXISTS school_terms (
  updated_at TEXT NOT NULL, adjustments_json TEXT NOT NULL DEFAULT '[]',
  is_current INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY (school_id, term_id)
+);
+CREATE TABLE IF NOT EXISTS school_seasonal_periods (
+ school_id TEXT PRIMARY KEY, periods_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS global_calendar (
  id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 1,
@@ -334,6 +341,11 @@ class Store:
         with self.lock:
             self.db.executescript(SCHEMA)
             terms = {row[1] for row in self.db.execute("PRAGMA table_info(school_terms)")}
+            school_columns = {row[1] for row in self.db.execute("PRAGMA table_info(school_configs)")}
+            if "unified_holidays_enabled" not in school_columns:
+                self.db.execute("ALTER TABLE school_configs ADD COLUMN unified_holidays_enabled INTEGER NOT NULL DEFAULT 1")
+            if "unified_makeup_enabled" not in school_columns:
+                self.db.execute("ALTER TABLE school_configs ADD COLUMN unified_makeup_enabled INTEGER NOT NULL DEFAULT 1")
             if "adjustments_json" not in terms: self.db.execute("ALTER TABLE school_terms ADD COLUMN adjustments_json TEXT NOT NULL DEFAULT '[]'")
             if "is_current" not in terms: self.db.execute("ALTER TABLE school_terms ADD COLUMN is_current INTEGER NOT NULL DEFAULT 0")
             shares = {row[1] for row in self.db.execute("PRAGMA table_info(shares)")}
@@ -473,7 +485,7 @@ class Store:
             ("18:30","19:20"),("19:30","20:20"),("20:30","21:20"),("21:30","22:20"),("22:30","23:59")], 1)]
         row = self.db.execute("SELECT 1 FROM school_configs WHERE id='nju'").fetchone()
         if not row:
-            self.db.execute("INSERT INTO school_configs VALUES (?,?,?,?,?,?)", ("nju","南京大学","",json.dumps(periods,ensure_ascii=False),"模板时间，需按校历校准",now()))
+            self.db.execute("INSERT INTO school_configs (id,name,semester_start,periods_json,note,updated_at) VALUES (?,?,?,?,?,?)", ("nju","南京大学","",json.dumps(periods,ensure_ascii=False),"模板时间，需按校历校准",now()))
             self.db.commit()
         term = self.db.execute("SELECT 1 FROM school_terms WHERE school_id='nju' AND term_id='2026-fall-template'").fetchone()
         if not term:
@@ -589,15 +601,31 @@ class Store:
         terms = self.db.execute("SELECT * FROM school_terms WHERE school_id=? ORDER BY semester_start_monday DESC,term_id", (r["id"],)).fetchall()
         current = next((term["term_id"] for term in terms if term["is_current"]), None)
         periods = json.loads(r["periods_json"] or "[]")
+        seasons = school_times.stored_seasons(self.db, r["id"])
+        if seasons and len(periods) != len(seasons[0]["periods"]):
+            periods = normalize_periods(seasons[-1]["periods"])
         return {"id":r["id"],"name":r["name"],"timezone":"Asia/Shanghai","periods":periods,
+                "unifiedHolidaysEnabled": bool(r["unified_holidays_enabled"]),
+                "unifiedMakeupEnabled": bool(r["unified_makeup_enabled"]),
+                "seasonalPeriods":seasons,
                 "currentTermID":current,"terms":[self.term(t, periods) for t in terms],
                 "note":r["note"],"updatedAt":r["updated_at"]}
     def term(self, r, periods=None):
         if periods is None:
             school = self.db.execute("SELECT periods_json FROM school_configs WHERE id=?", (r["school_id"],)).fetchone()
             periods = json.loads(school[0] or "[]") if school else []
+        seasons = school_times.stored_seasons(self.db, r["school_id"])
+        if seasons and len(periods) != len(seasons[0]["periods"]):
+            periods = normalize_periods(seasons[-1]["periods"])
+        school_config = self.db.execute("SELECT unified_holidays_enabled,unified_makeup_enabled FROM school_configs WHERE id=?", (r["school_id"],)).fetchone()
+        adjustments = self.global_calendar()["adjustments"]
+        if school_config and not school_config["unified_holidays_enabled"]:
+            adjustments = [item for item in adjustments if item.get("kind") != "off"]
+        if school_config and not school_config["unified_makeup_enabled"]:
+            adjustments = [item for item in adjustments if item.get("kind") != "swap"]
         return {"id":r["term_id"],"version":r["version"],"semesterStartMonday":r["semester_start_monday"],
-                "weekCount":r["week_count"],"periods":periods,"adjustments":self.global_calendar()["adjustments"],
+                "seasonalPeriods":seasons,
+                "weekCount":r["week_count"],"periods":periods,"adjustments":adjustments,
                 "timezone":r["timezone"],"note":r["note"],"current":bool(r["is_current"]),"updatedAt":r["updated_at"]}
     def find_term(self, school_id, term_id):
         with self.lock:
@@ -609,6 +637,7 @@ class Store:
             deleted = self.db.execute("DELETE FROM school_configs WHERE id=?", (school_id,)).rowcount
             if deleted:
                 self.db.execute("DELETE FROM school_terms WHERE school_id=?", (school_id,))
+                self.db.execute("DELETE FROM school_seasonal_periods WHERE school_id=?", (school_id,))
             return bool(deleted)
     def rename_school(self, old_id, new_id):
         if not isinstance(new_id, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,79}", new_id):
@@ -622,6 +651,9 @@ class Store:
                     raise ValueError("school id already exists")
                 self.db.execute("UPDATE school_configs SET id=?,updated_at=? WHERE id=?", (new_id, now(), old_id))
                 self.db.execute("UPDATE school_terms SET school_id=? WHERE school_id=?", (new_id, old_id))
+                seasons = school_times.stored_seasons(self.db, old_id)
+                self.db.execute("DELETE FROM school_seasonal_periods WHERE school_id=?", (old_id,))
+                self.db.execute("INSERT OR REPLACE INTO school_seasonal_periods VALUES (?,?)", (new_id, json.dumps(seasons)))
                 self.db.execute("UPDATE usage_devices SET school_id=? WHERE school_id=?", (new_id, old_id))
                 # Shares retain their frozen timetable, name and scope; only the
                 # reference used by resync and clients changes.
@@ -662,14 +694,25 @@ class Store:
             raise ValueError("invalid school id")
         semester_start = _text(value.get("semesterStart"), "semesterStart", 40)
         note = _text(value.get("note"), "note", 400)
+        holidays_enabled = value.get("unifiedHolidaysEnabled", True)
+        makeup_enabled = value.get("unifiedMakeupEnabled", True)
+        if type(holidays_enabled) is not bool or type(makeup_enabled) is not bool:
+            raise ValueError("统一放假和调休开关必须是布尔值")
         periods = normalize_periods(value.get("periods"))
         stamp=now()
         with self.lock, self.db:
-            existing = self.db.execute("SELECT periods_json FROM school_configs WHERE id=?", (value["id"],)).fetchone()
+            existing = self.db.execute("SELECT periods_json,unified_holidays_enabled,unified_makeup_enabled FROM school_configs WHERE id=?", (value["id"],)).fetchone()
             if create and existing is not None: raise SchoolExists(value["id"])
+            previous_seasons = school_times.stored_seasons(self.db, value["id"])
+            seasons = school_times.normalize_seasons(value.get("seasonalPeriods", previous_seasons))
+            if "seasonalPeriods" not in value and seasons and len(periods) != len(seasons[0]["periods"]):
+                periods = normalize_periods(seasons[-1]["periods"])
+            seasons = school_times.normalize_seasons(seasons, len(periods))
             encoded_periods = json.dumps(periods, ensure_ascii=False)
-            periods_changed = existing is None or json.loads(existing["periods_json"] or "[]") != periods
-            self.db.execute("INSERT INTO school_configs VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,semester_start=excluded.semester_start,periods_json=excluded.periods_json,note=excluded.note,updated_at=excluded.updated_at", (value["id"],name,semester_start,encoded_periods,note,stamp))
+            policy_changed = existing is None or bool(existing["unified_holidays_enabled"]) != holidays_enabled or bool(existing["unified_makeup_enabled"]) != makeup_enabled
+            periods_changed = existing is None or json.loads(existing["periods_json"] or "[]") != periods or previous_seasons != seasons or policy_changed
+            self.db.execute("INSERT INTO school_configs (id,name,semester_start,periods_json,note,updated_at,unified_holidays_enabled,unified_makeup_enabled) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,semester_start=excluded.semester_start,periods_json=excluded.periods_json,note=excluded.note,updated_at=excluded.updated_at,unified_holidays_enabled=excluded.unified_holidays_enabled,unified_makeup_enabled=excluded.unified_makeup_enabled", (value["id"],name,semester_start,encoded_periods,note,stamp,int(holidays_enabled),int(makeup_enabled)))
+            self.db.execute("INSERT OR REPLACE INTO school_seasonal_periods VALUES (?,?)", (value["id"], json.dumps(seasons)))
             if periods_changed:
                 self.db.execute("UPDATE school_terms SET version=version+1,updated_at=? WHERE school_id=?", (stamp, value["id"]))
             return self.school(self.db.execute("SELECT * FROM school_configs WHERE id=?", (value["id"],)).fetchone())
@@ -855,6 +898,7 @@ class Store:
                              and json.loads(previous["adjustments_json"] or "[]") == term.get("adjustments", [])
                              and json.loads(previous["term_snapshot_json"] or "{}").get("weekCount") == term["weekCount"]
                              and json.loads(previous["term_snapshot_json"] or "{}").get("timezone") == term["timezone"])
+                unchanged = unchanged and json.loads(previous["term_snapshot_json"] or "{}").get("seasonalPeriods", school_times.default_seasons(value["schoolID"])) == term.get("seasonalPeriods", [])
                 if unchanged: raise ValueError("课表没有变更，请继续使用现有分享码")
             self.db.execute("INSERT INTO shares (code,write_token_hash,owner,school_id,school_name,payload_json,semester_start_monday,class_time_list_json,adjustments_json,term_id,term_version,term_snapshot_json,created_at,updated_at,revoked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)", (code,hashlib.sha256(token.encode()).hexdigest(),owner,value["schoolID"],self.school_name(value["schoolID"]),payload,term["semesterStartMonday"],json.dumps(term["periods"],ensure_ascii=False),json.dumps(term.get("adjustments",[]),ensure_ascii=False),term["id"],term["version"],json.dumps(term,ensure_ascii=False),stamp,stamp))
             scope = previous["schedule_scope"] if previous_code is not None else secrets.token_hex(16)
@@ -909,6 +953,7 @@ class Store:
         # this is rather than repeating the school for every share.
         out={"id":r["code"],"scheduleScope":r["schedule_scope"],"timeZone":snapshot.get("timezone"),"owner":r["owner"],"schoolID":r["school_id"],"schoolName":r["school_name"],"name":f"{r['owner']} · {r['school_name']}","termID":r["term_id"],"termVersion":r["term_version"],"term_version":r["term_version"],"term_week_count":snapshot.get("weekCount",0),"term_timezone":snapshot.get("timezone","Asia/Shanghai"),"configurationFrozen":True,"courses":courses,"courseCount":len(courses),"semester_start_monday":r["semester_start_monday"],"class_time_list":json.loads(r["class_time_list_json"]),"calendar_adjustments":json.loads(r["adjustments_json"] or "[]"),"createdAt":r["created_at"],"updatedAt":r["updated_at"]}
         if include_token: out["writeToken"]=token
+        out["seasonalPeriods"] = snapshot.get("seasonalPeriods", school_times.default_seasons(r["school_id"]))
         return out
     def meta(self, code):
         """Everything a follower needs to decide whether to download again."""
@@ -1020,7 +1065,7 @@ class Exchange:
     def __init__(self, request):
         self.store = request.app.state.store
         self.live_activity = request.app.state.live_activity
-        self.subscriptions = request.app.state.subscriptions
+        self.entitlements = request.app.state.entitlements
         self.throttle = request.app.state.throttle
         self.attest = request.app.state.attest
         self.publishes = request.app.state.publishes
@@ -1200,7 +1245,15 @@ def site_asset(x):
     x.send_file(SITE_ROOT / name, SITE_ASSETS[name], "public, max-age=86400")
 
 @route("GET HEAD", "/admin", "/admin/")
-def admin_page(x): x.send_file(STATIC_ROOT / "admin.html", "text/html; charset=utf-8")
+def admin_page(x):
+    try:
+        page = (STATIC_ROOT / "admin.html").read_text(encoding="utf-8")
+        css_hash = hashlib.sha256((STATIC_ROOT / "admin.css").read_bytes()).hexdigest()[:16]
+        js_hash = hashlib.sha256((STATIC_ROOT / "admin.js").read_bytes()).hexdigest()[:16]
+    except OSError:
+        return x.send_json(404, {"error": "not found"})
+    page = page.replace("__ADMIN_CSS_HASH__", css_hash).replace("__ADMIN_JS_HASH__", js_hash)
+    x.send(200, page.encode("utf-8"), "text/html; charset=utf-8", [("Cache-Control", "no-store")])
 
 @route("GET HEAD", "/static/admin.css")
 def admin_css(x): x.send_file(STATIC_ROOT / "admin.css", "text/css; charset=utf-8", x.versioned())
@@ -1446,24 +1499,31 @@ def revoke_share(x):
     if revoked is None: return x.send_json(404,{"error":"share not found"})
     x.send_json(200,{"revoked":True}) if revoked else x.send_json(403,{"error":"invalid write token"})
 
-# MARK: Subscriptions
+# MARK: Live Activity entitlements
 #
-# Subscriptions are per device: the admin only flips the switch and reads counts.
+# Entitlements are per device after a verified StoreKit transaction; the admin
+# controls whether reminders require a trial or lifetime purchase.
 
-@route("GET HEAD", "/v1/admin/subscriptions")
-def admin_subscriptions(x):
-    if admin_only(x): return
-    if x.subscriptions is None: return x.send_json(404, {"error": "not found"})
-    x.send_json(200, x.subscriptions.admin_summary())
+@route("GET HEAD", "/v1/entitlements/settings")
+def public_entitlement_settings(x):
+    # Available before optional notification consent or device registration.
+    settings = x.entitlements.settings() if x.entitlements is not None else entitlements.SETTINGS
+    x.send_json(200, settings, [("Cache-Control", "no-store")])
 
-@route("POST", "/v1/admin/subscriptions/settings")
-def admin_subscription_settings(x):
+@route("GET HEAD", "/v1/admin/entitlements")
+def admin_entitlements(x):
     if admin_only(x): return
-    if x.subscriptions is None: return x.send_json(404, {"error": "not found"})
+    if x.entitlements is None: return x.send_json(404, {"error": "not found"})
+    x.send_json(200, x.entitlements.admin_summary())
+
+@route("POST", "/v1/admin/entitlements/settings")
+def admin_entitlement_settings(x):
+    if admin_only(x): return
+    if x.entitlements is None: return x.send_json(404, {"error": "not found"})
     value = x.body()
-    try: saved = x.subscriptions.save_settings(value)
-    except subscriptions.SubscriptionError as error: return x.send_json(400, {"error": str(error)})
-    x.audit("subscription.settings", "", value)
+    try: saved = x.entitlements.save_settings(value)
+    except entitlements.EntitlementError as error: return x.send_json(400, {"error": str(error)})
+    x.audit("entitlement.settings", "", value)
     x.send_json(200, saved)
 
 @route("POST", "/v1/app-attest/challenge")
@@ -1532,13 +1592,15 @@ def _response(status, data, headers):
         (name.encode("latin-1"), value.encode("latin-1")) for name, value in headers]
     return response
 
-def wire_subscriptions(store, service=None):
-    """Subscriptions over `store`, gating the Live Activity `service`: a device
+def wire_entitlements(store, service=None):
+    """Entitlements over `store`, gating the Live Activity `service`: a device
     that becomes entitled (or the switch turning off) queues its pending
     reminders again."""
     v2 = getattr(service, "v2", None)
     if store is None: return None
-    found = subscriptions.Subscriptions(store.db, store.lock)
+    bundle_id = getattr(getattr(service, "v2", None), "client", None)
+    bundle_id = getattr(bundle_id, "bundle_id", None)
+    found = entitlements.Entitlements(store.db, store.lock, bundle_id=bundle_id)
     if v2 is not None:
         found.now = v2.now
         v2.entitlement, found.on_change = found, v2.requeue
@@ -1553,7 +1615,7 @@ def wire_attest(store):
         return f"{team}.{bundle}" if team and bundle else ""
     return app_attest.AppAttest(store.db, store.lock, app_id=app_id)
 
-def create_app(store, service=None, workers=True, subscription_store=None, attest_store=None):
+def create_app(store, service=None, workers=True, entitlement_store=None, attest_store=None):
     """The HTTP app over `store` and the Live Activity `service`. With
     `workers`, the service's dispatch threads run for the app's lifetime."""
     @asynccontextmanager
@@ -1565,7 +1627,7 @@ def create_app(store, service=None, workers=True, subscription_store=None, attes
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False, lifespan=lifespan)
     app.state.store, app.state.live_activity = store, service
     app.state.throttle = LoginThrottle()
-    app.state.subscriptions = subscription_store if subscription_store is not None else wire_subscriptions(store, service)
+    app.state.entitlements = entitlement_store if entitlement_store is not None else wire_entitlements(store, service)
     app.state.attest = attest_store if attest_store is not None else wire_attest(store)
     app.state.publishes = PublishLimiter()
     for methods, path, body in ROUTES:

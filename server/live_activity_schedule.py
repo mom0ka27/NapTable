@@ -16,8 +16,10 @@ import uuid
 
 try:
     from .live_activity_timeline import ProtocolError, identifier
+    from . import school_times
 except ImportError:
     from live_activity_timeline import ProtocolError, identifier
+    import school_times
 
 ZONE = timezone(timedelta(hours=8))
 LEADS = (15, 30, 60)
@@ -99,9 +101,14 @@ def _adjustments(value):
 class Table:
     """One timetable on the clock: periods, term and courses by weekday."""
 
-    def __init__(self, periods, monday, weeks, adjustments, courses):
+    def __init__(self, periods, monday, weeks, adjustments, courses, seasons=None):
         self.periods, self.monday, self.weeks = periods, monday, weeks
         self.adjustments, self.courses = adjustments, courses
+        self.seasons = seasons or []
+
+    def periods_on(self, day):
+        base = [{"start": a, "end": b} for a, b in self.periods]
+        return [(period["start"], period["end"]) for period in school_times.periods_on(base, self.seasons, day)]
 
     def week(self, day):
         return (day - self.monday).days // 7 + 1
@@ -136,6 +143,15 @@ def own_timetable(value):
     if value.get("schoolID") is not None:
         kept["schoolID"] = identifier(value["schoolID"])
     periods = _periods(value.get("periods"))
+    defaults = school_times.default_seasons(value.get("schoolID"))
+    if defaults and len(defaults[0]["periods"]) != len(periods):
+        defaults = []  # 老客户端的其他校区作息不能被标准 10 节作息替换。
+    try:
+        seasons = school_times.normalize_seasons(value.get("seasonalPeriods", defaults), len(periods))
+    except ValueError as error:
+        raise ProtocolError(str(error))
+    if "seasonalPeriods" in value or seasons:
+        kept["seasonalPeriods"] = seasons
     kept["periods"] = [{"start": start, "end": end} for start, end in periods]
     monday = _day(value.get("semesterStartMonday"), "invalid semesterStartMonday")
     if monday.isoweekday() != 1:
@@ -166,9 +182,16 @@ def own_timetable(value):
         if (key, day, first, last) in seen:
             continue
         seen.add((key, day, first, last))
-        courses.append({"id": key, "day": day, "first": first, "last": last, "weeks": sorted(set(listed))})
+        item = {"id": key, "day": day, "first": first, "last": last, "weeks": sorted(set(listed))}
+        if "displayPriority" in course:
+            priority = course["displayPriority"]
+            if type(priority) is not int or not 0 <= priority <= 2**63 - 1:
+                raise ProtocolError("invalid display priority")
+            if priority > 0:
+                item["displayPriority"] = priority
+        courses.append(item)
     kept["courses"] = courses
-    table = Table(periods, monday, weeks, adjustments, [dict(course, weeks=set(course["weeks"])) for course in courses])
+    table = Table(periods, monday, weeks, adjustments, [dict(course, weeks=set(course["weeks"])) for course in courses], seasons)
     return table, kept
 
 
@@ -214,6 +237,11 @@ def share_table(row):
     periods = [(period["start"], period["end"]) for period in json.loads(row["class_time_list_json"] or "[]")
                if isinstance(period, dict) and CLOCK.fullmatch(str(period.get("start", ""))) and CLOCK.fullmatch(str(period.get("end", "")))]
     snapshot = json.loads(row["term_snapshot_json"] or "{}")
+    seasons = snapshot.get("seasonalPeriods", school_times.default_seasons(row["school_id"] if "school_id" in row.keys() else None))
+    try: seasons = school_times.normalize_seasons(seasons)
+    except ValueError: return None, {}
+    if seasons and len(periods) != len(seasons[0]["periods"]):
+        periods = [(period["start"], period["end"]) for period in seasons[-1]["periods"]]
     try:
         monday = date.fromisoformat(row["semester_start_monday"])
     except (TypeError, ValueError):
@@ -243,10 +271,14 @@ def share_table(row):
         last = first + count
         if not 1 <= day <= 7 or first < 1 or last > len(periods):
             continue
-        courses.append({"id": str(key), "day": day, "first": first, "last": last, "weeks": _weeks(course.get("weeks"))})
+        item = {"id": str(key), "day": day, "first": first, "last": last, "weeks": _weeks(course.get("weeks"))}
+        priority = _integer(course, "displayPriority", "display_priority") or 0
+        if 0 < priority <= 2**63 - 1:
+            item["displayPriority"] = priority
+        courses.append(item)
         texts[str(key)] = {field: str(course.get(source) or "") for field, source in
                            (("name", "name"), ("teacher", "teacher"), ("location", "classroom"))}
-    return Table(periods, monday, max(1, int(snapshot.get("weekCount") or 0)), adjustments, courses), texts
+    return Table(periods, monday, max(1, int(snapshot.get("weekCount") or 0)), adjustments, courses, seasons), texts
 
 
 # MARK: Frames
@@ -271,17 +303,19 @@ def _frame(start, until, lead, companion=None):
 class Piece:
     """One course of either table placed on the clock, before merging."""
 
-    def __init__(self, key, table, course, day, first, last, start, end, reminder, frames, own=False):
+    def __init__(self, key, table, course, day, first, last, start, end, reminder, frames, own=False, priority=0):
         self.key, self.table, self.course, self.day = key, table, course, day
         self.first, self.last, self.start, self.end = first, last, start, end
         self.reminder, self.frames, self.own = reminder, frames, own
+        self.priority = priority
 
     def upcoming(self, since):
         return _ref(self.table, self.course, self.day, "upcoming", self.first, self.last, self.start, self.end)
 
 
 def _bells(table, day, first, last):
-    return [(number, instant(day, table.periods[number - 1][0]), instant(day, table.periods[number - 1][1]))
+    periods = table.periods_on(day)
+    return [(number, instant(day, periods[number - 1][0]), instant(day, periods[number - 1][1]))
             for number in range(first, last + 1)]
 
 
@@ -299,10 +333,12 @@ def _class_frames(name, table, day, course, first, last, start, end, per_period)
 
 def _lead_pieces(name, table, day, lead, per_period, conflicts, report):
     """The leading table's courses: consecutive periods of one course form one
-    class; overlapping courses need the reader's choice, else the day is skipped."""
+    class; saved display priority resolves overlaps, with legacy date choices
+    as a fallback. Unresolved days stay unscheduled."""
     occupants = {}
+    periods = table.periods_on(day)
     for course in table.on(day):
-        if course["last"] > len(table.periods):
+        if course["last"] > len(periods):
             continue
         for period in range(course["first"], course["last"] + 1):
             occupants.setdefault(period, {})[course["id"]] = course
@@ -312,7 +348,9 @@ def _lead_pieces(name, table, day, lead, per_period, conflicts, report):
         key = f"{day.isoformat()}:{period}"
         if len(candidates) > 1:
             report["conflicts"].append({"id": key, "date": day.isoformat(), "period": period, "choices": sorted(candidates)})
-        source = next(iter(candidates)) if len(candidates) == 1 else conflicts.get(key)
+        ranked = sorted((key for key, value in candidates.items() if value.get("displayPriority", 0) > 0),
+                        key=lambda key: (-candidates[key]["displayPriority"], key))
+        source = next(iter(candidates)) if len(candidates) == 1 else (ranked[0] if ranked else conflicts.get(key))
         if source not in candidates:
             unresolved = True
             continue
@@ -328,7 +366,7 @@ def _lead_pieces(name, table, day, lead, per_period, conflicts, report):
     pieces, previous = [], 0
     for segment in segments:
         first, last, source = segment[0][0], segment[-1][0], segment[0][1]
-        start, end = instant(day, table.periods[first - 1][0]), instant(day, table.periods[last - 1][1])
+        start, end = instant(day, periods[first - 1][0]), instant(day, periods[last - 1][1])
         reminder = max(start - lead * 60, previous)
         previous = end
         if end - reminder > EIGHT_HOURS:
@@ -336,21 +374,22 @@ def _lead_pieces(name, table, day, lead, per_period, conflicts, report):
             continue
         frames = [_frame(reminder, start, _ref(name, source, day, "upcoming", first, last, start, end))] if reminder < start else []
         frames += _class_frames(name, table, day, source, first, last, start, end, per_period)
-        pieces.append(Piece(f"{name}:{source}:{day.isoformat()}:{first}:{last}", name, source, day, first, last, start, end, reminder, frames))
+        pieces.append(Piece(f"{name}:{source}:{day.isoformat()}:{first}:{last}", name, source, day, first, last, start, end, reminder, frames, priority=occupants[first][source].get("displayPriority", 0)))
     return pieces
 
 
 def _own_courses(table, day, per_period):
     """Every own course as its own interval. Forgiving like the client: conflicts
-    are all kept (a class beats a break, then the earliest wins)."""
+    are all kept (a class beats a break, then saved priority and start time decide)."""
     courses, seen = [], set()
+    periods = table.periods_on(day)
     for course in table.on(day):
         first, last = course["first"], course["last"]
         key = f"own:{course['id']}:{day.isoformat()}:{first}:{last}"
         if key in seen:
             continue
         seen.add(key)
-        start, end = instant(day, table.periods[first - 1][0]), instant(day, table.periods[last - 1][1])
+        start, end = instant(day, periods[first - 1][0]), instant(day, periods[last - 1][1])
         if per_period and last > first:
             spans = []
             for number, a, b in _bells(table, day, first, last):
@@ -359,7 +398,7 @@ def _own_courses(table, day, per_period):
                 spans.append({"from": a, "until": b, "ref": _ref("own", course["id"], day, "inProgress", first, last, a, b)})
         else:
             spans = [{"from": start, "until": end, "ref": _ref("own", course["id"], day, "inProgress", first, last, start, end)}]
-        courses.append({"key": key, "course": course["id"], "first": first, "last": last, "start": start, "end": end, "spans": spans})
+        courses.append({"key": key, "course": course["id"], "first": first, "last": last, "start": start, "end": end, "spans": spans, "priority": course.get("displayPriority", 0)})
     return sorted(courses, key=lambda course: (course["start"], course["end"]))
 
 
@@ -464,7 +503,7 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
         spans = [_lead_span(course, own_lead, day)] + course["spans"]
         pieces.append(Piece(course["key"], "own", course["course"], day, course["first"], course["last"],
                             course["start"], course["end"], course["start"] - own_lead * 60,
-                            [_frame(span["from"], span["until"], span["ref"]) for span in spans], own=True))
+                            [_frame(span["from"], span["until"], span["ref"]) for span in spans], own=True, priority=course["priority"]))
     clusters = []
     for piece in sorted(pieces, key=lambda piece: (piece.start, 1 if piece.own else 0)):
         if clusters and piece.start < max(other.end for other in clusters[-1]):
@@ -479,12 +518,13 @@ def build_day(device, day, own, share=None, settings=None, conflicts=None, now=0
         previous = end
 
         def spans_of(own_side):
-            return sorted(({"from": frame["from"], "until": frame["until"], "ref": frame["lead"]}
+            return sorted(({"from": frame["from"], "until": frame["until"], "ref": frame["lead"], "priority": piece.priority}
                            for piece in cluster if piece.own == own_side for frame in piece.frames),
-                          key=lambda span: (span["from"], span["until"]))
+                          key=lambda span: (-span["priority"], span["from"], span["until"]))
 
         # Each table's frames carry the other table's course running then.
-        owned = _attach(spans_of(False), [frame for piece in cluster if piece.own for frame in piece.frames])
+        owned = _attach(spans_of(False), [frame for piece in sorted(cluster, key=lambda piece: (-piece.priority, piece.start, piece.course))
+                                        if piece.own for frame in piece.frames])
         shared = _attach(spans_of(True), [frame for piece in cluster if not piece.own for frame in piece.frames])
         # My class leads; else their class; else the countdown to the nearest class.
         running = [frame for frame in owned if frame["lead"]["phase"] == "inProgress"] + \

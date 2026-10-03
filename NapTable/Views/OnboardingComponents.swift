@@ -95,7 +95,6 @@ struct OnboardingPermissionCard: View {
     let summary: String
     let symbol: String
     let optional: Bool
-    @Binding var accepted: Bool
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
 
@@ -119,128 +118,45 @@ struct OnboardingPermissionCard: View {
             Text(summary)
                 .font(.caption).foregroundStyle(colors.secondary)
                 .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                NavigationLink { PrivacyDocumentView(liveActivities: optional) } label: {
-                    HStack(spacing: 4) {
-                        Text("阅读完整协议")
-                        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(colors.accent)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Spacer(minLength: 0)
-                Button {
-                    accepted.toggle()
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: accepted ? "checkmark.square.fill" : "square")
-                            .font(.system(size: 21, weight: .regular))
-                            .foregroundStyle(accepted ? colors.accent : colors.secondary)
-                        Text("我已阅读并同意")
-                            .font(.caption.weight(.medium)).foregroundStyle(colors.ink)
-                    }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("我已阅读并同意\(title)")
-                .accessibilityValue(accepted ? "已同意" : "未同意")
-                .accessibilityAddTraits(accepted ? [.isSelected] : [])
-            }
-            .padding(.bottom, -6)
         }
         .padding(16)
         .background(colors.surface, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(accepted ? colors.accent.opacity(0.45) : colors.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
     }
 }
 
-/// The two actions people usually look for after their first import. Keep the
-/// wording in one place so the first-run page and Settings stay in sync.
-struct ScheduleUsageGuideView: View {
-    var showsTitle = true
+/// Both permission steps keep their agreement beside the action it enables.
+struct OnboardingConsentNote: View {
+    @Binding var agreed: Bool
+    var liveActivities = false
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
+    private var documentTitle: String { liveActivities ? "实时通知许可" : "隐私协议" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if showsTitle {
-                Text("导入后这样用")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(colors.ink)
+        HStack(spacing: 4) {
+            Button { agreed.toggle() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: agreed ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 21))
+                        .foregroundStyle(agreed ? colors.accent : colors.secondary)
+                    Text("我已阅读并同意").foregroundStyle(colors.ink)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
-
-            usageRow(
-                number: "1",
-                symbol: "square.and.pencil",
-                title: "修改课程详细信息",
-                detail: "在自己的课表中点按课程卡片，打开“编辑课程”。可以修改课程名、老师、地点、备注、周数和上课节次，完成后点右上角“保存”。"
-            )
-
-            usageRow(
-                number: "2",
-                symbol: "plus.square",
-                title: "把课表放到桌面",
-                detail: widgetInstruction
-            )
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(colors.surface, in: RoundedRectangle(cornerRadius: 21, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 21).strokeBorder(colors.line, lineWidth: 1))
-        .accessibilityElement(children: .contain)
-    }
-
-    private var widgetInstruction: String {
-        #if os(iOS)
-        return "回到 iPhone 或 iPad 主屏幕，长按空白处，点左上角“+”，搜索 NapTable，选择“今日课程”或“两日课表”，再点“添加小组件”。"
-        #else
-        return "小组件可在 iPhone 或 iPad 主屏幕添加：长按空白处，点“+”，搜索 NapTable，选择“今日课程”或“两日课表”，再点“添加小组件”。"
-        #endif
-    }
-
-    private func usageRow(number: String, symbol: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                Circle().fill(colors.soft)
-                Text(number)
-                    .font(.caption.weight(.bold))
+            .accessibilityLabel("我已阅读并同意\(documentTitle)")
+            .accessibilityValue(agreed ? "已同意" : "未同意")
+            .accessibilityAddTraits(agreed ? [.isSelected] : [])
+            NavigationLink { PrivacyDocumentView(liveActivities: liveActivities) } label: {
+                Text("《\(documentTitle)》")
                     .foregroundStyle(colors.accent)
-            }
-            .frame(width: 28, height: 28)
-
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(colors.accent)
-                .frame(width: 30, height: 30)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(colors.ink)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(colors.secondary)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
         }
-    }
-}
-
-struct ScheduleUsageGuideScreen: View {
-    var body: some View {
-        ScrollView {
-            ScheduleUsageGuideView(showsTitle: false)
-                .padding(16)
-        }
-        .background(.appBackground)
-        .navigationTitle("使用指南")
-        .appInlineNavigationTitle()
-        .appSoftTopScrollEdge()
+        .font(.caption)
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
     }
 }

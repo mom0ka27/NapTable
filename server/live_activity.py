@@ -29,9 +29,9 @@ except ImportError:  # pragma: no cover - Python versions without zoneinfo
     ZoneInfo = None
 
 try:  # `python3 server/naptable_server.py` and `import server.live_activity`
-    from . import apns
+    from . import apns, school_times
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import apns
+    import apns, school_times
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS la_day_channels (
@@ -530,8 +530,10 @@ class LiveActivityService:
         horizon = 8
         for row in devices:
             with self.lock:
+                school_columns = {item[1] for item in self.db.execute("PRAGMA table_info(school_configs)")}
+                school_flags = ",s.unified_holidays_enabled,s.unified_makeup_enabled" if {"unified_holidays_enabled", "unified_makeup_enabled"} <= school_columns else ""
                 term = self.db.execute(
-                    "SELECT t.*,s.periods_json AS school_periods_json FROM school_terms t "
+                    f"SELECT t.*,s.periods_json AS school_periods_json{school_flags} FROM school_terms t "
                     "JOIN school_configs s ON s.id=t.school_id "
                     "WHERE t.school_id=? AND t.is_current=1 LIMIT 1",
                     (row["school_id"],)).fetchone()
@@ -545,6 +547,10 @@ class LiveActivityService:
                 term_end = term_start + timedelta(days=max(1, int(term["week_count"])) * 7)
                 periods = json.loads(term["school_periods_json"] or "[]")
                 adjustments = {x.get("date"): x for x in json.loads(calendar[0] or "[]")}
+                if term.keys() and "unified_holidays_enabled" in term.keys() and not term["unified_holidays_enabled"]:
+                    adjustments = {date: item for date, item in adjustments.items() if item.get("kind") != "off"}
+                if term.keys() and "unified_makeup_enabled" in term.keys() and not term["unified_makeup_enabled"]:
+                    adjustments = {date: item for date, item in adjustments.items() if item.get("kind") != "swap"}
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
             rows = []
@@ -555,8 +561,11 @@ class LiveActivityService:
                 if date < term_start or date >= term_end:
                     continue
                 adjustment = adjustments.get(date.isoformat())
-                last_end = max((str(p.get("end", "")) for p in periods), default="")
-                for index, period in enumerate(periods, 1):
+                with self.lock:
+                    seasons = school_times.stored_seasons(self.db, row["school_id"])
+                day_periods = school_times.periods_on(periods, seasons, date)
+                last_end = max((str(p.get("end", "")) for p in day_periods), default="")
+                for index, period in enumerate(day_periods, 1):
                     for phase, clock in (("started", period.get("start")), ("ended", period.get("end"))):
                         try:
                             hour, minute = map(int, str(clock).split(":", 1))

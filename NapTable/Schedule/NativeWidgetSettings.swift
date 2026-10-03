@@ -146,13 +146,13 @@ final class NativeWidgetSettings: ObservableObject {
               let week = calendar.weeks.first(where: { $0.week == weekNumber }) else {
             return nil
         }
-        let periods = snapshot.periods.isEmpty ? NativeSchedulePeriod.bundledTimetable : snapshot.periods
         let semesterLabel = data.semesters.first(where: { $0.value == data.currentSemester })?.label
             ?? data.currentSemester
 
         func days(for week: NativeCalendarWeek) -> [WidgetDay] {
             week.days.enumerated().map { index, date in
                 let day = index + 1
+                let periods = snapshot.periods(on: date)
                 // 调休：放假那天没课，补班那天上的是另一天的课。
                 let adjustment = calendar.adjustments[date]
                 let sourceDay = adjustment?.sourceDay ?? day
@@ -248,12 +248,18 @@ final class NativeWidgetSettings: ObservableObject {
                         startTime: periods.first(where: { $0.number == range.start })?.startTime,
                         endTime: periods.first(where: { $0.number == range.end })?.endTime,
                         startSlot: range.start,
-                        endSlot: range.end
+                        endSlot: range.end,
+                        occurrenceID: course.id,
+                        displayPriority: course.displayPriority
                     )
                 }
             }
             .sorted { lhs, rhs in
-                (lhs.startSlot ?? 0, lhs.name ?? "") < (rhs.startSlot ?? 0, rhs.name ?? "")
+                if lhs.startSlot != rhs.startSlot { return (lhs.startSlot ?? 0) < (rhs.startSlot ?? 0) }
+                if (lhs.displayPriority ?? 0) != (rhs.displayPriority ?? 0) {
+                    return (lhs.displayPriority ?? 0) > (rhs.displayPriority ?? 0)
+                }
+                return (lhs.name ?? "", lhs.id) < (rhs.name ?? "", rhs.id)
             }
     }
 

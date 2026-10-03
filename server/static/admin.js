@@ -72,7 +72,7 @@
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
     stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
     shares: ["分享课表", "查找用户分享到服务端的课表，删除不该公开的分享。"],
-    subscriptions: ["订阅", "设置实时活动是否需要订阅，查看已订阅的设备数。"],
+    entitlements: ["实时活动权益", "设置实时活动是否需要试用或买断权益，查看授权设备数。"],
     apns: ["APNs 推送", "配置实况通知的推送凭据。"],
     audit: ["操作记录", "谁在什么时候改了什么。"]
   };
@@ -112,7 +112,7 @@
   // What each form looked like when it was last loaded or saved; a form that
   // differs has edits a switch or a reload would silently throw away.
   const forms = {
-    school: () => state.school ? JSON.stringify({ name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), periods: periodRows() }) : "",
+    school: () => state.school ? JSON.stringify({ name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), periods: periodRows(), seasonalPeriods: activeSeasonRows(), seasonalPeriodsEnabled: $("schoolSeasonEnabled").checked, unifiedHolidaysEnabled: $("schoolUnifiedHolidaysEnabled").checked, unifiedMakeupEnabled: $("schoolUnifiedMakeupEnabled").checked }) : "",
     term: () => state.term ? JSON.stringify(formTerm()) : "",
     calendar: () => JSON.stringify(adjustmentRows()),
     apns: () => JSON.stringify(formApns())
@@ -165,11 +165,48 @@
       list.append(button);
     });
   };
-  const periodRows = () => [...$("schoolPeriodList").querySelectorAll(".period-row")].map((row, index) => ({
+  const periodRows = (list = $("schoolPeriodList")) => [...list.querySelectorAll(".period-row")].map((row, index) => ({
     id: index + 1, name: `第${index + 1}节`,
     start: row.querySelector('[data-field="start"]').value,
     end: row.querySelector('[data-field="end"]').value
   }));
+  const seasonRows = () => [...$("schoolSeasonList").querySelectorAll(".season-schedule")].map(section => ({
+    from: section.querySelector('[data-field="from"]').value.trim(),
+    periods: periodRows(section).map(({ start, end }) => ({ start, end }))
+  }));
+  const activeSeasonRows = () => $("schoolSeasonEnabled").checked ? seasonRows() : [];
+  const updateSeasonEditor = () => {
+    const enabled = $("schoolSeasonEnabled").checked;
+    $("schoolSeasonEditor").hidden = !enabled;
+    $("schoolSeasonEditor").disabled = !enabled;
+    $("schoolSeasonHint").textContent = enabled
+      ? "按每年生效月日自动切换作息；保存学校配置后生效。"
+      : "全年使用上方节次时间；保存后清空分季配置。保存前重新打开可恢复本次编辑。";
+  };
+  const renderSeasons = () => {
+    const list = $("schoolSeasonList");
+    list.replaceChildren();
+    (state.school?.seasonalPeriods || []).forEach((season, index) => {
+      const section = document.createElement("section");
+      section.className = "season-schedule";
+      const title = season.from === "05-01" ? "夏、秋季作息" : season.from === "10-01" ? "冬、春季作息" : "分季作息";
+      section.innerHTML = `<div class="editor-section-heading"><label>${title} · 每年生效月日<input data-field="from" value="${escapeAttr(season.from)}" placeholder="05-01" pattern="[0-9]{2}-[0-9]{2}" maxlength="5" aria-label="生效月日（月-日）"></label><button class="button text-button remove-season" type="button">删除这套作息</button></div><div class="period-list"></div>`;
+      const rows = section.querySelector(".period-list");
+      season.periods.forEach((period, number) => {
+        const row = document.createElement("div");
+        row.className = "period-row";
+        row.innerHTML = `<div class="period-number">第 ${number + 1} 节</div><label><span>开始时间</span><input data-field="start" value="${escapeAttr(period.start)}" type="time" aria-label="${title}第${number + 1}节开始时间"></label><label><span>结束时间</span><input data-field="end" value="${escapeAttr(period.end)}" type="time" aria-label="${title}第${number + 1}节结束时间"></label>`;
+        rows.append(row);
+      });
+      section.querySelector(".remove-season").onclick = () => {
+        state.school.seasonalPeriods = seasonRows();
+        state.school.seasonalPeriods.splice(index, 1);
+        renderSeasons();
+      };
+      list.append(section);
+    });
+    $("addSeasonButton").disabled = (state.school?.seasonalPeriods || []).length >= 4;
+  };
   const renderSchoolPeriods = () => {
     const list = $("schoolPeriodList");
     list.replaceChildren();
@@ -179,8 +216,10 @@
       row.innerHTML = `<div class="period-number">第 ${index + 1} 节</div><label><span>开始时间</span><input data-field="start" value="${escapeAttr(period.start)}" type="time" aria-label="第${index + 1}节开始时间"></label><label><span>结束时间</span><input data-field="end" value="${escapeAttr(period.end)}" type="time" aria-label="第${index + 1}节结束时间"></label><button class="remove-button" type="button" aria-label="删除第${index + 1}节" title="删除节次"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></svg></button>`;
       row.querySelector(".remove-button").onclick = () => {
         state.school.periods = periodRows();
+        state.school.seasonalPeriods = seasonRows();
         state.school.periods.splice(index, 1);
-        renderSchoolPeriods();
+        state.school.seasonalPeriods.forEach(season => season.periods.splice(index, 1));
+        renderSchoolPeriods(); renderSeasons();
       };
       list.append(row);
     });
@@ -192,10 +231,14 @@
     $("renameSchoolButton").disabled = true;
     $("schoolName").value = state.school.name;
     $("schoolNote").value = state.school.note || "";
+    $("schoolUnifiedHolidaysEnabled").checked = state.school.unifiedHolidaysEnabled !== false;
+    $("schoolUnifiedMakeupEnabled").checked = state.school.unifiedMakeupEnabled !== false;
+    $("schoolSeasonEnabled").checked = Boolean(state.school.seasonalPeriods?.length);
+    updateSeasonEditor();
     $("newTermButton").disabled = false;
     $("editorEmpty").hidden = true;
     $("editor").hidden = false;
-    renderSchools(); renderSchoolPeriods(); markClean("school"); renderTerms();
+    renderSchools(); renderSchoolPeriods(); renderSeasons(); markClean("school"); renderTerms();
     if (!keepTerm) fillTerm();
   };
   const emptyTerm = () => ({
@@ -474,24 +517,23 @@
     tickSeconds: Number($("apnsTickSeconds").value)
   });
 
-  const fillSubscriptions = summary => {
-    state.subscriptionSummary = summary;
-    const required = summary.settings.requireSubscription;
-    $("subscribedDevices").textContent = summary.subscribedDevices;
-    $("subscriptionMode").textContent = required ? "需订阅" : "Beta 免费";
-    $("subscriptionModeDetail").textContent = required ? "未订阅的设备收不到提醒" : "所有设备都能收到提醒";
-    $("requireSubscription").checked = required;
+  const fillEntitlements = summary => {
+    state.entitlementSummary = summary;
+    const required = summary.settings.requireEntitlement;
+    $("entitledDevices").textContent = summary.entitledDevices;
+    $("entitlementMode").textContent = required ? "需要权益" : "Beta 免费";
+    $("entitlementModeDetail").textContent = required ? "没有试用或买断的设备收不到提醒" : "所有设备都能收到提醒";
+    $("requireEntitlement").checked = required;
   };
-  const loadSubscriptions = async () => fillSubscriptions(await request("/v1/admin/subscriptions"));
-  const saveSubscriptionSettings = async () => {
-    const button = $("saveSubscriptionSettingsButton");
-    // Turning it on stops reminders for every device without a subscription.
-    if ($("requireSubscription").checked && !state.subscriptionSummary?.settings.requireSubscription
-        && !confirm(`打开后，未订阅的设备不再收到实时活动提醒（目前 ${state.subscriptionSummary?.subscribedDevices ?? 0} 台设备在订阅）。确定开始收费？`)) return;
+  const loadEntitlements = async () => fillEntitlements(await request("/v1/admin/entitlements"));
+  const saveEntitlementSettings = async () => {
+    const button = $("saveEntitlementSettingsButton");
+    if ($("requireEntitlement").checked && !state.entitlementSummary?.settings.requireEntitlement
+        && !confirm(`打开后，没有试用或买断权益的设备不再收到实时活动提醒（目前 ${state.entitlementSummary?.entitledDevices ?? 0} 台设备有权益）。确定开始收费？`)) return;
     setLoading(button, true);
     try {
-      await request("/v1/admin/subscriptions/settings", { method: "POST", body: JSON.stringify({ requireSubscription: $("requireSubscription").checked }) });
-      await loadSubscriptions();
+      await request("/v1/admin/entitlements/settings", { method: "POST", body: JSON.stringify({ requireEntitlement: $("requireEntitlement").checked }) });
+      await loadEntitlements();
       notice("收费规则已保存", "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
@@ -586,7 +628,7 @@
   const auditActions = {
     "school.create": "新增学校", "school.save": "保存学校", "school.rename": "修改学校 ID", "school.delete": "删除学校",
     "term.save": "保存学期", "term.delete": "删除学期", "calendar.save": "保存调休", "share.delete": "删除分享",
-    "subscription.settings": "保存收费规则",
+    "entitlement.settings": "保存实时活动权益规则",
     "apns.save": "保存 APNs", "session.signIn": "登录", "session.signOut": "退出", "session.failed": "登录失败"
   };
   const loadAudit = async () => {
@@ -608,9 +650,18 @@
   const saveSchool = async () => {
     const button = $("saveSchoolButton");
     try {
-      const value = { id: state.school.id, name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), semesterStart: "", periods: periodRows() };
+      const value = { id: state.school.id, name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), semesterStart: "", periods: periodRows(), seasonalPeriods: activeSeasonRows(), unifiedHolidaysEnabled: $("schoolUnifiedHolidaysEnabled").checked, unifiedMakeupEnabled: $("schoolUnifiedMakeupEnabled").checked };
       if (!value.id || !value.name) throw new Error("学校 ID 和名称不能为空");
       validatePeriods(value.periods);
+      if ($("schoolSeasonEnabled").checked && !value.seasonalPeriods.length) throw new Error("启用分季作息时，请至少添加一套作息");
+      const dates = new Set();
+      value.seasonalPeriods.forEach(season => {
+        const day = new Date(`2001-${season.from}T00:00:00Z`);
+        if (!/^\d{2}-\d{2}$/.test(season.from) || Number.isNaN(day.valueOf()) || day.toISOString().slice(5, 10) !== season.from || dates.has(season.from)) throw new Error("分季作息的生效月日须有效且不能重复，格式为月-日（如 05-01）");
+        dates.add(season.from);
+        if (season.periods.length !== value.periods.length) throw new Error("分季作息与全年作息的节次数量须相同");
+        validatePeriods(season.periods);
+      });
       setLoading(button, true);
       const saved = await request(`/v1/admin/schools/${encodeURIComponent(value.id)}`, { method: "POST", body: JSON.stringify(value) });
       const index = state.schools.findIndex(item => item.id === saved.id);
@@ -636,11 +687,15 @@
       });
       state.schools = state.schools.map(school => school.id === oldID ? saved : school);
       // Keep unsaved name, note and period edits: only the ID changed.
-      const draft = { name: $("schoolName").value, note: $("schoolNote").value, periods: periodRows() };
-      state.school = { ...structuredClone(saved), periods: draft.periods };
+      const draft = { name: $("schoolName").value, note: $("schoolNote").value, periods: periodRows(), seasonalPeriods: seasonRows(), seasonalPeriodsEnabled: $("schoolSeasonEnabled").checked, unifiedHolidaysEnabled: $("schoolUnifiedHolidaysEnabled").checked, unifiedMakeupEnabled: $("schoolUnifiedMakeupEnabled").checked };
+      state.school = { ...structuredClone(saved), periods: draft.periods, seasonalPeriods: draft.seasonalPeriods };
       updateMetrics(); fillSchool({ keepTerm: true });
       $("schoolName").value = draft.name; $("schoolNote").value = draft.note;
-      savedForms.school = JSON.stringify({ name: saved.name, note: saved.note || "", periods: saved.periods });
+      $("schoolSeasonEnabled").checked = draft.seasonalPeriodsEnabled;
+      $("schoolUnifiedHolidaysEnabled").checked = draft.unifiedHolidaysEnabled;
+      $("schoolUnifiedMakeupEnabled").checked = draft.unifiedMakeupEnabled;
+      updateSeasonEditor();
+      savedForms.school = JSON.stringify({ name: saved.name, note: saved.note || "", periods: saved.periods, seasonalPeriods: saved.seasonalPeriods || [], seasonalPeriodsEnabled: Boolean(saved.seasonalPeriods?.length), unifiedHolidaysEnabled: saved.unifiedHolidaysEnabled !== false, unifiedMakeupEnabled: saved.unifiedMakeupEnabled !== false });
       notice(`学校 ID 已更新为 ${saved.id}`, "success");
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
@@ -822,7 +877,7 @@
       state.calendar = calendar; renderCalendar(); markClean("calendar"); $("saveCalendarButton").disabled = false;
     });
     section(() => request("/v1/admin/stats"), stats => { state.stats = stats; renderStats(); });
-    section(loadSubscriptions, () => {});
+    section(loadEntitlements, () => {});
     section(loadShares, () => {});
     if (state.view === "audit") section(loadAudit, () => {});
   };
@@ -889,16 +944,35 @@
   window.addEventListener("beforeunload", event => { if (state.authenticated && unsaved().length) event.preventDefault(); });
   $("refreshStatsButton").onclick = refreshStats;
   $("statsSchoolFilter").onchange = renderDeviceStats;
-  $("saveSubscriptionSettingsButton").onclick = saveSubscriptionSettings;
+  $("saveEntitlementSettingsButton").onclick = saveEntitlementSettings;
   let shareSearchTimer;
   $("shareSearch").oninput = () => { clearTimeout(shareSearchTimer); shareSearchTimer = setTimeout(() => loadShares().catch(error => notice(error.message, "error")), 250); };
   $("schoolSearch").oninput = renderSchools;
   $("addSchoolPeriodButton").onclick = () => {
     state.school.periods = periodRows();
-    const last = state.school.periods.at(-1);
+    state.school.seasonalPeriods = seasonRows();
+    // Avoid Array.prototype.at so the console also works in older Safari/WebViews.
+    const last = state.school.periods[state.school.periods.length - 1];
     const start = last?.end || "08:00";
     state.school.periods.push({ id: state.school.periods.length + 1, name: `第${state.school.periods.length + 1}节`, start, end: addMinutes(start, 50) });
-    renderSchoolPeriods();
+    state.school.seasonalPeriods.forEach(season => {
+      const start = season.periods[season.periods.length - 1]?.end || "08:00";
+      season.periods.push({ start, end: addMinutes(start, 50) });
+    });
+    renderSchoolPeriods(); renderSeasons();
+  };
+  $("schoolSeasonEnabled").onchange = () => {
+    // Keep the rows while disabled so toggling back before saving restores edits.
+    if ($("schoolSeasonEnabled").checked && !seasonRows().length) {
+      state.school.seasonalPeriods = [{ from: "", periods: structuredClone(periodRows()) }];
+      renderSeasons();
+    }
+    updateSeasonEditor();
+  };
+  $("addSeasonButton").onclick = () => {
+    state.school.seasonalPeriods = seasonRows();
+    state.school.seasonalPeriods.push({ from: "", periods: structuredClone(periodRows()) });
+    renderSeasons();
   };
   $("addGlobalAdjustmentButton").onclick = () => {
     state.calendar.adjustments = adjustmentRows();

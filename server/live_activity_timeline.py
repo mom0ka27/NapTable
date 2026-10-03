@@ -4,6 +4,10 @@ import json
 import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+try:
+    from . import school_times
+except ImportError:
+    import school_times
 
 DAY = 86400
 
@@ -28,7 +32,7 @@ def identifier(value):
     return value
 
 
-def normalize_schedule(periods, timezone):
+def normalize_schedule(periods, timezone, seasons=None):
     try:
         ZoneInfo(timezone)
     except (ValueError, KeyError, TypeError):
@@ -45,7 +49,11 @@ def normalize_schedule(periods, timezone):
             raise ProtocolError("periods must be ordered and non-overlapping")
         previous = end
         result.append({"number": index, "start": start, "end": end})
-    return {"periods": result, "timeZone": timezone}
+    definition = {"periods": result, "timeZone": timezone}
+    if seasons:
+        try: definition["seasonalPeriods"] = school_times.normalize_seasons(seasons, len(result))
+        except ValueError as error: raise ProtocolError(str(error))
+    return definition
 
 
 def timestamp(day, clock, timezone):
@@ -71,11 +79,12 @@ def public_state(day, period, phase, stamp):
 
 def boundaries(schedule, day, final_period):
     result = {}
-    for period in schedule["periods"][:final_period]:
+    periods = school_times.periods_on(schedule["periods"], schedule.get("seasonalPeriods", []), day)
+    for index, period in enumerate(periods[:final_period], 1):
         for phase, clock in (("started", period["start"]), ("ended", period["end"])):
             stamp = timestamp(day, clock, schedule["timeZone"])
-            event = "end" if period["number"] == final_period and phase == "ended" else "update"
+            event = "end" if index == final_period and phase == "ended" else "update"
             result[stamp] = {"aps": {"timestamp": stamp, "event": event,
-                "content-state": public_state(day, period["number"], phase, stamp),
+                "content-state": public_state(day, index, phase, stamp),
                 **({"dismissal-date": stamp} if event == "end" else {"stale-date": stamp + 60})}}
     return sorted(result.items())

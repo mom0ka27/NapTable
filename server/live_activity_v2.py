@@ -156,7 +156,7 @@ class Service:
         self.redraws = {}    # (device, occurrence) → Redraws of a token-mode activity
         self.redraw_due = [] # heap of (instant, device, occurrence) to try a refresh at
         self.built = None    # the UTC+8 day every plan was last built on
-        # `subscriptions.Subscriptions`, once wired: who may get a reminder on which day.
+        # `entitlements.Entitlements`, once wired: who may get a reminder on which day.
         # None lets everyone.
         self.entitlement = None
         self._after = []     # memory changes waiting for the transaction to commit
@@ -184,7 +184,29 @@ class Service:
             self.db.execute("UPDATE la_starts SET state='submissionUnknown' WHERE state='submitting'")
             self.db.execute("UPDATE la_v2_broadcasts SET state='pending' WHERE state='sending'")
             self.db.commit()
+        self._migrate_seasonal_timetables()
         self.load()
+
+    def _migrate_seasonal_timetables(self):
+        """Upgrade existing XJTU registrations and their broadcast versions without
+        changing the upload revision, so retransmitting the same upload stays idempotent."""
+        with self.lock, self.db:
+            for stored in self.db.execute("SELECT device,body FROM la_timetables").fetchall():
+                body = json.loads(stored['body'])
+                own = body.get('own', {})
+                if str(own.get('schoolID', '')).lower() != 'xjtu' or 'seasonalPeriods' in own:
+                    continue
+                seasons = schedule_engine.school_times.default_seasons('xjtu')
+                # Legacy campus-specific schedules with a different slot count stay fixed.
+                if len(own.get('periods', [])) != 10:
+                    continue
+                own['seasonalPeriods'] = seasons
+                body = self._parse_timetable(body)
+                device = self.db.execute("SELECT * FROM la_v2_devices WHERE id=?", (stored['device'],)).fetchone()
+                channel = None if body.get('follow') or device is None else self._channel_version(self.db, device, body['own'])
+                self.db.execute("UPDATE la_timetables SET body=?,digest=?,push_mode=?,school=?,version=? WHERE device=?",
+                                (canonical(body), digest(body), 'channel' if channel else 'token',
+                                 channel[0] if channel else '', channel[1] if channel else '', stored['device']))
 
     def _migrate_ledger(self):
         """Migration 6: the schedule moves to memory. Starts already taken on
@@ -268,6 +290,34 @@ class Service:
         self._touch(device, row)
         return row
 
+    def grant_entitlement(self, device, value):
+        """Attach a StoreKit signed transaction to this device.
+
+        The transaction is verified against Apple's certificate chain before it
+        can affect scheduling.  A transaction may be restored on a new device;
+        the verified transaction ID remains the idempotency key.
+        """
+        if self.entitlement is None:
+            raise ProtocolError("entitlement service unavailable", 503)
+        if not isinstance(value, dict) or set(value) != {"signedTransactionInfo"}:
+            raise ProtocolError("expected signedTransactionInfo")
+        signed = value["signedTransactionInfo"]
+        try:
+            if getattr(self.client, "bundle_id", None):
+                self.entitlement.bundle_id = self.client.bundle_id
+            result = self.entitlement.grant_transaction(self.db, device, signed)
+            result["entitled"] = self.entitlement.allows(self.db, device)
+            return result
+        except Exception as error:
+            # Do not expose certificate or parser details to clients.
+            try:
+                from . import entitlements as entitlement_module
+            except ImportError:
+                import entitlements as entitlement_module
+            if isinstance(error, entitlement_module.EntitlementError):
+                raise ProtocolError(str(error), 400)
+            raise
+
     def register(self, value, secret):
         device = identifier(value.get("deviceID") or value.get("installationId"))
         if value.get('deviceID') and value.get('installationId') and value['deviceID'] != value['installationId']:
@@ -331,8 +381,8 @@ class Service:
             timetable = self.db.execute("SELECT revision,push_mode,follow_scope FROM la_timetables WHERE device=?", (device,)).fetchone()
             pending = len(self._pending(device, {item['occurrence'] for item in history}, now))
             entitled = self._allowed(self.db, device, schedule_engine.today(now))
-            subscription = self.entitlement.entitlement(self.db, device) if self.entitlement is not None else None
-        return {"deviceID": device, "protocolVersion": 2, "subscription": subscription, "revoked": bool(row['revoked']), "error": row['error'],
+            entitlement = self.entitlement.entitlement(self.db, device) if self.entitlement is not None else None
+        return {"deviceID": device, "protocolVersion": 2, "entitlement": entitlement, "revoked": bool(row['revoked']), "error": row['error'],
                 "pendingCount": pending, "hasStartToken": bool(row['token']), "pushConfigured": self.client is not None,
                 "history": [{"occurrenceId": item['occurrence'], "state": item['state'], "end": item['expires_at']} for item in history],
                 "timetableRevision": timetable['revision'] if timetable else 0,
@@ -439,15 +489,25 @@ class Service:
         if record is not None:
             # A share's frozen 调休 is overlaid with the server's unified
             # calendar, as the reader's own table does on the phone.
-            share, texts = schedule_engine.share_table({**dict(record), 'unified_adjustments_json': self._calendar(db)[0]})
+            share_school = record['school_id'] if 'school_id' in record.keys() else None
+            share, texts = schedule_engine.share_table({**dict(record), 'unified_adjustments_json': self._calendar(db, share_school)[0]})
         return body, own, share, texts or {}, record
 
     @staticmethod
-    def _calendar(db):
+    def _calendar(db, school_id=None):
         """(adjustments JSON, version) of the server's unified 调休 calendar."""
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='global_calendar'").fetchone():
             row = db.execute("SELECT adjustments_json,version FROM global_calendar WHERE id=1").fetchone()
-            if row: return row['adjustments_json'] or '[]', row['version']
+            if row:
+                adjustments = json.loads(row['adjustments_json'] or '[]')
+                if school_id and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='school_configs'").fetchone():
+                    columns = {item[1] for item in db.execute("PRAGMA table_info(school_configs)")}
+                    if {"unified_holidays_enabled", "unified_makeup_enabled"} <= columns:
+                        flags = db.execute("SELECT unified_holidays_enabled,unified_makeup_enabled FROM school_configs WHERE id=?", (school_id,)).fetchone()
+                        if flags:
+                            if not flags[0]: adjustments = [item for item in adjustments if item.get("kind") != "off"]
+                            if not flags[1]: adjustments = [item for item in adjustments if item.get("kind") != "swap"]
+                return json.dumps(adjustments, ensure_ascii=False), row['version']
         return '[]', 0
 
     def _seen(self, db, updated_at):
@@ -466,10 +526,16 @@ class Service:
         if row is None:
             return None
         try:
-            definition = normalize_schedule(json.loads(row['periods_json']), row['timezone'])
+            seasons = schedule_engine.school_times.stored_seasons(db, school)
+            base = json.loads(row['periods_json'])
+            if seasons and len(base) != len(seasons[0]['periods']):
+                base = seasons[-1]['periods']
+            definition = normalize_schedule(base, row['timezone'], seasons)
         except ProtocolError:
             return None
-        if [(period['start'], period['end']) for period in definition['periods']] != [(p['start'], p['end']) for p in own_body['periods']]:
+        if definition.get('seasonalPeriods', []) != own_body.get('seasonalPeriods', []):
+            return None
+        if not seasons and [(period['start'], period['end']) for period in definition['periods']] != [(p['start'], p['end']) for p in own_body['periods']]:
             return None
         version = digest(definition)
         identity = (device['bundle'], device['environment'], school, 'default', version)
@@ -767,7 +833,7 @@ class Service:
             if local:
                 # Started by the app on entry: a reminder like any other, so it needs the entitlement.
                 if not self._allowed(db, device, schedule_engine.today(now)):
-                    raise ProtocolError("subscription required", 402)
+                    raise ProtocolError("实时活动需要试用或买断权益", 402)
                 # The server's own occurrence of that class, when it has one, lends its refreshes.
                 same = [(day, item) for day, items in self.plans.get(device, {}).items() for item in items if item.fire_at <= now and item.end == end]
                 day, item = same[0] if same else (schedule_engine.today(now), Occurrence(occurrence, now, end, (), ()))
@@ -1246,6 +1312,8 @@ def handle(handler, service, method, path):
                 result = service.forget(device)
             elif tail == 'timetable' and method == 'PUT':
                 result = service.put_timetable(device, body())
+            elif tail == 'entitlement' and method == 'POST':
+                result = service.grant_entitlement(device, body())
             elif tail == 'claims' and method == 'POST':
                 result = service.claim(device, body())
             elif len(parts) == 4 and parts[2] == 'claims' and method == 'DELETE':

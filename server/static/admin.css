@@ -166,6 +166,8 @@ button { transition: background .16s, border-color .16s, color .16s, box-shadow 
 .editor-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 15px; }
 .editor-section-heading strong { font-size: 12px; }
 .editor-section-heading p { font-size: 10px; color: var(--muted); margin-top: 4px; }
+.seasonal-toggle { margin-top: 20px; }
+.seasonal-editor { min-width: 0; margin: 16px 0 0; padding: 0; border: 0; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
 .form-actions .danger { margin-left: auto; }
 .term-tabs-wrap { padding: 22px 28px 0; border-bottom: 1px solid var(--line); }
@@ -461,7 +463,7 @@ input[readonly] { background: #f6f8f3; color: #84907d; }
 
 /* Accounts */
 .account-layout { margin-top: 16px; }
-.subscription-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.entitlement-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .attest-panel { margin-block: 16px; }
 .account-layout .badge:empty { display: none; }
 .account-table { width: 100%; border-collapse: collapse; font-size: 11px; }

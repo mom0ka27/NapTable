@@ -234,6 +234,7 @@ final class LiveActivityPushService: ObservableObject {
             defaults.set(Self.digest(registrationToken), forKey: Self.registeredTokenKey)
             guard current(captured, scope: scope) else { dirty = true; return }
         }
+        try await syncPendingEntitlements(device: device)
         let pending = try await upload(timetable, device: device)
         guard current(captured, scope: scope) else { dirty = true; return }
         if #available(iOS 26.0, *) {
@@ -244,6 +245,23 @@ final class LiveActivityPushService: ObservableObject {
         guard current(captured, scope: scope) else { dirty = true; return }
         status = token == nil ? .waitingForToken : .ready(pending: pending ?? 0, nextFireAt: nil)
         controller.clearServiceFailure()
+    }
+    /// Sends StoreKit's Apple-signed transactions only after this device has a
+    /// server credential. The server verifies the JWS and makes the entitlement
+    /// available to both remote starts and iOS 26 local reservations.
+    private func syncPendingEntitlements(device: String) async throws {
+        guard !PurchaseManager.shared.isBeta else { return }
+        for (id, signedTransactionInfo) in PurchaseManager.shared.pendingTransactions() {
+            let (code, response) = try await send("/devices/\(device)/entitlement", method: "POST",
+                                                  body: ["signedTransactionInfo": signedTransactionInfo])
+            guard (200..<300).contains(code) else {
+                throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)")
+            }
+            PurchaseManager.shared.markTransactionSynced(id)
+            if let entitled = response["entitled"] as? Bool {
+                controller.reminderAllowed = entitled
+            }
+        }
     }
     /// What is kept of a registered token: its digest, never the token.
     private static func digest(_ token: String?) -> String {

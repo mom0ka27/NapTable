@@ -105,6 +105,25 @@ struct NativeLiveActivityChecks {
         let adjusted = LiveActivityTimeline.build(fixture(adjusted: true), now: now, lead: 30, perPeriod: false)
         precondition(adjusted.occurrences.map(\.dateKey) == ["2026-09-23"], "Adjustment expands actual date")
 
+        // 导入优先级直接决定每节显示哪门课，无须再选择；无重叠部分照常显示。
+        let priorityA = NativeScheduleCourse(liveActivitySourceID: "A", name: "原课", weekList: [1, 2], startSlot: 1, endSlot: 3)
+        let priorityB = NativeScheduleCourse(liveActivitySourceID: "B", name: "优先课", weekList: [1], startSlot: 2, endSlot: 2, displayPriority: 2)
+        let prioritizedSnapshot = fixture(weeks: [1, 2], cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [priorityA, priorityB])])
+        let prioritized = LiveActivityTimeline.build(prioritizedSnapshot, now: now, lead: 30, perPeriod: true)
+        precondition(prioritized.occurrences.map(\.sourceID) == ["A", "B", "A"])
+        precondition(prioritized.occurrences[1].frames.last?.state.courseName == "优先课")
+        let staleChoice = LiveActivityTimeline.build(prioritizedSnapshot, now: now, lead: 30, perPeriod: false, choices: ["2026-09-22:2": "A"])
+        precondition(staleChoice.occurrences.map(\.sourceID) == ["A", "B", "A"], "Saved priority overrides old date choices")
+        let laterWeek = LiveActivityTimeline.build(prioritizedSnapshot, now: now.addingTimeInterval(7 * 86400), lead: 30, perPeriod: false)
+        precondition(laterWeek.occurrences.map(\.sourceID) == ["A"], "When the preferred course does not meet, the other course is displayed")
+        let adjustedPriority = fixture(adjusted: true, cells: [NativeScheduleCell(day: 2, bigSlot: 1, courses: [priorityA, priorityB])])
+        let swappedPriority = LiveActivityTimeline.build(adjustedPriority, now: now, lead: 30, perPeriod: false)
+        precondition(swappedPriority.occurrences.map(\.sourceID) == ["A", "B", "A"] && swappedPriority.occurrences.allSatisfy { $0.dateKey == "2026-09-23" })
+        let prioritizedBody = LiveActivityTimeline.timetable(own: prioritizedSnapshot, share: nil, choices: [:], lead: 30, sharedLead: 30, perPeriod: false)!
+        precondition((prioritizedBody["conflicts"] as? [String: String])?["2026-09-22:2"] == "B", "Old servers receive the resolved choice")
+        let uploadedPriorityCourses = (prioritizedBody["own"] as! [String: Any])["courses"] as! [[String: Any]]
+        precondition(uploadedPriorityCourses.count == 2 && uploadedPriorityCourses[1]["displayPriority"] as? Int == 2)
+
         // MARK: Following a share
         let share = fixture(source: "小明", scope: "share")
         let mineCourse = NativeScheduleCourse(liveActivitySourceID: "M", name: "有机化学", weeks: "1周", weekList: [1], location: "1教105", startSlot: 2, endSlot: 3)
@@ -151,6 +170,11 @@ struct NativeLiveActivityChecks {
         let legacy = try JSONDecoder().decode(ScheduleLiveActivityAttributes.ContentState.Companion.self,
             from: Data(#"{"courseName":"旧","startDate":1790000000,"endDate":1790003000}"#.utf8))
         precondition(legacy.phase == .inProgress && legacy.updatedAt == legacy.startDate, "A companion encoded before phases decodes as in class")
+
+        // 关心他人课表时，自己的重叠课程也按照优先级显示。
+        let ownPriority = own([NativeScheduleCell(day: 2, bigSlot: 1, courses: [priorityA, priorityB])], like: share)
+        let mergedPriority = LiveActivityTimeline.build(share, own: ownPriority, now: now, lead: 30, perPeriod: false).occurrences[0]
+        precondition(at(mergedPriority, 70)?.courseName == "优先课")
 
         // MARK: What goes to the server
         let body = LiveActivityTimeline.timetable(own: fixture(adjusted: true), share: nil, choices: ["2026-09-22:2": "B"], lead: 30, sharedLead: 15, perPeriod: true)!

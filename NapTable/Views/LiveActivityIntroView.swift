@@ -24,22 +24,27 @@ struct ShareOwnerMonogram: View {
 
 /// What Live Activities do, for the onboarding page.
 struct LiveActivityIntroContent: View {
+    var accessMode: PurchaseManager.AccessMode
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             LiveActivityPreviewArtwork()
-            Text("上课前，锁屏自动提醒。")
+            Text("上课前，灵动岛自动提醒。")
                 .font(.system(.title, design: .rounded).weight(.bold)).tracking(-0.7)
                 .foregroundStyle(colors.ink).fixedSize(horizontal: false, vertical: true)
             Text("实时活动在锁屏和灵动岛上显示下一节课和倒计时，不打开 App 也会按时出现。")
                 .font(.subheadline).foregroundStyle(colors.secondary).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 12) {
-                point("gift", "测试期间免费", "Beta 阶段不用订阅；正式收费前会在 App 内提前告知。")
-                point("iphone", "不用注册账号", "开启后这台设备就能收到提醒，不需要登录。")
-                point("creditcard", "之后按月订阅", "首月免费，可随时在系统设置中取消；课表、小组件始终免费。")
+                if accessMode == .beta {
+                    point("gift", "Beta 版本免费使用", "测试期间可免费使用实时活动，无需开始试用或购买。")
+                } else if accessMode == .paid {
+                    point("gift", "先免费试用 30 天", "首次确认试用时开始计时，到期不会自动扣款。")
+                }
+                point("creditcard", "Pro 版一次买断", "试用结束后可一次买断；课表、小组件始终免费。")
+                point("calendar", "课表、小组件始终免费", "导入和查看课表、使用桌面小组件不受实时活动权益影响。")
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -58,40 +63,6 @@ struct LiveActivityIntroContent: View {
                 Text(detail).font(.caption).foregroundStyle(colors.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-}
-
-/// The checkbox Live Activities need: the document one tap away, and turning
-/// reminders on stays disabled until it is checked.
-struct LiveActivityConsentNote: View {
-    @Binding var agreed: Bool
-    @Environment(\.colorScheme) private var scheme
-    private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Button { agreed.toggle() } label: {
-                Image(systemName: agreed ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 19))
-                    .foregroundStyle(agreed ? colors.accent : colors.secondary)
-                    .frame(minWidth: 30, minHeight: 36)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("我已阅读并同意实时通知许可")
-            .accessibilityValue(agreed ? "已同意" : "未同意")
-            .accessibilityAddTraits(agreed ? [.isSelected] : [])
-            HStack(spacing: 2) {
-                Text("我已阅读并同意").foregroundStyle(colors.ink)
-                    .onTapGesture { agreed.toggle() }
-                    .accessibilityHidden(true)
-                NavigationLink("《实时通知许可》") { PrivacyDocumentView(liveActivities: true) }
-            }
-            .tint(colors.accent)
-            .foregroundStyle(colors.accent)
-        }
-        .font(.caption)
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
     }
 }
 

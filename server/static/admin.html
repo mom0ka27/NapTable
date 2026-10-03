@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>NapTable 管理台</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/static/admin.css?v=20260929-console">
+  <link rel="stylesheet" href="/static/admin.css?v=__ADMIN_CSS_HASH__">
 </head>
 <body>
   <div class="app-shell">
@@ -36,9 +36,9 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 13h3M8 17h6"/></svg>
           <span>分享课表</span>
         </button>
-        <button class="nav-item" type="button" data-view="subscriptions">
+        <button class="nav-item" type="button" data-view="entitlements">
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg>
-          <span>订阅</span>
+          <span>实时活动权益</span>
         </button>
         <p class="nav-label">DATA <span>数据</span></p>
         <button class="nav-item" type="button" data-view="stats">
@@ -166,6 +166,16 @@
                   </div>
                   <div class="table-head period-head"><span>节次</span><span>开始时间</span><span>结束时间</span><span></span></div>
                   <div id="schoolPeriodList" class="period-list"></div>
+                  <label class="toggle-field seasonal-toggle"><input id="schoolSeasonEnabled" type="checkbox" role="switch" aria-controls="schoolSeasonEditor" aria-describedby="schoolSeasonHint"><span><strong>启用分季作息</strong><small id="schoolSeasonHint">关闭时全年使用上方节次时间；保存学校配置后生效。</small></span></label>
+                  <label class="toggle-field"><input id="schoolUnifiedHolidaysEnabled" type="checkbox" role="switch"><span><strong>启用统一放假</strong><small>该校按统一调休表中的放假日期停课。</small></span></label>
+                  <label class="toggle-field"><input id="schoolUnifiedMakeupEnabled" type="checkbox" role="switch"><span><strong>启用统一调休</strong><small>该校按统一调休表中的补班日期上课。</small></span></label>
+                  <fieldset id="schoolSeasonEditor" class="seasonal-editor" aria-label="分季作息" hidden disabled>
+                    <div class="editor-section-heading">
+                      <div><strong>分季作息</strong><p>每年按实际上课日期切换；各套节次数量须相同。</p></div>
+                      <button id="addSeasonButton" class="button text-button" type="button">添加作息</button>
+                    </div>
+                    <div id="schoolSeasonList"></div>
+                  </fieldset>
                   <div class="form-actions"><button id="saveSchoolButton" class="button secondary" type="button">保存学校配置</button><button id="renameSchoolButton" class="button secondary" type="button" disabled>更新 ID</button><button id="deleteSchoolButton" class="button danger" type="button">删除学校</button></div>
                 </div>
               </details>
@@ -204,7 +214,7 @@
 
       <section id="calendarView" class="content-view" hidden>
         <div class="section-toolbar">
-          <div><div class="title-with-badge"><h2>统一调休配置</h2><span id="calendarVersion" class="badge">v1</span></div><p>调休按日期对所有学校生效，客户端自动同步。</p></div>
+          <div><div class="title-with-badge"><h2>统一调休配置</h2><span id="calendarVersion" class="badge">v1</span></div><p>集中维护放假和补班日期；每所学校可分别选择是否应用。</p></div>
           <button id="saveCalendarButton" class="button primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>保存调休</button>
         </div>
         <section class="settings-panel calendar-panel">
@@ -270,24 +280,24 @@
         </section>
       </section>
 
-      <section id="subscriptionsView" class="content-view" hidden>
-        <div class="metric-strip subscription-strip" aria-label="订阅概览">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>已订阅设备</span><strong id="subscribedDevices">0</strong><small>App Store 订阅有效的实时活动设备</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><span>收费状态</span><strong id="subscriptionMode">—</strong><small id="subscriptionModeDetail"></small></div>
+      <section id="entitlementsView" class="content-view" hidden>
+        <div class="metric-strip entitlement-strip" aria-label="实时活动权益概览">
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>已授权设备</span><strong id="entitledDevices">0</strong><small>拥有试用或买断权益的实时活动设备</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><span>收费状态</span><strong id="entitlementMode">—</strong><small id="entitlementModeDetail"></small></div>
         </div>
         <div class="account-layout">
           <section class="settings-panel">
-            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>收费规则</h3><p>没有账户，订阅按设备记录。关闭时（Beta）所有设备都能免费收到实时活动提醒；打开后只有订阅有效的设备才会收到。免费首月由 App Store 的首月免费优惠提供。</p></div></div>
+            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>实时活动权益规则</h3><p>关闭时（Beta）所有设备都能免费收到实时活动提醒；打开后只有处于 30 天试用期或已经买断的设备才会收到。</p></div></div>
             <div class="form-grid">
-              <label class="toggle-field wide"><input id="requireSubscription" type="checkbox"><span><strong>实时活动需要订阅</strong><small>切换后立即生效：关闭会让之前被跳过、仍未开始的提醒重新排队；打开后未订阅的设备不再收到新提醒</small></span></label>
+              <label class="toggle-field wide"><input id="requireEntitlement" type="checkbox"><span><strong>实时活动需要试用或买断权益</strong><small>切换后立即生效：关闭会让之前被跳过、仍未开始的提醒重新排队；打开后没有权益的设备不再收到新提醒</small></span></label>
             </div>
-            <div class="dialog-actions"><button id="saveSubscriptionSettingsButton" class="button primary" type="button">保存规则</button></div>
+            <div class="dialog-actions"><button id="saveEntitlementSettingsButton" class="button primary" type="button">保存规则</button></div>
           </section>
         </div>
       </section>
 
       <section id="auditView" class="content-view" hidden>
-        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="subscription">订阅</option><option value="apns">APNs</option><option value="session">登录</option></select></label></div>
+        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="entitlement">实时活动权益</option><option value="apns">APNs</option><option value="session">登录</option></select></label></div>
         <section class="settings-panel">
           <div class="table-scroll share-scroll"><table class="account-table audit-table"><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody id="auditTable"></tbody></table></div>
         </section>
@@ -343,6 +353,6 @@
     </form>
   </dialog>
 
-  <script src="/static/admin.js?v=20260929-console"></script>
+  <script src="/static/admin.js?v=__ADMIN_JS_HASH__"></script>
 </body>
 </html>

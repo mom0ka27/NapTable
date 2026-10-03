@@ -39,6 +39,17 @@ class OwnTableTests(unittest.TestCase):
                                 "adjustments": [{"date": "2026-10-01", "kind": "off"}],
                                 "courses": [{"id": "a", "day": 2, "first": 1, "last": 1, "weeks": []}]})
 
+    def test_display_priority_is_kept_without_course_text(self):
+        value = {"scope": "s", "periods": PERIODS, "semesterStartMonday": "2026-09-07", "weekCount": 18,
+                 "courses": [dict(course("a", 1, 2), displayPriority=3, name="private") ]}
+        _, kept = own_timetable(value)
+        self.assertEqual(kept["courses"][0]["displayPriority"], 3)
+        self.assertNotIn("name", kept["courses"][0])
+        for invalid in [-1, True, "3", 1.5, 2**63]:
+            value["courses"][0]["displayPriority"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ProtocolError):
+                own_timetable(value)
+
     def test_rejects_impossible_timetables(self):
         with self.assertRaises(ProtocolError):
             table([course("a", 1, 9)])
@@ -96,6 +107,17 @@ class SingleTableTests(unittest.TestCase):
         found, _ = conflicts_between("device", TUESDAY, TUESDAY + timedelta(days=7), own, settings={"leadMinutes": 15}, now=at("07:00"))
         self.assertEqual([item["date"] for item in found], ["2026-09-22", "2026-09-29"])
 
+    def test_saved_priority_resolves_overlaps_and_legacy_choices(self):
+        own = table([course("a", 1, 3), dict(course("b", 2, 2, weeks=[3]), displayPriority=2)])
+        occurrences, _ = build_day("device", TUESDAY, own, settings={"leadMinutes": 15}, conflicts={"2026-09-22:2": "a"})
+        self.assertEqual([o["frames"][-1]["lead"]["course"] for o in occurrences], ["a", "b", "a"])
+        next_week, _ = build_day("device", TUESDAY + timedelta(days=7), own, settings={"leadMinutes": 15})
+        self.assertEqual([o["frames"][-1]["lead"]["course"] for o in next_week], ["a"])
+        swapped = table([course("a", 1, 3), dict(course("b", 2, 2), displayPriority=2)],
+                        adjustments=[{"date": "2026-09-23", "kind": "swap", "source": "2026-09-22"}])
+        result, _ = build_day("device", TUESDAY + timedelta(days=1), swapped, settings={"leadMinutes": 15})
+        self.assertEqual([o["frames"][-1]["lead"]["course"] for o in result], ["a", "b", "a"])
+
     def test_finished_and_overlong_classes(self):
         own = table([course("a", 1, 1), course("long", 1, 6, day=3)])
         self.assertEqual(build_day("device", TUESDAY, own, settings={"leadMinutes": 15}, now=at("09:00"))[0], [])
@@ -149,6 +171,13 @@ class MergedTests(unittest.TestCase):
         self.assertEqual(merged["shared"], [{"course": "theirs", "first": 1, "last": 1, "start": at("09:30"), "end": at("10:30")}])
         self.assertIn(at("09:15"), refresh_at(merged))
 
+    def test_own_overlap_uses_saved_priority_while_following(self):
+        own = table([course("a", 1, 3), dict(course("b", 2, 2), displayPriority=2)])
+        share = self.share([course("theirs", 1, 1)])
+        occurrences, _ = build_day("device", TUESDAY, own, share, settings={"leadMinutes": 15})
+        covering = [frame for frame in occurrences[0]["frames"] if frame["from"] <= at("09:00") < frame["until"]]
+        self.assertEqual(covering[0]["lead"]["course"], "b")
+
     def test_same_lead_matches_a_single_reminder(self):
         own = table([course("mine", 3, 3)])
         share = self.share([course("theirs", 1, 1)])
@@ -194,6 +223,14 @@ class ShareRowTests(unittest.TestCase):
         self.assertEqual([(c["id"], c["first"], c["last"], sorted(c["weeks"])) for c in share.courses],
                          [("7", 1, 2, [1, 3]), ("8", 2, 2, [2, 3])])
         self.assertEqual(texts["7"], {"name": "高数", "teacher": "王", "location": "A101"})
+
+    def test_published_priority_resolves_shared_overlap(self):
+        share, _ = share_table(self.row([
+            {"id": 7, "name": "高数", "week_time": 2, "start_time": 1, "time_count": 1, "weeks": [3]},
+            {"id": 8, "name": "优先课", "week_time": 2, "start_time": 1, "time_count": 1, "weeks": [3], "displayPriority": 2}]))
+        occurrences, _ = build_day("device", TUESDAY, None, share, settings={"leadMinutes": 15})
+        self.assertEqual(len(occurrences), 1)
+        self.assertEqual(occurrences[0]["frames"][-1]["lead"]["course"], "8")
 
     def test_the_unified_calendar_wins_and_the_share_fills_the_rest(self):
         from datetime import date

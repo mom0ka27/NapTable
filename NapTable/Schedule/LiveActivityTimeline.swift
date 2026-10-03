@@ -41,8 +41,6 @@ struct LiveActivityTimeline {
         }
         let following = snapshot.sourceLabel != nil
         let tableLead = following ? sharedLead ?? lead : lead
-        let periods = snapshot.periods
-        let byNumber = Dictionary(periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
         var result = Result(occurrences: [], conflicts: [], omitted: 0)
         var unassigned: Set<String> = []
         let limit = now.addingTimeInterval(Double(days) * 86400).timeIntervalSince1970
@@ -53,6 +51,8 @@ struct LiveActivityTimeline {
         var pieces: [Piece] = []
         for week in calendar.weeks {
             for (index, day) in week.days.enumerated() {
+                let periods = snapshot.periods(on: day)
+                let byNumber = Dictionary(periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
                 let adjustment = calendar.adjustments[day]
                 if adjustment?.suppressesCourses == true { continue }
                 let sourceDay = adjustment?.sourceDay ?? index + 1
@@ -78,7 +78,7 @@ struct LiveActivityTimeline {
                         result.conflicts.append(Conflict(id: key, date: day, period: period,
                             choices: candidates.sorted { $0.key < $1.key }.map { .init(id: $0.key, name: $0.value.name) }))
                     }
-                    let source = candidates.count == 1 ? candidates.keys.first : choices[key]
+                    let source = preferredSource(in: candidates, fallback: choices[key])
                     guard let source, let course = candidates[source] else { unresolved = true; continue }
                     selected.append((period, source, course))
                 }
@@ -127,7 +127,7 @@ struct LiveActivityTimeline {
                         }
                     } else { frames.append(.init(from: start, until: end, state: state(from: start, until: end, upcoming: false))) }
                     pieces.append(Piece(source: first.1, day: day, start: start, end: end, reminder: reminder, frames: frames,
-                                        upcoming: { state(from: $0, until: end, upcoming: true) }))
+                                        upcoming: { state(from: $0, until: end, upcoming: true) }, displayPriority: course.displayPriority ?? 0))
                 }
             }
         }
@@ -137,7 +137,7 @@ struct LiveActivityTimeline {
             let ownPieces = mine.filter { $0.end - $0.start <= 8 * 3600 }.map { course in
                 Piece(source: course.source, day: course.day, start: course.start, end: course.end, reminder: course.start - Double(lead * 60),
                       frames: ([course.lead(minutes: lead)].compactMap { $0 } + course.spans).map { .init(from: $0.start, until: $0.end, state: course.state($0.companion)) },
-                      upcoming: { course.state(course.upcoming(from: $0)) }, isOwn: true)
+                      upcoming: { course.state(course.upcoming(from: $0)) }, isOwn: true, displayPriority: course.displayPriority)
             }
             var clusters: [[Piece]] = []
             for piece in (pieces + ownPieces).sorted(by: { ($0.start, $0.isOwn ? 1 : 0) < ($1.start, $1.isOwn ? 1 : 0) }) {
@@ -151,7 +151,9 @@ struct LiveActivityTimeline {
                 let reminder = max(cluster.map(\.reminder).min()!, previousEnd)
                 previousEnd = end
                 // Each table's frames carry the other table's course running then.
-                let owned = attach(spans(cluster.filter { !$0.isOwn }), to: cluster.filter(\.isOwn).flatMap(\.frames))
+                let owned = attach(spans(cluster.filter { !$0.isOwn }), to: cluster.filter(\.isOwn).sorted {
+                    $0.displayPriority == $1.displayPriority ? ($0.start, $0.source) < ($1.start, $1.source) : $0.displayPriority > $1.displayPriority
+                }.flatMap(\.frames))
                 let shared = attach(spans(cluster.filter(\.isOwn)), to: cluster.filter { !$0.isOwn }.flatMap(\.frames))
                 // My class leads; else their class; else the countdown to the nearest class.
                 let running = owned.filter { $0.state.phase == .inProgress } + shared.filter { $0.state.phase == .inProgress }
@@ -169,6 +171,44 @@ struct LiveActivityTimeline {
         return result
     }
 
+    /// 优先级跟随课程；旧课表没有优先级时，仍兼容按日期节次保存的选择。
+    private static func preferredSource(in candidates: [String: NativeScheduleCourse], fallback: String?) -> String? {
+        if candidates.count == 1 { return candidates.keys.first }
+        let ranked = candidates.filter { ($0.value.displayPriority ?? 0) > 0 }.sorted {
+            let left = $0.value.displayPriority ?? 0, right = $1.value.displayPriority ?? 0
+            return left == right ? $0.key < $1.key : left > right
+        }
+        return ranked.first?.key ?? fallback.flatMap { candidates[$0] == nil ? nil : $0 }
+    }
+
+    /// 把课程优先级展开成实际日期节次的选择，旧版服务端也能按同样顺序预约。
+    private static func resolvedChoices(in snapshot: NativeScheduleSnapshot, fallback: [String: String]) -> [String: String] {
+        guard let data = snapshot.data, let calendar = snapshot.calendar else { return fallback }
+        var result = fallback
+        for week in calendar.weeks {
+            for (index, day) in week.days.enumerated() {
+                let adjustment = calendar.adjustments[day]
+                if adjustment?.suppressesCourses == true { continue }
+                let sourceDay = adjustment?.sourceDay ?? index + 1
+                let sourceWeek = adjustment?.sourceWeek ?? week.week
+                var occupants: [Int: [String: NativeScheduleCourse]] = [:]
+                for cell in data.cells where cell.day == sourceDay && cell.bigSlot > 0 {
+                    for course in cell.courses where course.weekList.isEmpty || course.weekList.contains(sourceWeek) {
+                        guard let id = course.liveActivitySourceID ?? course.nativeId,
+                              let first = course.startSlot, let last = course.endSlot,
+                              first > 0, last >= first, last <= snapshot.periods(on: day).count else { continue }
+                        for period in first...last { occupants[period, default: [:]][id] = course }
+                    }
+                }
+                for (period, candidates) in occupants where candidates.count > 1 {
+                    let key = day + ":" + String(period)
+                    if let selected = preferredSource(in: candidates, fallback: fallback[key]) { result[key] = selected }
+                }
+            }
+        }
+        return result
+    }
+
     /// One course of either timetable placed on the clock, before merging.
     private struct Piece {
         var source: String
@@ -180,16 +220,22 @@ struct LiveActivityTimeline {
         /// Its countdown to class from the given instant.
         var upcoming: (Double) -> ScheduleLiveActivityAttributes.ContentState
         var isOwn = false
+        var displayPriority = 0
     }
 
     /// A table's frames as companion rows for the other table.
     private static func spans(_ pieces: [Piece]) -> [CompanionSpan] {
-        pieces.flatMap(\.frames).map { frame in
-            let state = frame.state
-            return CompanionSpan(start: frame.from, end: frame.until, companion: .init(
-                phase: state.phase, courseName: state.courseName, teacher: state.teacher, location: state.location,
-                periodLabel: state.periodLabel, startDate: state.startDate, endDate: state.endDate, updatedAt: state.updatedAt))
-        }.sorted { ($0.start, $0.end) < ($1.start, $1.end) }
+        pieces.flatMap { piece in
+            piece.frames.map { frame in
+                let state = frame.state
+                return CompanionSpan(start: frame.from, end: frame.until, companion: .init(
+                    phase: state.phase, courseName: state.courseName, teacher: state.teacher, location: state.location,
+                    periodLabel: state.periodLabel, startDate: state.startDate, endDate: state.endDate, updatedAt: state.updatedAt),
+                    displayPriority: piece.displayPriority)
+            }
+        }.sorted {
+            $0.displayPriority == $1.displayPriority ? ($0.start, $0.end) < ($1.start, $1.end) : $0.displayPriority > $1.displayPriority
+        }
     }
 
     /// What the server needs to compute the reminders: the time structure of
@@ -210,7 +256,9 @@ struct LiveActivityTimeline {
             cell.courses.compactMap { course -> [String: Any]? in
                 guard let id = course.liveActivitySourceID ?? course.nativeId, let first = course.startSlot, let last = course.endSlot,
                       first >= 1, last >= first, last <= own.periods.count else { return nil }
-                return ["id": id, "day": cell.day, "first": first, "last": last, "weeks": course.weekList]
+                var item: [String: Any] = ["id": id, "day": cell.day, "first": first, "last": last, "weeks": course.weekList]
+                if let priority = course.displayPriority, priority > 0 { item["displayPriority"] = priority }
+                return item
             }
         }
         let adjustments: [[String: Any]] = calendar.adjustments.values.sorted { $0.date < $1.date }.map { item in
@@ -220,8 +268,13 @@ struct LiveActivityTimeline {
         var ownBody: [String: Any] = ["scope": scope, "periods": own.periods.map { ["start": $0.startTime, "end": $0.endTime] },
                                       "semesterStartMonday": monday, "weekCount": weeks, "adjustments": adjustments, "courses": courses]
         if let school = own.schoolID { ownBody["schoolID"] = school }
+        if let seasons = own.seasonalPeriods,
+           let encoded = try? JSONEncoder().encode(seasons),
+           let value = try? JSONSerialization.jsonObject(with: encoded) {
+            ownBody["seasonalPeriods"] = value
+        }
         var settings: [String: Any] = ["leadMinutes": lead, "perPeriod": perPeriod]
-        var body: [String: Any] = ["own": ownBody, "conflicts": choices]
+        var body: [String: Any] = ["own": ownBody, "conflicts": resolvedChoices(in: share ?? own, fallback: choices)]
         if let share, let code = share.auth.account, let shareScope = share.scheduleScope {
             body["follow"] = ["share": code, "scope": shareScope]
             settings["sharedLeadMinutes"] = sharedLead
@@ -269,6 +322,7 @@ struct LiveActivityTimeline {
         var start: Double
         var end: Double
         var companion: ScheduleLiveActivityAttributes.ContentState.Companion
+        var displayPriority = 0
     }
 
     /// One course of the reader's own timetable on the clock.
@@ -284,6 +338,7 @@ struct LiveActivityTimeline {
         var note: String?
         /// The class, split per period with breaks between under 分节计时.
         var spans: [CompanionSpan]
+        var displayPriority = 0
 
         /// Counting down to class from `from`.
         func upcoming(from: Double) -> ScheduleLiveActivityAttributes.ContentState.Companion {
@@ -313,18 +368,18 @@ struct LiveActivityTimeline {
     /// break span counting down to it. Otherwise a course is one span.
     ///
     /// Deliberately forgiving: conflicting courses are all kept (a class beats
-    /// a break, then the earliest wins at render time) and courses without a
+    /// a break, then saved priority and start time decide at render time) and courses without a
     /// reliable time are skipped instead of counted as omitted.
     static func ownCourses(_ own: NativeScheduleSnapshot, perPeriod: Bool = false, now: Date, limit: Double) -> [OwnCourse] {
         guard let data = own.data, let calendar = own.calendar,
               let zone = TimeZone(identifier: own.timeZone ?? TimeZone.current.identifier) else { return [] }
         let formatter = instantFormatter(zone: zone)
-        let byNumber = Dictionary(own.periods.map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
         let current = now.timeIntervalSince1970
         let window = dayRange(from: now, until: Date(timeIntervalSince1970: limit), zone: zone)
         var courses: [OwnCourse] = []
         for week in calendar.weeks {
             for (index, day) in week.days.enumerated() where window.contains(day) {
+                let byNumber = Dictionary(own.periods(on: day).map { ($0.number, $0) }, uniquingKeysWith: { first, _ in first })
                 let adjustment = calendar.adjustments[day]
                 if adjustment?.suppressesCourses == true { continue }
                 let sourceDay = adjustment?.sourceDay ?? index + 1
@@ -368,7 +423,7 @@ struct LiveActivityTimeline {
                             pieces = [span(.inProgress, start, end, label: label, start: start, end: end)]
                         }
                         courses.append(OwnCourse(key: key, source: source, day: day, first: first, last: last, start: start, end: end,
-                                                 weeks: course.weeks, note: adjustment?.detail, spans: pieces))
+                                                 weeks: course.weeks, note: adjustment?.detail, spans: pieces, displayPriority: course.displayPriority ?? 0))
                     }
                 }
             }

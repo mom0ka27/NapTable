@@ -8,6 +8,7 @@ struct MyApp: App {
     @StateObject private var store = AppStore()
 
     init() {
+        PurchaseManager.shared.start()
         #if os(iOS)
         // Background task identifiers must be registered before launch ends.
         if #available(iOS 17.0, *) {

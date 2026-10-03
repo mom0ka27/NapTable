@@ -495,7 +495,9 @@ struct GlobalThemeSettingsSection: View {
 @available(iOS 16.1, *)
 struct LiveActivitySettingsScreen: View {
     @ObservedObject private var consent = PrivacyConsent.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
     @State private var showPrivacyConsent = false
+    @State private var showEntitlementNotice = false
     @ObservedObject private var controller = NativeLiveActivityController.shared
     @State private var enabled: Bool
     @State private var perPeriod: Bool
@@ -520,6 +522,7 @@ struct LiveActivitySettingsScreen: View {
                     get: { enabled },
                     set: { value in
                         if value && !consent.liveAccepted { showPrivacyConsent = true; return }
+                        if value && !purchases.allowsLiveActivities { showEntitlementNotice = true; return }
                         enabled = value
                         NativeLiveActivityController.shared.setEnabled(value)
                     }
@@ -527,7 +530,7 @@ struct LiveActivitySettingsScreen: View {
             } header: {
                 Text("总开关")
             } footer: {
-                Text("在锁屏与灵动岛上显示上课、下课倒计时。测试期间免费。")
+                Text(purchases.isBeta ? "在锁屏与灵动岛上显示上课、下课倒计时。Beta 版本免费使用，无需试用或购买。" : "在锁屏与灵动岛上显示上课、下课倒计时。试用或买断后可使用。")
             }
 
             Section {
@@ -558,11 +561,11 @@ struct LiveActivitySettingsScreen: View {
                     .disabled(!enabled)
                 }
             } header: {
-                Text("什么时候出现")
+                Text("提醒时间")
             } footer: {
                 Text(controller.following
-                     ? "自己与共享课表的课程分别按各自的提前时间显示，时间重叠的课程合并显示。上一门课结束前不会显示下一门课。"
-                     : "上一门课结束前不会显示下一门课；课程在最后一节结束时收起。")
+                     ? "自己的课程和共享课表分别按各自的提前时间显示。"
+                     : "课程会在上一门课结束前保持显示，并在最后一节结束时收起。")
             }
 
             Section {
@@ -575,74 +578,19 @@ struct LiveActivitySettingsScreen: View {
                 ))
                 .disabled(!enabled)
             } header: {
-                Text("课程内计时")
+                Text("计时方式")
             } footer: {
                 Text("开启后按每一节分别倒计时；关闭后倒计时至整堂课结束。")
             }
 
-            Section("实际安排") {
-                Text(controller.coverage)
-                if controller.omitted > 0 { Text("\(controller.omitted) 门课程的上课时间不完整，未安排提醒。") }
-                if let detail = controller.status.detail { Text(detail).foregroundStyle(.secondary) }
-                Text("无需打开 App，提醒也会按时显示。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if !controller.conflicts.isEmpty {
-                Section("选择冲突课程") {
-                    ForEach(controller.conflicts) { conflict in
-                        Picker("\(conflict.date) 第 \(conflict.period) 节", selection: Binding(
-                            get: { controller.selectedSource(for: conflict) },
-                            set: { controller.selectSource($0, for: conflict) }
-                        )) {
-                            Text("请选择").tag("")
-                            ForEach(conflict.choices) { choice in Text(choice.name).tag(choice.id) }
-                        }
-                    }
-                }
-            }
-
-            Section {
-                if enabled, ActivityAuthorizationInfo().areActivitiesEnabled {
-                    Button {
-                        if controller.isPreviewActive {
-                            controller.endPreview()
-                        } else {
-                            controller.startPreview()
-                        }
-                    } label: {
-                        Label(
-                            controller.isPreviewActive ? "结束预览" : "预览效果",
-                            systemImage: controller.isPreviewActive ? "stop.circle" : "play.circle"
-                        )
-                    }
-                }
-                if enabled {
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: statusSymbol)
-                            .foregroundStyle(statusColor)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(controller.status.title)
-                                .font(.subheadline.weight(.medium))
-                            if controller.isPreviewActive {
-                                Text("正在显示演示课程，锁屏后可查看完整效果。")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            } else if controller.status == .active {
-                                Text("返回主屏幕或锁屏后即可查看。")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                if !ActivityAuthorizationInfo().areActivitiesEnabled {
+            if !ActivityAuthorizationInfo().areActivitiesEnabled {
+                Section {
                     Label("请在系统设置中允许「实时活动」", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.orange)
+                } footer: {
+                    Text("系统关闭实时活动时，课程提醒仍会按通知设置发送。")
                 }
-            } header: {
-                Text("当前状态")
             }
         }
         .appListBackground()
@@ -650,31 +598,22 @@ struct LiveActivitySettingsScreen: View {
         .appInlineNavigationTitle()
         .appSoftTopScrollEdge()
         .onAppear { enabled = controller.isEnabled }
+        .task { await purchases.load() }
         .onChange(of: controller.status) { _, _ in enabled = controller.isEnabled }
         .onChange(of: consent.liveAccepted) { _, _ in enabled = controller.isEnabled }
         .sheet(isPresented: $showPrivacyConsent) {
             LiveActivityConsentView {
+                guard purchases.allowsLiveActivities else { showEntitlementNotice = true; return }
                 controller.setEnabled(true)
                 enabled = controller.isEnabled
             }
         }
-    }
-
-    private var statusSymbol: String {
-        switch controller.status {
-        case .active: return "checkmark.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
-        case .unavailable: return "minus.circle"
-        case .disabled: return "pause.circle"
-        case .waiting, .limited: return "clock"
-        }
-    }
-
-    private var statusColor: Color {
-        switch controller.status {
-        case .active: return .cpuBrand
-        case .failed, .unavailable, .limited: return .orange
-        case .disabled, .waiting: return .secondary
+        .alert("需要实时活动权益", isPresented: $showEntitlementNotice) {
+            Button("知道了", role: .cancel) { }
+        } message: {
+            Text(purchases.accessMode == .unavailable || purchases.accessMode == .loading
+                 ? "连接失败，请联网后重试。"
+                 : "请先返回设置首页，在“版本与权益”中开始试用或买断实时活动。")
         }
     }
 }
