@@ -76,13 +76,15 @@ xcrun simctl get_app_container booted com.niyiwei.naptable groups
 
 ## 测试与验证
 
-Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh`、`check-njfu-extractor.sh` 用 Node 运行中山大学、南京林业大学导入脚本）：
+Swift 模型、实时活动和导入检查（`tests/check-*.sh`；`check-sysu-extractor.sh`、`check-njfu-extractor.sh`、`check-nau-extractor.sh`、`check-njtech-extractor.sh`、`check-fudan-extractor.sh`、`check-xjtu-extractor.sh`、`check-zju-extractor.sh`、`check-ruc-extractor.sh` 用 Node 运行中山大学、南京林业大学、南京审计大学、南京工业大学、复旦大学、西安交通大学、浙江大学、中国人民大学导入脚本）：
 
 ```sh
 for script in tests/check-*.sh; do bash "$script" || break; done
 ```
 
 服务端依赖用 uv 管理（`pyproject.toml` + `uv.lock`，安装：`brew install uv`）。`deploy/deploy.sh` 发布前也用同样的命令跑这些测试：
+
+`tests/check-seasonal-timetable.sh` 验证西交大切换日、跨年、调休、每日小组件、本地实时活动、日历导出和旧存档；`tests/test_seasonal_times.py` 验证分季配置、分享快照、旧设备登记迁移，以及不再上传课表时切换日前后的 APNs 启动与广播结束。两端共享 `tests/fixtures/xjtu-seasonal-times.json` 中的官方时间基准。
 
 ```sh
 uv run --frozen python -m unittest discover -s tests -p 'test_*.py'

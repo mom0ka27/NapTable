@@ -112,7 +112,7 @@ install -d -o root -g root -m 0755 "$release_path"
 tar -xzf "$archive" -C "$release_path" --no-same-owner
 
 required_files=(
-    server/subscriptions.py
+    server/entitlements.py
     server/app_attest.py
     server/apns.py
     server/holidays.py
@@ -120,6 +120,7 @@ required_files=(
     server/live_activity_v2.py
     server/live_activity_schedule.py
     server/live_activity_timeline.py
+    server/school_times.py
     pyproject.toml
     uv.lock
     server/naptable_server.py
@@ -129,6 +130,8 @@ required_files=(
     server/static/site/index.html
     server/static/site/privacy.html
     server/static/site/site.css
+    server/static/site/site.js
+    server/static/site/theme.js
     deploy/backup.py
     deploy/naptable.service
     deploy/naptable-backup.service

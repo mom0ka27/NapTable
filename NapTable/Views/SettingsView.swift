@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// The Settings tab.
 ///
-/// The account on top, then four groups, a few rows each: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
+/// The version and entitlements on top, then the settings groups: 外观 / 桌面与锁屏 / 课表 / 数据与关于.
 /// Every row says what it currently is, so the common case — "did I already
 /// set that?" — is answered without opening it.
 ///
@@ -16,6 +16,7 @@ struct SettingsView: View {
     @ObservedObject private var sharingService = ScheduleSharingService.shared
     @ObservedObject private var privacyConsent = PrivacyConsent.shared
     @ObservedObject private var cloudSync = ICloudSyncService.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
     @Binding var showImport: Bool
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
@@ -32,6 +33,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                subscriptionGroup
                 helpGroup
                 appearanceGroup
                 NativeDeviceSettingsContent(
@@ -66,11 +68,25 @@ struct SettingsView: View {
 
     // MARK: Top-level groups
 
+    private var subscriptionGroup: some View {
+        Section {
+            SettingsDestinationRow(
+                title: purchases.versionTitle,
+                detail: purchases.versionDetail,
+                systemImage: purchases.versionSystemImage
+            ) {
+                SubscriptionView()
+            }
+        } header: {
+            Text("版本与权益")
+        }
+    }
+
     private var helpGroup: some View {
         Section {
             SettingsDestinationRow(
                 title: "使用指南",
-                detail: "修改课程与添加桌面小组件",
+                detail: "添加、编辑桌面小组件与修改课程",
                 systemImage: "questionmark.circle"
             ) {
                 ScheduleUsageGuideScreen()
@@ -135,6 +151,13 @@ struct SettingsView: View {
     private var tablesGroup: some View {
         Section {
             SettingsDestinationRow(
+                title: "编辑课表",
+                detail: "课程、上课周次与节次",
+                systemImage: "square.and.pencil"
+            ) {
+                ScheduleEditingView(tableID: store.selectedTableId)
+            }
+            SettingsDestinationRow(
                 title: "我的课表",
                 detail: tablesSummary,
                 systemImage: "square.stack"
@@ -178,17 +201,14 @@ struct SettingsView: View {
 
             SettingsDestinationRow(
                 title: "关于",
-                detail: "版本信息与开源鸣谢",
+                detail: "用户 QQ 群、版本信息与开源鸣谢",
                 systemImage: "info.circle"
             ) {
-                Form {
-                    aboutSection
-                    creditsSection
-                }
-                .appListBackground()
-                .navigationTitle("关于")
-                .appInlineNavigationTitle()
-                .appSoftTopScrollEdge()
+                AboutView(
+                    tableCount: store.tables.count,
+                    courseCount: store.courses.count,
+                    dailyPeriodCount: store.classTimeList.count
+                )
             }
         } header: {
             Text("数据与关于")
@@ -299,84 +319,7 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: 关于
-
-    private var aboutSection: some View {
-        Section {
-            LabeledContent("应用", value: AppBrand.name)
-            LabeledContent("副标题", value: AppBrand.subtitle)
-            LabeledContent("版本", value: appVersion)
-            LabeledContent("课表", value: "\(store.tables.count) 张")
-            LabeledContent("课程", value: "\(store.courses.count) 门")
-            LabeledContent("每天节次", value: "\(store.classTimeList.count) 节")
-        } header: {
-            Text("应用信息")
-        }
-    }
-
-    /// Credits for the open-source projects this app stands on: the schedule
-    /// surface is a port of CpuTime's iOS client, the import parsing, school
-    /// catalogue and calendar data come from 南哪课表, the SYSU importer
-    /// follows sysukcb's academic-system flow, and the NJFU importer follows
-    /// NJFU-schedule's timetable parsing.
-    private var creditsSection: some View {
-        Section {
-            creditRow(
-                name: "南哪课表",
-                detail: "课程解析、学校配置与校历数据",
-                urlString: "https://github.com/WheretoSleepinNJU/NJU-Class-Shedule-Flutter"
-            )
-            creditRow(
-                name: "CpuTime",
-                detail: "课表界面与玻璃拟态设计",
-                urlString: "https://github.com/sx120609/CPU-web"
-            )
-            creditRow(
-                name: "sysukcb",
-                detail: "中山大学教务导入流程与周次解析",
-                urlString: "https://github.com/pipidu/sysukcb"
-            )
-            creditRow(
-                name: "NJFU-schedule",
-                detail: "南京林业大学教务导入流程与课表解析",
-                urlString: "https://github.com/keggin-CHN/NJFU-schedule"
-            )
-        } header: {
-            Text("开源鸣谢")
-        }
-    }
-
-    @ViewBuilder
-    private func creditRow(name: String, detail: String, urlString: String) -> some View {
-        if let url = URL(string: urlString) {
-            Link(destination: url) {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(name).foregroundStyle(.primary)
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Image(systemName: "arrow.up.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
     // MARK: Helpers
-
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String
-        return build.map { "\(short) (\($0))" } ?? short
-    }
 
     private func courseCount(_ tableId: Int) -> Int {
         store.courses.filter { $0.tableId == tableId }.count

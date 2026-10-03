@@ -30,3 +30,6 @@ AuthKey_*.p8
 
 # uv virtual environment
 .venv/
+
+# promo
+promo/

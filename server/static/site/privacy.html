@@ -7,15 +7,17 @@
 <meta name="description" content="你以为课表隐私政策：我们收集哪些信息、如何使用、保存多久，以及你如何撤回许可和删除数据。">
 <link rel="icon" href="/site/img/favicon.png">
 <link rel="stylesheet" href="/site/site.css">
+<script src="/site/theme.js"></script>
+<script src="/site/site.js" defer></script>
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="/"><img src="/site/img/favicon.png" alt="">你以为课表</a>
-    <nav>
+    <div class="nav-actions"><nav>
       <a href="/#features">功能</a>
       <a href="/privacy">隐私政策</a>
-    </nav>
+    </nav><button class="theme-toggle" type="button" aria-label="切换为深色模式" aria-pressed="false"><svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/></svg><span class="theme-label">浅色</span></button></div>
   </div>
 </header>
 
@@ -154,6 +156,8 @@
   </ul>
   <p>本 App 源代码以 AGPL-3.0-or-later 协议公开，你可以直接查阅上述数据处理的实现。</p>
 </main>
+
+<div class="theme-toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <footer>
   <div class="wrap">
