@@ -42,7 +42,7 @@ struct ManualScheduleChecks {
         // MARK: 节次时间
 
         let generated = ClassTimeGenerator(
-            lessonMinutes: 45, breakMinutes: 10,
+            lessonMinutes: 45, smallBreakMinutes: 10,
             blocks: [.init(title: "上午", start: 8 * 60, count: 2), .init(title: "下午", start: 14 * 60, count: 1)]
         ).make()
         precondition(generated == [
@@ -58,6 +58,35 @@ struct ManualScheduleChecks {
             ClassTime(start: "08:00", end: "09:00"), ClassTime(start: "08:30", end: "09:30"),
         ]) != nil)
         precondition(ClassTimeValidator.minutes("08：05") == 485)
+
+        // 每个时段从小课间开始，奇数节最后一节前必须用小课间。
+        for count in 1...8 {
+            let times = ClassTimeGenerator(lessonMinutes: 45, smallBreakMinutes: 5, largeBreakMinutes: 25,
+                blocks: [.init(title: "上午", start: 8 * 60, count: count)]).make()
+            for index in 1..<count {
+                let previous = ClassTimeValidator.minutes(times[index - 1].end)!
+                let next = ClassTimeValidator.minutes(times[index].start)!
+                let lastSingle = count % 2 == 1 && index == count - 1
+                precondition(next - previous == (index % 2 == 1 || lastSingle ? 5 : 25))
+            }
+        }
+        let resetTimes = ClassTimeGenerator(lessonMinutes: 45, smallBreakMinutes: 5, largeBreakMinutes: 25,
+            blocks: [.init(title: "上午", start: 8 * 60, count: 3), .init(title: "下午", start: 14 * 60, count: 4), .init(title: "晚上", start: 19 * 60, count: 3)]).make()
+        precondition(resetTimes[4].start == "14:50")
+        precondition(resetTimes[5].start == "16:00")
+        precondition(resetTimes[9].start == "20:40")
+
+        let recognition = ImageImportResult(name: "图片课表", classTimes: [], courses: [
+            .init(name: "数学", teacher: "李老师", classroom: "A101", weekday: 1, startPeriod: 1, endPeriod: 2, weeks: [1, 3, 5]),
+            .init(name: "数学", teacher: "李老师", classroom: "A102", weekday: 3, startPeriod: 3, endPeriod: 4, weeks: []),
+        ], warnings: [])
+        let imageDraft = try! recognition.draft()
+        precondition(imageDraft.courses.count == 1 && imageDraft.courses[0].meetings.count == 2)
+        precondition(imageDraft.courses[0].meetings[0].weeks(weekCount: imageDraft.weekCount) == [1, 3, 5])
+        precondition(imageDraft.courses[0].meetings[1].weeks(weekCount: imageDraft.weekCount) == Array(1...imageDraft.weekCount))
+        precondition(recognition.reviewWarnings.count == 4)
+        precondition(AppAttestService.guarded(method: "POST", path: "/v1/import/image"))
+        precondition(!AppAttestService.guarded(method: "GET", path: "/v1/import/image/config"))
 
         // MARK: 冲突提醒
 
@@ -199,6 +228,110 @@ struct ManualScheduleChecks {
         let newCourse = app.courses.first { $0.tableId == other.id && $0.name == "新课程" }!
         precondition(newCourse.teacher == "新老师" && newCourse.info == "备注")
 
+        try! checkNameGroupingAndMigration()
+        try! checkCustomTimetables()
         print("ManualScheduleChecks passed")
     }
+
+    @MainActor static func checkNameGroupingAndMigration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("legacy.json")
+        var legacy = AppStateFile()
+        legacy.version = 1
+        legacy.tables = [CourseTable(id: 1, name: "秋季"), CourseTable(id: 2, name: "春季")]
+        legacy.selectedTableId = 1
+        legacy.courses = [
+            Course(id: 1, tableId: 1, name: " 数学 ", weeks: [1, 3], weekTime: 1, startTime: 1,
+                   timeCount: 1, importType: ImportKind.imported, classroom: "A101", teacher: "甲", courseKey: 10),
+            Course(id: 2, tableId: 1, name: "数学", weeks: [2, 4], weekTime: 3, startTime: 3,
+                   timeCount: 1, importType: ImportKind.imported, classroom: "B202", teacher: "乙", courseKey: 20, hidden: true),
+            Course(id: 3, tableId: 2, name: "数学", weeks: [1], weekTime: 2, startTime: 1,
+                   timeCount: 0, importType: ImportKind.manual, courseKey: 10),
+            Course(id: 4, tableId: 1, name: "物理", weeks: [1], weekTime: 4, startTime: 1,
+                   timeCount: 0, importType: ImportKind.manual, courseKey: 10)
+        ]
+        try JSONEncoder().encode(legacy).write(to: url)
+        let app = AppStore(fileURL: url)
+        precondition(app.courses.count == 4)
+        precondition(app.courseFamily(containing: app.courses[0]).map(\.id) == [1, 2])
+        precondition(Set(app.courses.map(\.courseKey)).count == 3)
+        for (before, var after) in zip(legacy.courses, app.courses) {
+            after.name = before.name
+            after.courseKey = before.courseKey
+            precondition(after == before, "Migration must preserve all meeting metadata")
+        }
+        let saved = try JSONDecoder().decode(AppStateFile.self, from: Data(contentsOf: url))
+        precondition(saved.version == 2 && saved.courses == app.courses)
+        precondition(AppStore(fileURL: url).courses == app.courses, "Migration must be idempotent")
+        app.install(payload: ImportedSchedule(name: "追加", courses: [legacy.courses[1]]), mode: .appendToCurrent)
+        precondition(app.courseFamily(containing: app.courses[0]).count == 3)
+        let otherTableCourses = app.courses.filter { $0.tableId == 2 }
+        app.deleteCourseFamily(app.courses[0])
+        precondition(app.courses.filter { $0.tableId == 2 } == otherTableCourses)
+        precondition(app.courses.filter { $0.tableId == 1 }.map(\.name) == ["物理"])
+        let imported = app.install(payload: ImportedSchedule(name: "导入", courses: Array(legacy.courses.prefix(2))), mode: .newTable)
+        precondition(Set(app.courses.filter { $0.tableId == imported.id }.map(\.courseKey)).count == 1)
+        let restored = AppStore(fileURL: nil)
+        restored.restore(app.exportDocument())
+        let math = restored.courses.filter { $0.name == "数学" }
+        precondition(math.count == 3 && Set(math.map(\.courseKey)).count == 2)
+        var manual = ManualScheduleDraft(name: "手动同名")
+        manual.courses = [ManualCourseDraft(name: "同名"), ManualCourseDraft(name: "同名")]
+        let manualTable = app.installManualSchedule(manual)
+        precondition(Set(app.courses.filter { $0.tableId == manualTable.id }.map(\.courseKey)).count == 1)
+        var renamed = app.courses.first { $0.tableId == imported.id }!
+        let beforeRename = renamed
+        renamed.name = "物理"
+        app.updateCourse(renamed)
+        var another = app.courses.first { $0.tableId == imported.id && $0.name == "数学" }!
+        another.name = "物理"
+        app.updateCourse(another)
+        precondition(app.courseFamily(containing: beforeRename).count == 2)
+        precondition(Set(app.courses.filter { $0.tableId == imported.id }.map(\.courseKey)).count == 1)
+        precondition(app.courses.filter { $0.tableId == 1 }.map(\.name) == ["物理"])
+    }
+
+    @MainActor static func checkCustomTimetables() throws {
+        let app = AppStore(fileURL: nil)
+        let table = app.addTable(name: "学校课表")
+        let base = [ClassTime(start: "08:00", end: "08:50")]
+        let summer = [ClassTime(start: "09:00", end: "09:50")]
+        let winter = [ClassTime(start: "10:00", end: "10:50")]
+        var term = ServiceTermConfiguration(id: "fall", version: 1, semesterStartMonday: "2026-09-07", weekCount: 18,
+            periods: [.init(id: 1, name: "第一节", start: "08:00", end: "08:50")],
+            timezone: "Asia/Shanghai", note: "", current: true)
+        app.applyTerm(term, schoolID: "test")
+        let seasons = [SeasonalClassTimes(from: "05-01", periods: summer), SeasonalClassTimes(from: "10-01", periods: winter)]
+        precondition(app.updateCustomClassTimes(base, seasons: seasons, tableId: table.id))
+        precondition(app.selectedTable!.classTimes(on: "2026-04-30") == winter)
+        precondition(app.selectedTable!.classTimes(on: "2026-05-01") == summer)
+        precondition(app.selectedTable!.classTimes(on: "2026-10-01") == winter)
+        precondition(app.selectedTable!.classTimes(on: "2027-01-01") == winter)
+        term.version = 2
+        term.periods[0].start = "07:00"
+        term.periods[0].end = "07:50"
+        app.refreshServiceConfiguration([ServiceSchoolConfiguration(id: "test", name: "测试学校", timezone: "Asia/Shanghai", terms: [term], note: "")])
+        precondition(app.selectedTable!.classTimeList == term.classTimes)
+        precondition(app.selectedTable!.classTimes(on: "2026-05-01") == summer)
+        precondition(app.setUsesCustomClassTimes(false, tableId: table.id))
+        precondition(app.selectedTable!.classTimes(on: "2026-05-01") == term.classTimes)
+        precondition(app.selectedTable!.customSeasonalPeriods == seasons)
+        precondition(app.setUsesCustomClassTimes(true, tableId: table.id))
+        precondition(app.selectedTable!.classTimes(on: "2026-05-01") == summer)
+        let restored = try JSONDecoder().decode(CourseTable.self, from: JSONEncoder().encode(app.selectedTable!))
+        precondition(restored.customSeasonalPeriods == seasons && restored.usesCustomClassTimes == true)
+        precondition(!app.updateCustomClassTimes(base, seasons: [seasons[0], seasons[0]], tableId: table.id))
+        precondition(!app.updateCustomClassTimes(base, seasons: [.init(from: "02-30", periods: base)], tableId: table.id))
+        precondition(!app.updateClassTimeList([ClassTime(start: "10:00", end: "09:00")], tableId: table.id))
+        precondition(!app.updateCustomClassTimes(base, seasons: [.init(from: "02-29", periods: base)], tableId: table.id))
+        precondition(!app.updateCustomClassTimes(base, seasons: (1...5).map { .init(from: "0\($0)-01", periods: base) }, tableId: table.id))
+        precondition(!app.updateCustomClassTimes(base, seasons: [.init(from: "05-01", periods: base + summer)], tableId: table.id))
+        precondition(!app.updateCustomClassTimes(base, seasons: [.init(from: "05-01", periods: [])], tableId: table.id))
+        app.addCourse(Course(tableId: table.id, name: "晚课", weeks: [1], weekTime: 1, startTime: 2, timeCount: 0, importType: ImportKind.manual))
+        precondition(!app.updateCustomClassTimes(base, seasons: seasons, tableId: table.id), "Cannot remove a period used by a course")
+        precondition(app.selectedTable == restored, "Invalid edits must leave saved settings intact")
+    }
+
 }

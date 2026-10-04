@@ -74,6 +74,7 @@
     shares: ["分享课表", "查找用户分享到服务端的课表，删除不该公开的分享。"],
     entitlements: ["实时活动权益", "设置实时活动是否需要试用或买断权益，查看授权设备数。"],
     apns: ["APNs 推送", "配置实况通知的推送凭据。"],
+    imageImport: ["图片导入", "配置 AI 课表识别、设备验证和使用额度，查看调用结果与 token 用量。"],
     audit: ["操作记录", "谁在什么时候改了什么。"]
   };
   const mobileNavigation = window.matchMedia("(max-width: 760px)");
@@ -115,9 +116,10 @@
     school: () => state.school ? JSON.stringify({ name: $("schoolName").value.trim(), note: $("schoolNote").value.trim(), periods: periodRows(), seasonalPeriods: activeSeasonRows(), seasonalPeriodsEnabled: $("schoolSeasonEnabled").checked, unifiedHolidaysEnabled: $("schoolUnifiedHolidaysEnabled").checked, unifiedMakeupEnabled: $("schoolUnifiedMakeupEnabled").checked }) : "",
     term: () => state.term ? JSON.stringify(formTerm()) : "",
     calendar: () => JSON.stringify(adjustmentRows()),
-    apns: () => JSON.stringify(formApns())
+    apns: () => JSON.stringify(formApns()),
+    imageImport: () => JSON.stringify(formImageImport())
   };
-  const formNames = { school: "学校信息", term: "学期", calendar: "统一调休", apns: "APNs 配置" };
+  const formNames = { school: "学校信息", term: "学期", calendar: "统一调休", apns: "APNs 配置", imageImport: "图片导入配置" };
   const savedForms = {};
   const markClean = (...keys) => keys.forEach(key => { savedForms[key] = forms[key](); });
   // A form with nothing loaded ("") has nothing to lose.
@@ -563,7 +565,7 @@
     if (!list.shares.length) body.innerHTML = `<tr><td colspan="7">${$("shareSearch").value.trim() ? "没有匹配的分享" : "还没有分享"}</td></tr>`;
   };
   const attestEndpoints = { "share.publish": "发布分享", "share.update": "更新分享", "liveActivity.register": "注册实时活动设备",
-    "liveActivity.timetable": "上传实时活动课表", "usage.report": "使用统计上报" };
+    "liveActivity.timetable": "上传实时活动课表", "usage.report": "使用统计上报", "imageImport.recognize": "图片识别" };
   const renderAbuse = abuse => {
     const shares = abuse.shares;
     $("shareTotal").textContent = shares.total;
@@ -629,7 +631,7 @@
     "school.create": "新增学校", "school.save": "保存学校", "school.rename": "修改学校 ID", "school.delete": "删除学校",
     "term.save": "保存学期", "term.delete": "删除学期", "calendar.save": "保存调休", "share.delete": "删除分享",
     "entitlement.settings": "保存实时活动权益规则",
-    "apns.save": "保存 APNs", "session.signIn": "登录", "session.signOut": "退出", "session.failed": "登录失败"
+    "apns.save": "保存 APNs", "imageImport.save": "保存图片导入配置", "session.signIn": "登录", "session.signOut": "退出", "session.failed": "登录失败"
   };
   const loadAudit = async () => {
     const { entries } = await request(`/v1/admin/audit?action=${encodeURIComponent($("auditFilter").value)}`);
@@ -860,6 +862,43 @@
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
+  const imageImportFields = ["enabled", "endpoint", "model", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit", "timeoutSeconds", "maxOutputTokens"];
+  const imageField = key => $("imageImport" + key[0].toUpperCase() + key.slice(1));
+  const formImageImport = () => Object.fromEntries(imageImportFields.map(key => {
+    const element = imageField(key);
+    return [key, element.type === "checkbox" ? element.checked : element.type === "number" ? Number(element.value) : element.value.trim()];
+  }));
+  const showImageImport = data => {
+    imageImportFields.forEach(key => {
+      const element = imageField(key);
+      if (element.type === "checkbox") element.checked = data.config[key];
+      else element.value = data.config[key];
+    });
+    $("imageImportStatus").textContent = `${data.config.enabled ? "已开放" : "已关闭"} · ${data.config.configured ? "模型与密钥已配置" : "请设置模型和服务器 API 密钥"}`;
+    $("saveImageImportButton").disabled = false;
+    const outcomes = { success: "成功", empty: "未识别到课程", upstreamError: "接口失败", invalidResult: "结果无效", pending: "处理中或被中断", attestRequired: "需要设备验证", invalidImage: "图片无效", busy: "并发已满", quotaRejected: "超过额度" };
+    const rows = data.stats.daily || [];
+    const today = rows.filter(row => row.day === data.stats.today);
+    const attempts = today.filter(row => ["success", "empty", "upstreamError", "invalidResult", "pending"].includes(row.outcome)).reduce((sum, row) => sum + row.requests, 0);
+    $("imageImportSummary").textContent = `今日已调用 ${attempts} / ${data.config.globalDailyLimit} 次 · 成功 ${today.filter(row => row.outcome === "success").reduce((sum, row) => sum + row.requests, 0)} 次 · 统计保留 ${data.stats.retentionDays} 天`;
+    $("imageImportStats").innerHTML = rows.length ? rows.map(row => `<tr><td>${escapeHTML(row.day)}</td><td>${escapeHTML(outcomes[row.outcome] || row.outcome)}</td><td>${row.requests}</td><td>${row.inputTokens}</td><td>${row.outputTokens}</td><td>${row.courses}</td><td>${(row.durationMs / row.requests / 1000).toFixed(1)} 秒</td></tr>`).join("") : '<tr><td colspan="7">暂无识别记录</td></tr>';
+    markClean("imageImport");
+  };
+  const loadImageImport = async () => showImageImport(await request("/v1/admin/image-import"));
+  $("imageImportForm").onsubmit = async event => {
+    event.preventDefault();
+    const button = $("saveImageImportButton"); setLoading(button, true);
+    try {
+      showImageImport(await request("/v1/admin/image-import", { method: "POST", body: JSON.stringify(formImageImport()) }));
+      notice("图片导入配置已保存", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally { setLoading(button, false); }
+  };
+  $("refreshImageImportButton").onclick = async () => {
+    if (!confirmDiscard(["imageImport"])) return;
+    try { await loadImageImport(); } catch (error) { notice(error.message, "error"); }
+  };
+
   const loadConsole = async () => {
     const catalogue = await request("/v1/schools");
     state.authenticated = true;
@@ -878,6 +917,7 @@
     });
     section(() => request("/v1/admin/stats"), stats => { state.stats = stats; renderStats(); });
     section(loadEntitlements, () => {});
+    section(loadImageImport, () => {});
     section(loadShares, () => {});
     if (state.view === "audit") section(loadAudit, () => {});
   };
@@ -885,6 +925,7 @@
     state.authenticated = false; state.admin = null; state.schools = []; state.school = null; state.term = null;
     Object.keys(savedForms).forEach(key => delete savedForms[key]);
     $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
+    $("saveImageImportButton").disabled = true;
     updateConnectionUI(false);
   };
   const connect = async event => {

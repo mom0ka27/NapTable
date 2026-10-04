@@ -15,7 +15,7 @@ struct ImportView: View {
     @State private var imported: ImportedSchedule?
     @State private var semesterStart = WeekCalculator.monday(of: Date())
 
-    /// 导航路径里代表「手动创建」的值；传给 `initialSchool` 可以直接打开手动创建向导。
+    /// 导航路径里的其他学校入口，保留旧路由值供已有入口使用。
     static let manualRoute = "manual"
 
     init(requiresImport: Bool = false, initialSchool: String? = nil, onFinish: (() -> Void)? = nil) {
@@ -40,7 +40,7 @@ struct ImportView: View {
                                 .foregroundStyle(Color.accentColor)
                             LabeledContent("课表", value: imported.name)
                             // 包括完整保留的重叠课程。
-                            LabeledContent("课程", value: "\(imported.courses.count { !$0.isHidden }) 门")
+                            LabeledContent("课程", value: "\(Set(imported.courses.filter { !$0.isHidden }.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }).count) 门")
                         }
                         if imported.termID == nil {
                             Section("学期开始日期") {
@@ -50,6 +50,7 @@ struct ImportView: View {
 
                     }
                     .appListBackground()
+                    .appSoftTopScrollEdge()
                 } else {
                     List {
                         Section {
@@ -63,24 +64,25 @@ struct ImportView: View {
                                 }
                             }
                             if schools.isEmpty {
-                                Text("未找到学校，可以手动创建课表。")
+                                Text("未找到学校，可以手动导入或图片导入。")
                                     .foregroundStyle(.secondary)
                             }
                         }
                         Section {
                             NavigationLink(value: Self.manualRoute) {
-                                Label("其他学校 / 手动创建", systemImage: "square.and.pencil")
+                                Label("其他学校 / 图片导入", systemImage: "photo.on.rectangle")
                             }
                         } footer: {
-                            Text("学校不在列表里，就自己设好学期和节次，再逐门添加课程。")
+                            Text("支持手动填写，或从课表图片识别课程后核对导入。")
                         }
                     }
                     .appListBackground()
+                    .appSoftTopScrollEdge()
                     .searchable(text: $search, prompt: "搜索学校")
                 }
             }
             .navigationDestination(for: String.self) { name in
-                if name == Self.manualRoute { manualForm(school: nil) }
+                if name == Self.manualRoute { otherSchoolRoutes }
                 else { routes(for: name) }
             }
             .navigationTitle(imported == nil ? "选择学校" : "导入完成")
@@ -131,7 +133,27 @@ struct ImportView: View {
             Section { NavigationLink("手动创建课表") { manualForm(school: name) } }
         }
         .appListBackground()
+        .appSoftTopScrollEdge()
         .navigationTitle(name)
+        .appInlineNavigationTitle()
+    }
+
+    private var otherSchoolRoutes: some View {
+        List {
+            Section("导入方式") {
+                NavigationLink { manualForm(school: nil) } label: {
+                    Label("手动导入", systemImage: "square.and.pencil")
+                }
+                NavigationLink {
+                    ImageImportView { onFinish?(); dismiss() }
+                } label: {
+                    Label("图片导入", systemImage: "photo.on.rectangle")
+                }
+            }
+        }
+        .appListBackground()
+        .appSoftTopScrollEdge()
+        .navigationTitle("其他学校 / 图片导入")
         .appInlineNavigationTitle()
     }
 
@@ -277,6 +299,7 @@ struct ImportedScheduleForm: View {
             }
         }
         .appListBackground()
+        .appSoftTopScrollEdge()
         .onAppear {
             // Keep the choices stable while installation updates the store and
             // this confirmation sheet is animating out.

@@ -10,6 +10,8 @@ struct ManualScheduleWizard: View {
     /// 首次使用时必须至少有一门课才能进主界面，这时课程这一步不能跳过。
     var requiresCourses = false
     let onCreated: () -> Void
+    var initialDraft: ManualScheduleDraft? = nil
+    var recognitionWarnings: [String] = []
 
     @EnvironmentObject private var store: AppStore
     @State private var step: Step = .semester
@@ -40,6 +42,7 @@ struct ManualScheduleWizard: View {
             }
         }
         .appListBackground()
+        .appSoftTopScrollEdge()
         .navigationTitle(step.title)
         .appInlineNavigationTitle()
         .navigationBarBackButtonHidden(step != .semester)
@@ -68,6 +71,7 @@ struct ManualScheduleWizard: View {
             }
         }
         .onAppear {
+            if let initialDraft, draft.courses.isEmpty, draft.name.isEmpty { draft = initialDraft }
             if draft.name.isEmpty { draft.name = store.uniqueTableName(school.map { "\($0)课表" } ?? "我的课表") }
         }
         .onChange(of: draft.classTimes.count) { _, count in clampMeetings(periodCount: count) }
@@ -125,6 +129,7 @@ struct ManualScheduleWizard: View {
         case .periods:
             return draft.classTimesProblem
         case .courses, .review:
+            if let problem = draft.courses.compactMap({ $0.problem(periodCount: draft.classTimes.count, weekCount: draft.weekCount) }).first { return problem }
             return requiresCourses && draft.courses.isEmpty ? "首次使用至少要添加一门课" : nil
         }
     }
@@ -143,6 +148,14 @@ struct ManualScheduleWizard: View {
 
     @ViewBuilder
     private var semesterStep: some View {
+        if initialDraft != nil {
+            Section("图片识别结果") {
+                Text("请核对学期、节次和每门课程。图片中没有写明的周次按全学期填写，需要你确认。")
+                ForEach(Array(recognitionWarnings.enumerated()), id: \.offset) { _, warning in
+                    Text(warning).foregroundStyle(.orange)
+                }
+            }
+        }
         Section {
             TextField("课表名称", text: $draft.name)
         } header: {
@@ -186,7 +199,8 @@ struct ManualScheduleWizard: View {
     private var periodsStep: some View {
         Section {
             Stepper("每节课 \(generator.lessonMinutes) 分钟", value: $generator.lessonMinutes, in: 20...180, step: 5)
-            Stepper("课间 \(generator.breakMinutes) 分钟", value: $generator.breakMinutes, in: 0...60, step: 5)
+            Stepper("小课间 \(generator.smallBreakMinutes) 分钟", value: $generator.smallBreakMinutes, in: 0...60, step: 5)
+            Stepper("大课间 \(generator.largeBreakMinutes) 分钟", value: $generator.largeBreakMinutes, in: 0...90, step: 5)
             ForEach($generator.blocks) { $block in
                 HStack {
                     Text(block.title)
@@ -206,7 +220,7 @@ struct ManualScheduleWizard: View {
         } header: {
             Text("快速生成")
         } footer: {
-            Text("填上午、下午、晚上第一节几点开始、各几节，再按课时和课间排出每节时间。生成后可以在下面逐节改，比如大课间。")
+            Text("上午、下午、晚上分别按小课间、大课间交替排列：1–2 节之间是小课间，2–3 节之间是大课间。每个时段最后一节若单独排列，与上一节之间用小课间。生成后可逐节调整。")
         }
 
         Section {
@@ -226,8 +240,8 @@ struct ManualScheduleWizard: View {
 
             if draft.classTimes.count < ManualScheduleDraft.maxPeriods {
                 Button {
-                    let lastEnd = draft.classTimes.last.flatMap { ClassTimeValidator.minutes($0.end) } ?? 8 * 60 - generator.breakMinutes
-                    let start = lastEnd + generator.breakMinutes
+                    let lastEnd = draft.classTimes.last.flatMap { ClassTimeValidator.minutes($0.end) } ?? 8 * 60 - generator.smallBreakMinutes
+                    let start = lastEnd + generator.smallBreakMinutes
                     draft.classTimes.append(ClassTime(
                         start: ClassTimeValidator.format(start),
                         end: ClassTimeValidator.format(start + generator.lessonMinutes)
@@ -416,8 +430,7 @@ private struct ManualCourseEditor: View {
         NavigationStack {
             Form {
                 Section("课程") {
-                    TextField("课程名称", text: $course.name)
-                    TextField("老师（选填）", text: $course.teacher)
+                    CourseIdentityFields(name: $course.name, teacher: $course.teacher)
                 }
 
                 ForEach($course.meetings) { $meeting in
@@ -445,6 +458,7 @@ private struct ManualCourseEditor: View {
                 }
             }
             .appListBackground()
+            .appSoftTopScrollEdge()
             .navigationTitle(isNew ? "添加课程" : "编辑课程")
             .appInlineNavigationTitle()
             .toolbar {
@@ -484,7 +498,11 @@ private struct ManualCourseEditor: View {
                     Text(periodLabel($0, start: false)).tag($0)
                 }
             }
-            TextField("教室（选填）", text: meeting.classroom)
+            LabeledContent("教室") {
+                TextField("教室", text: meeting.classroom, prompt: Text("选填"))
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityLabel("教室，选填")
+            }
 
             Picker("周次", selection: kindBinding(meeting)) {
                 Text("每周").tag(WeekSeries.Kind.full)

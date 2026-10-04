@@ -121,6 +121,13 @@ Python 脚本或 pandas 依赖。
 NapTable 在 `NapTable/Import/RucExtractor.swift` 中以独立 JavaScript 重新实现，
 仅在用户已登录的 WebView 中读取课表，不引入上游扩展、ICS 生成器或服务端代码。
 
+## Pillow
+
+服务端图片导入使用 Pillow 校验、缩放和重新编码图片。依赖版本锁在 `uv.lock`，
+上游许可证为 MIT-CMU（PIL/Pillow 的版权和许可声明），原文随安装包的
+`pillow-*.dist-info/licenses/LICENSE` 分发。本项目没有将 Pillow 代码改为 AGPL；
+依赖包中的编解码库保留其各自版权声明。
+
 ## 许可证适用范围
 
 第三方许可证只适用于相应的第三方代码、资源及其衍生部分。所有贡献者仍应在新增或改编第三方文件时保留来源、版权和许可证声明，并在本文件中补充记录。

@@ -19,10 +19,10 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import app_attest, entitlements, holidays, live_activity, school_times
+    from . import app_attest, entitlements, holidays, image_import, live_activity, school_times
     from .live_activity_timeline import ProtocolError, identifier
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import app_attest, entitlements, holidays, live_activity, school_times
+    import app_attest, entitlements, holidays, image_import, live_activity, school_times
     from live_activity_timeline import ProtocolError, identifier
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -1078,6 +1078,7 @@ class Exchange:
         self.throttle = request.app.state.throttle
         self.attest = request.app.state.attest
         self.publishes = request.app.state.publishes
+        self.image_import = request.app.state.image_import
         self.peer = request.client.host if request.client else ""
         self.admin = None  # the signed-in admin's name, once `require_admin` passed
         self.headers = request.headers
@@ -1093,15 +1094,20 @@ class Exchange:
         asks for it: a request refused before its body is read still is."""
         try: n = int(self.headers.get("Content-Length", 0))
         except ValueError: self._error = ValueError("invalid Content-Length"); return
-        if n < 0 or n > MAX_REQUEST_BYTES:
-            self._error = ValueError(f"request body exceeds {MAX_REQUEST_BYTES} bytes"); return
+        maximum = image_import.MAX_BODY_BYTES if self.path == "/v1/import/image" else MAX_REQUEST_BYTES
+        if n < 0 or n > maximum:
+            self._error = ValueError(f"request body exceeds {maximum} bytes"); return
         if not n: return  # without a length there is no body, chunked or not
         chunks = []
+        received = 0
         stream = request.stream()
         try:
             while True:
                 with anyio.fail_after(BODY_TIMEOUT): chunk = await anext(stream, None)
                 if chunk is None: break
+                received += len(chunk)
+                if received > maximum or received > n:
+                    self._error = ValueError("request body too large"); return
                 chunks.append(chunk)
         except Exception as error: self._error = error; return
         self._raw = b"".join(chunks)
@@ -1311,6 +1317,39 @@ def schools(x): x.send_json(200,{"schools":x.store.schools()})
 # body as a plain {"schools": [...]} map and would reject a new key.
 @route("GET HEAD", "/v1/calendar")
 def calendar(x): x.send_json(200, x.store.global_calendar())
+
+@route("GET HEAD", "/v1/import/image/config")
+def image_import_config(x):
+    x.send_json(200, x.image_import.public() if x.image_import else {"enabled": False, "maxImageBytes": image_import.MAX_IMAGE_BYTES})
+
+@route("GET HEAD", "/v1/admin/image-import")
+def admin_image_import(x):
+    if admin_only(x): return
+    x.send_json(200, {"config": x.image_import.admin_config(), "stats": x.image_import.stats()})
+
+@route("POST", "/v1/admin/image-import")
+def save_image_import(x):
+    if admin_only(x): return
+    config = x.image_import.save_config(x.body())
+    x.audit("imageImport.save", "", {key: config[key] for key in ("enabled", "model", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit")})
+    x.send_json(200, {"config": config, "stats": x.image_import.stats()})
+
+@route("POST", "/v1/import/image")
+def import_image(x):
+    if x.image_import is None: return x.send_json(503, {"error": "图片导入暂未开放，请使用手动导入"})
+    key, refused = x.attested("imageImport.recognize")
+    if refused: return
+    # Keep the short in-memory request guard for unauthenticated clients.
+    # Attested devices are quota-bound by device and global limits instead;
+    # campus NAT addresses are intentionally not shared between them.
+    if not key:
+        wait = x.publishes.retry_after("imageRequests:" + x.client_address(), 120)
+        if wait: return x.send_json(429, {"error": "请求太频繁，请稍后再试"}, [("Retry-After", str(wait))])
+    try:
+        x.send_json(200, x.image_import.recognize(x.body(), key, x.client_address()))
+    except image_import.ImportError as error:
+        headers = [("Retry-After", str(error.retry_after))] if error.retry_after else []
+        x.send_json(error.status, {"error": str(error)}, headers)
 
 @route("GET HEAD", "/v1/shares/{rest:path}")
 def share(x):
@@ -1639,6 +1678,7 @@ def create_app(store, service=None, workers=True, entitlement_store=None, attest
     app.state.entitlements = entitlement_store if entitlement_store is not None else wire_entitlements(store, service)
     app.state.attest = attest_store if attest_store is not None else wire_attest(store)
     app.state.publishes = PublishLimiter()
+    app.state.image_import = image_import.ImageImport(store.db, store.lock) if store is not None else None
     for methods, path, body in ROUTES:
         app.add_api_route(path, _endpoint(body), methods=methods, include_in_schema=False)
     app.add_middleware(RequestTarget)

@@ -63,6 +63,7 @@ actor AppAttestService {
         case "POST":
             return path == "/v1/shares" || (path.hasPrefix("/v1/shares/") && path.hasSuffix("/replace"))
                 || path == "/v2/live-activity/devices" || path.hasPrefix("/v1/usage/devices/")
+                || path == "/v1/import/image"
         case "PUT":
             return (path.hasPrefix("/v1/shares/") && path.dropFirst("/v1/shares/".count).allSatisfy { $0 != "/" })
                 || (path.hasPrefix("/v2/live-activity/devices/") && path.hasSuffix("/timetable"))

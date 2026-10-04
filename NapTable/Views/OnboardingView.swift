@@ -392,7 +392,7 @@ struct OnboardingView: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
                         Text("其他学校").font(.headline).foregroundStyle(colors.ink)
-                        Text("从学校列表中选择，或手动创建课表").font(.caption).foregroundStyle(colors.secondary)
+                        Text("从学校列表中选择，或手动 / 图片导入").font(.caption).foregroundStyle(colors.secondary)
                     }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.subheadline).foregroundStyle(colors.accent)
@@ -403,7 +403,7 @@ struct OnboardingView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 21))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("其他学校，从列表选择或手动创建课表")
+            .accessibilityLabel("其他学校，从列表选择或手动、图片导入课表")
 
             Button { showCloudSync = true } label: {
                 HStack(spacing: 14) {

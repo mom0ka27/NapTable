@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn==0.54.0",
     # Required only when remote push-to-start tokens are registered.
     "cryptography>=44.0.0,<47",
+    "pillow>=12.0.0,<13",
 ]
 
 [tool.uv]
