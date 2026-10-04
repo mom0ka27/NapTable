@@ -139,6 +139,14 @@ struct WidgetDay: Codable, Identifiable, Equatable {
         return month > 0 && day > 0 ? "\(month).\(day)" : String(date.dropFirst(5)).replacingOccurrences(of: "-", with: ".")
     }
 
+    var dayOfMonthLabel: String {
+        guard let date, date.count >= 10,
+              let day = Int(date.dropFirst(8).prefix(2)), day > 0 else {
+            return compactDate
+        }
+        return "\(day)"
+    }
+
     func courseWindow(limit: Int, nowMinutes: Int?) -> WidgetCourseWindow {
         let safeLimit = max(0, limit)
         let overflow = max(0, courseList.count - safeLimit)

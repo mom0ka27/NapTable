@@ -24,6 +24,9 @@ struct BackgroundCropEditor: View {
     /// 刚从相册选的图：一进来就按默认摆放存一次，课表立刻换上它。
     var commitsOnAppear = false
     var onDone: (() -> Void)?
+    /// Widgets use a square crop and their own preview instead of the full
+    /// screen timetable. Other widget sizes fill from this same image.
+    var widgetPreview = false
     /// 摆放有变化时调用，写入裁好的图；写失败时抛错。
     let onCommit: (_ jpeg: Data, _ placement: NativeSchedulePreferences.BackgroundPlacement) throws -> Void
 
@@ -101,7 +104,7 @@ struct BackgroundCropEditor: View {
 
     /// 画框四周留白，框外露出原图被裁掉的部分并压暗，一眼就知道哪些会被裁掉。
     private func canvas(area: CGSize) -> some View {
-        let frame = Self.fit(Self.targetAspect, in: CGSize(width: area.width * 0.78, height: area.height * 0.9))
+        let frame = Self.fit(widgetPreview ? 1 : Self.targetAspect, in: CGSize(width: area.width * 0.78, height: area.height * 0.9))
         let liveScale = min(Self.maxScale, max(1, scale * gestureScale))
         let liveOffset = Self.clamp(
             CGSize(width: offset.width + dragTranslation.width / max(frame.width, 1),
@@ -122,16 +125,38 @@ struct BackgroundCropEditor: View {
             // 框内：课表页上真实的样子。拖动和缩放时图片先按原样显示、示意课表
             // 藏起来，框里框外连成一张图，好对准位置。
             ZStack {
-                Rectangle().fill(.scheduleCanvas)
+                if widgetPreview {
+                    Rectangle().fill(previewDark
+                        ? Color(red: 14 / 255, green: 20 / 255, blue: 32 / 255)
+                        : Color(red: 248 / 255, green: 251 / 255, blue: 1))
+                } else {
+                    Rectangle().fill(.scheduleCanvas)
+                }
                 BackgroundCropLayer(image: image, frame: frame, scale: liveScale, offset: liveOffset)
                     .opacity(adjusting ? 1 : currentOpacity.wrappedValue)
-                TimetableSilhouette()
-                    .opacity(adjusting ? 0 : 1)
-                    .allowsHitTesting(false)
+                Group {
+                    if widgetPreview {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label("今日课程", systemImage: "calendar")
+                                .font(.headline)
+                            Spacer()
+                            Text("高等数学").font(.title3.bold())
+                            Text("08:00 – 09:50").font(.subheadline)
+                            Text("教学楼 A201").font(.caption)
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    } else {
+                        TimetableSilhouette()
+                    }
+                }
+                .opacity(adjusting ? 0 : 1)
+                .allowsHitTesting(false)
             }
             // 只有框里是「课表页的样子」，按选中的外观画；框外的压暗层不跟着变。
             .environment(\.colorScheme, previewDark ? .dark : .light)
             .environment(\.scheduleHasBackgroundImage, true)
+            .environment(\.scheduleBackgroundOpacity, currentOpacity.wrappedValue)
             .frame(width: frame.width, height: frame.height)
             .clipShape(shape)
             .animation(.easeOut(duration: 0.15), value: adjusting)
@@ -259,7 +284,9 @@ struct BackgroundCropEditor: View {
         guard hasUncommittedChanges else { return }
         hasUncommittedChanges = false
         do {
-            guard let data = Self.render(image: image, scale: scale, offset: offset) else { throw CommitError.render }
+            guard let data = Self.render(image: image, scale: scale, offset: offset,
+                                        aspect: widgetPreview ? 1 : nil,
+                                        maxPixelWidth: widgetPreview ? 800 : 1600) else { throw CommitError.render }
             try onCommit(data, .init(scale: scale, offsetX: offset.width, offsetY: offset.height))
         } catch {
             failed = true
@@ -271,7 +298,8 @@ struct BackgroundCropEditor: View {
     /// 以一个固定尺寸的画框重放同样的摆放，再按原图的清晰度渲染成 JPEG，
     /// 这样裁出来的结果和屏幕上预览所用的画框大小无关。
     @MainActor
-    static func render(image: CGImage, scale: CGFloat, offset: CGSize, aspect: CGFloat? = nil) -> Data? {
+    static func render(image: CGImage, scale: CGFloat, offset: CGSize, aspect: CGFloat? = nil,
+                       maxPixelWidth: CGFloat = 1600) -> Data? {
         let aspect = aspect ?? targetAspect
         let frame = CGSize(width: 390, height: 390 / aspect)
         let layer = BackgroundCropLayer(image: image, frame: frame, scale: scale,
@@ -281,7 +309,7 @@ struct BackgroundCropEditor: View {
         let renderer = ImageRenderer(content: layer)
         // 取画框里实际露出的那部分原图像素数，不放大也不超过 1600 像素宽。
         let visiblePixels = frame.width / (fillScale(image: image, frame: frame) * scale)
-        renderer.scale = max(1, min(1600, visiblePixels)) / frame.width
+        renderer.scale = max(1, min(maxPixelWidth, visiblePixels)) / frame.width
         guard let output = renderer.cgImage else { return nil }
         return jpegData(output)
     }
@@ -366,7 +394,8 @@ struct BackgroundCropLayer: View {
 }
 
 /// 示意用的课表轮廓：顶栏胶囊加一张格子，只为判断背景会不会抢了课表。
-/// 底色和课表页共用一套（`ScheduleCardSurface`、`scheduleCellSurface`），预览才准。
+/// 和课表页同一个结构：一整块淡平涂面板、节次间的细分隔线、零星几张课程卡片，
+/// 空节次不画格子。底色和课表页共用（`ScheduleSurface`），预览才准。
 private struct TimetableSilhouette: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
@@ -393,23 +422,42 @@ private struct TimetableSilhouette: View {
                         GridRow {
                             ForEach(0..<columns, id: \.self) { column in
                                 RoundedRectangle(cornerRadius: gap * 1.4, style: .continuous)
-                                    .fill(cellColor(row: row, column: column))
+                                    .fill(cardColor(row: row, column: column) ?? .clear)
                             }
                         }
                     }
                 }
+                .background { rowRules(rows: rows, gap: gap) }
+                .padding(gap * 1.5)
+                .background { ScheduleSurface(cornerRadius: gap * 3.5, isPanel: true) }
                 Spacer(minLength: proxy.size.height * 0.08)
             }
             .padding(.horizontal, inset)
         }
     }
 
-    /// 零星几格上色当作课程卡片，其余是半透明的空格子。
-    private func cellColor(row: Int, column: Int) -> Color {
-        let hues: [Double] = [0.55, 0.13, 0.36, 0.95, 0.72]
-        if (row * 3 + column * 2) % 5 == 0 {
-            return Color(hue: hues[(row + column) % hues.count], saturation: 0.35, brightness: 0.97).opacity(0.92)
+    /// 节次之间的细线，落在两行中间的空隙里。
+    private func rowRules(rows: Int, gap: CGFloat) -> some View {
+        let color = Color.scheduleCellBorder(dark: colorScheme == .dark).opacity(0.7)
+        return Canvas { context, size in
+            let step = (size.height + gap) / CGFloat(rows)
+            var path = Path()
+            for index in 1..<rows {
+                let y = CGFloat(index) * step - gap / 2
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(path, with: .color(color), lineWidth: 0.5)
         }
-        return .scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark)
+    }
+
+    /// 零星几格上色当作课程卡片，其余是空节次。
+    private func cardColor(row: Int, column: Int) -> Color? {
+        guard (row * 3 + column * 2) % 5 == 0 else { return nil }
+        let hues: [Double] = [0.55, 0.13, 0.36, 0.95, 0.72]
+        let hue = hues[(row + column) % hues.count]
+        return colorScheme == .dark
+            ? Color(hue: hue, saturation: 0.45, brightness: 0.6).opacity(0.35)
+            : Color(hue: hue, saturation: 0.35, brightness: 0.97).opacity(0.92)
     }
 }

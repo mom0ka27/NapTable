@@ -59,12 +59,12 @@ private struct ScheduleLiveActivityWidget: Widget {
                 }
             } compactLeading: {
                 ScheduleLiveActivityLogo(size: 21)
-                    .accessibilityLabel("药大拾间课表")
+                    .accessibilityLabel(AppBrand.name)
             } compactTrailing: {
                 ScheduleLiveActivityIslandCompactTrailing(display: display)
             } minimal: {
                 ScheduleLiveActivityLogo(size: 21)
-                    .accessibilityLabel("药大拾间课表")
+                    .accessibilityLabel(AppBrand.name)
             }
             // 左右和底部交给系统：`contentMargins(_:_:for: .expanded)` 是覆盖而不是
             // 叠加，之前把三边一起写死（18/8/10）比系统默认值窄，左上角的图标和右上角
@@ -1316,9 +1316,43 @@ private struct ScheduleWidgetRoot<Content: View>: View {
             if family.isAccessory {
                 Color.clear
             } else {
-                WidgetPalette.background(for: colorScheme)
+                ScheduleWidgetImageBackground()
             }
         }
+    }
+}
+
+/// A removable container background lets the system omit the photo for
+/// lock-screen accessories, StandBy and tinted home-screen presentations.
+private struct ScheduleWidgetImageBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let store = ScheduleWidgetBackgroundStore.shared
+        let dark = colorScheme == .dark
+        GeometryReader { geometry in
+            ZStack {
+                WidgetPalette.background(for: colorScheme)
+                if let url = store.visibleImageURL(dark: dark), let image = backgroundImage(url) {
+                    image.resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .opacity(store.settings.opacity(dark: dark))
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+        }
+    }
+
+    private func backgroundImage(_ url: URL) -> Image? {
+        #if canImport(UIKit)
+        return UIImage(contentsOfFile: url.path).map { Image(uiImage: $0) }
+        #elseif canImport(AppKit)
+        return NSImage(contentsOfFile: url.path).map { Image(nsImage: $0) }
+        #else
+        return nil
+        #endif
     }
 }
 
@@ -2508,7 +2542,16 @@ private struct WidgetDateHeader: View {
     /// 在默认字号上加多少。
     private var sizeBoost: CGFloat { isLarge ? 3 : 0 }
     /// 竖线和竖排字的高度，也就是左边日期数字的高度。
-    private var columnHeight: CGFloat { isLarge ? 32 : 24 }
+    private var columnHeight: CGFloat {
+        if isLarge { return 35 }
+        return family == .systemMedium ? 30 : 27
+    }
+
+    /// 2×1 的日期栏有更充足的横向空间，字号比小号更醒目。
+    private var dateFontSize: CGFloat {
+        if isLarge { return 29 }
+        return family == .systemMedium ? 24 : 22
+    }
 
     var body: some View {
         // 「周五」「初八」各自竖排成一列，日期、星期、农历之间各一条竖线。
@@ -2520,7 +2563,9 @@ private struct WidgetDateHeader: View {
                 // 竖线比字高，靠负边距把这行收回去，贴着上一行的文字底部。「明天的课」带着
                 // 胶囊底色，比字高，再往上收就压住上一行的「第 N 周」，反过来留一点空。
                 // 中号（2×1）的小组件里课表名紧跟在日期下方，额外留一点间隔更易读。
-                .padding(.top, dayHint == nil ? (family == .systemMedium ? 3 : -2) : 4)
+                .padding(.top, dayHint == nil
+                    ? (family == .systemLarge && !compact ? 4 : (family == .systemMedium ? 1 : (family == .systemSmall ? 3 : -2)))
+                    : 4)
         }
         // 第二行的 ViewThatFits 报的最小高度是最矮那种排法（倒计时不换行），外面的 VStack
         // 照这个预留，下面的课就会多分到一截、以为放得下，整块撑出组件。按实际高度占位。
@@ -2591,8 +2636,8 @@ private struct WidgetDateHeader: View {
         // 小号一行要塞下日期、星期、农历和「第 N 周」，各列之间收紧一点。
         return HStack(spacing: isCompact ? 4 : (isLarge ? 8 : 6)) {
             // 小号里一行很挤，日期绝不能被压得折行，宁可让右边的周数让位。
-            Text(day.compactDate)
-                .font(.system(size: isLarge ? 26 : 19, weight: .bold, design: .rounded))
+            Text(day.dayOfMonthLabel)
+                .font(.system(size: dateFontSize, weight: .bold, design: .rounded))
                 .foregroundStyle(WidgetPalette.primary)
                 .lineLimit(1)
                 .fixedSize()
@@ -2626,18 +2671,33 @@ private struct WidgetDateHeader: View {
             if !hidesWeek, let week = day.week, week > 0 {
                 // 放不下「第 N 周」先去掉空格、再缩字，都放不下才不显示；「第」不省，
                 // 单写「5周」像是说五个星期。也别去挤左边的日期。
-                ViewThatFits(in: .horizontal) {
-                    weekLabel("第 \(week) 周")
-                    weekLabel("第\(week)周")
-                    // 大号放大了字，挤不下先退回原来的字号，再往下缩。
-                    if sizeBoost > 0 {
-                        weekLabel("第 \(week) 周", size: 10)
-                        weekLabel("第\(week)周", size: 10)
+                VStack(alignment: isCompact ? .center : .trailing, spacing: 2) {
+                    ViewThatFits(in: .horizontal) {
+                        weekLabel("第 \(week) 周")
+                        weekLabel("第\(week)周")
+                        // 大号放大了字，挤不下先退回原来的字号，再往下缩。
+                        if sizeBoost > 0 {
+                            weekLabel("第 \(week) 周", size: 10)
+                            weekLabel("第\(week)周", size: 10)
+                        }
+                        weekLabel("第\(week)周", size: 9)
+                        weekLabel("第\(week)周", size: 8)
+                        Color.clear.frame(width: 0, height: 0)
                     }
-                    weekLabel("第\(week)周", size: 9)
-                    weekLabel("第\(week)周", size: 8)
-                    Color.clear.frame(width: 0, height: 0)
+                    if isCompact, let badge = badgeText {
+                        HolidayBadge(title: badge, highlighted: calendarDay?.isStatutoryHoliday ?? false)
+                    }
                 }
+                // 小号与两日课表每列的右侧共用两行栏，周数和节日居中对齐。
+                .frame(
+                    minWidth: isCompact ? 48 : nil,
+                    alignment: isCompact ? .center : .trailing
+                )
+                .offset(y: family == .systemSmall ? 4 : 0)
+            } else if isCompact, let badge = badgeText {
+                HolidayBadge(title: badge, highlighted: calendarDay?.isStatutoryHoliday ?? false)
+                    .frame(minWidth: 48, alignment: .center)
+                    .offset(y: family == .systemSmall ? 4 : 0)
             }
         }
     }
@@ -2685,8 +2745,8 @@ private struct WidgetDateHeader: View {
         return calendarDay?.badge
     }
 
-    /// 服务端自动生成的放假说明就是假期名本身（「中秋节」），而节日名已经在右侧徽标
-    /// （窄组件是星期旁那一列）里了，再在下面写一遍就重复了。
+    /// 服务端自动生成的放假说明就是假期名本身（「中秋节」），
+    /// 节日名已经在右侧徽标里了，再在下面写一遍就重复了。
     private func repeatsBadge(_ note: String) -> Bool {
         guard let badgeText else { return false }
         return note == badgeText || note == badgeText + "放假" || badgeText.hasPrefix(note)
@@ -2697,18 +2757,13 @@ private struct WidgetDateHeader: View {
         return calendarDay.lunar.shortLabel
     }
 
-    /// 星期旁边那一列：宽组件放农历（节日已经有右侧徽标了），窄组件没有徽标，
-    /// 所以节日优先顶上来。
+    /// 星期旁边那一列始终用于农历，节日单独显示在右侧。
     private var stackedDetail: String? {
-        let isCompact = compact || family == .systemSmall
-        if isCompact, let badgeText { return badgeText }
         return lunarText
     }
 
     private var detailColor: Color {
-        let isCompact = compact || family == .systemSmall
-        guard isCompact, badgeText != nil else { return WidgetPalette.secondary }
-        return calendarDay?.isStatutoryHoliday == true ? .pink : WidgetPalette.accent(for: theme)
+        return WidgetPalette.secondary
     }
 
     /// 开了「始终显示最近节假日」时，今天不在假期里就提示最近的一段法定假期（看未来 120 天）。
@@ -3033,276 +3088,12 @@ private struct HolidayGreetingView: View {
     }
 }
 
-/// 烟花的节奏，按下那一条时间线里一口气放完：碎片从各簇中心往外炸（先快后慢），同时往下坠
-///（先慢后快，两者叠出一道下垂的弧线），一下亮起、再慢慢暗到看不见。星芒一闪就没，光束先散，
-/// 亮点次之，外圈的闪光飘得最久、坠得最远。画廊逐帧出动画时按这里算。
-///
-/// 小组件在真机上是把前后两条时间线的画面各存一份，由系统在两份之间插值，所以：
-/// - 只有两份里都有的视图才会动（彩炮能扬起就是这样）。新插进来的视图直接按后一份画，
-///   过渡、父视图的动画都不管用。所以碎片平时就在，按下只改状态。
-/// - 存下来的是合并后的画面：叠在一起的几个缩放合成一个变换，几个透明度乘成一个值。
-///   所以不能靠「先放大再缩小」两个效果相乘做出中间亮一下，前后乘积一样就什么都不动。
-/// - 一个视图上的几样变化只会共用一条动画（实测整段都按最快的那条一下放完），各挂各的 `.animation` 不管用。
-///   要不同快慢就得放在不同的视图上，中间隔一层 `compositingGroup`，免得又被合并。
-/// - 只用系统自带的曲线，自定义贝塞尔不一定认。
-/// - 完全透明的视图很可能存档时就被丢掉了，两份里都没有也就不会动。所以碎片的透明度从不降到 0：
-///   平时和散完都只是暗到 `hiddenLevel`，看不见但还在。
-/// - 验证真机效果用 Xcode 里这份文件末尾的 `#Preview`：它和桌面一样按两条时间线插值。
-/// - 每段动画最长只放 2 秒左右，超过的部分直接跳到终点。
-/// - 不认 `.delay`。
-/// - 下一条时间线什么时候换上不由我们定，不指望它接着放第二段。
-enum FireworksTiming {
-    /// 按下后一组碎片一下亮起用的时间。
-    static let flashDuration = 0.15
-    /// 散完时碎片暗到多暗：看不见，但不是 0，免得存档时被丢掉。
-    static let hiddenLevel = 0.02
-    /// 碎片刚炸开时多大，飞出去的路上长到原大。平时靠整组暗到 `hiddenLevel` 藏住（见 `FireworksOverlay`）。
-    static let collapsedScale = 0.4
-
-    /// 每一层飞多久、散完要多久（两个一样长），一路坠下多少（占小组件短边的比例）。
-    static func layer(_ kind: FireworksLayer) -> (life: Double, drop: CGFloat) {
-        switch kind {
-        case .core: return (0.8, 0.04)
-        case .streak: return (1.1, 0.09)
-        case .dot: return (1.5, 0.14)
-        case .glitter: return (1.8, 0.2)
-        }
-    }
-
-    /// 按下到最后一点闪光散完（最长那一层的寿命）。
-    static let total = 1.8
-
-    static func outward(_ progress: Double) -> Double { UnitCurve.easeOut.value(at: progress) }
-
-    /// 下坠和变暗：先慢后快，一出来不至于就显得灰，也像被重力拽下去。只用系统自带的曲线，自定义贝塞尔在小组件里不一定认。
-    static func fade(_ progress: Double) -> Double { UnitCurve.easeIn.value(at: progress) }
-
-    /// 彩炮扬起多少：带一点回弹地扬起，烟花散完、下一条时间线来了再放回去。
-    static func tilt(at time: Double) -> Double {
-        guard time > 0 else { return 0 }
-        let rise = min(time / 0.5, 1)
-        let spring = 1 - pow(1 - rise, 3) + sin(rise * .pi) * 0.25
-        let settle = min(max((time - (total + 0.3)) / 0.9, 0), 1)
-        return spring * (1 - UnitCurve.easeInOut.value(at: settle))
-    }
-}
-
-/// 烟花碎片的几种：星芒、光束、亮点、闪光，散得快慢、坠得远近不同。
-enum FireworksLayer: CaseIterable {
-    case core, streak, dot, glitter
-}
-
-private struct FireworksPreviewTimeKey: EnvironmentKey {
-    static let defaultValue: Double? = nil
-}
-
-extension EnvironmentValues {
-    /// 只有预览画廊会设：画烟花动画第几秒的样子。
-    var scheduleWidgetFireworksPreviewTime: Double? {
-        get { self[FireworksPreviewTimeKey.self] }
-        set { self[FireworksPreviewTimeKey.self] = newValue }
-    }
-}
-
 /// 彩炮在小组件里的位置。只有放假祝福里的彩炮会报，报了最外层才铺烟花。
 private struct FireworksOriginKey: PreferenceKey {
     static let defaultValue: Anchor<CGPoint>? = nil
 
     static func reduce(value: inout Anchor<CGPoint>?, nextValue: () -> Anchor<CGPoint>?) {
         value = value ?? nextValue()
-    }
-}
-
-/// 铺满整个小组件的烟花。一簇一个色系，从中心往外辐射成菊花形：每根射线外头一道拖着尾巴的光，
-/// 中间一颗亮点，隔一根在最外面再缀一点闪光，中心一颗星芒。一簇大的在彩炮正上方（像是它打上去的），
-/// 另外几簇大小不一，散在小组件各处。
-///
-/// 小组件里没法跑逐帧动画，碎片平时就缩成一个点停在各簇中心，按下时几样状态各带各的曲线同时起跑
-///（见 `FireworksTiming`）。位置按小组件大小的比例算好，不用随机数。
-private struct FireworksOverlay: View {
-    let active: Bool
-    /// 彩炮口，在这一层的坐标里。
-    let origin: CGPoint
-    @Environment(\.scheduleWidgetFireworksPreviewTime) private var previewTime
-
-    private struct Burst {
-        let center: CGPoint
-        let radius: CGFloat
-        let rays: Int
-        let colors: (Color, Color)
-    }
-
-    private struct Particle: Identifiable {
-        let id: Int
-        /// 哪一簇的哪一种碎片：同一组一起变暗。
-        let group: Int
-        let kind: FireworksLayer
-        let burstCenter: CGPoint
-        /// 炸开到哪（相对这一簇的中心）。
-        let travel: CGSize
-        let angle: Double
-        let size: CGFloat
-        let color: Color
-    }
-
-    /// 一簇一个色系，按放下的先后分：第一簇（彩炮上方）是金色。
-    private static let palettes: [(Color, Color)] = [
-        (.yellow, .orange),
-        (.pink, Color(red: 1, green: 0.45, blue: 0.62)),
-        (.cyan, .blue),
-        (.purple, .pink),
-        (.mint, .green),
-    ]
-
-    /// 其余几簇的候选位置（占宽高的比例）和半径（占短边的比例），按顺序挑，和已经放下的叠得太多就跳过。
-    /// 彩炮在不同小组件里位置不一样（两日课表在左列，今日课表在正中），这样哪种都不会挤成一团。
-    private static let candidates: [(x: CGFloat, y: CGFloat, radius: CGFloat)] = [
-        (0.80, 0.22, 0.18),
-        (0.20, 0.24, 0.16),
-        (0.86, 0.54, 0.14),
-        (0.14, 0.54, 0.13),
-        (0.80, 0.85, 0.14),
-        (0.20, 0.85, 0.12),
-        (0.50, 0.90, 0.12),
-    ]
-
-    private static func bursts(in size: CGSize, origin: CGPoint) -> [Burst] {
-        let side = min(size.width, size.height)
-        // 第一簇在彩炮正上方，像是它打上去的。
-        var placed: [(center: CGPoint, radius: CGFloat)] = [
-            (CGPoint(x: origin.x, y: origin.y - side * 0.25), side * 0.19),
-        ]
-        // 彩炮和它下面的祝福也要让开，只占位不放烟花。
-        let keepOut = [(center: CGPoint(x: origin.x, y: origin.y + side * 0.1), radius: side * 0.2)]
-        for candidate in candidates where placed.count < palettes.count {
-            let center = CGPoint(x: candidate.x * size.width, y: candidate.y * size.height)
-            let radius = candidate.radius * side
-            let clear = (placed + keepOut).allSatisfy { other in
-                hypot(center.x - other.center.x, center.y - other.center.y) > (radius + other.radius) * 0.8
-            }
-            if clear { placed.append((center, radius)) }
-        }
-        return placed.enumerated().map { index, burst in
-            Burst(
-                center: burst.center,
-                radius: burst.radius,
-                rays: max(10, Int(burst.radius / 4.2)),
-                colors: palettes[index]
-            )
-        }
-    }
-
-    private static func particles(in size: CGSize, origin: CGPoint) -> [Particle] {
-        var result: [Particle] = []
-        func add(_ kind: FireworksLayer, _ burst: Burst, burstIndex: Int, angle: Double, distance: CGFloat, size: CGFloat, color: Color) {
-            let kindIndex = FireworksLayer.allCases.firstIndex(of: kind) ?? 0
-            result.append(Particle(
-                id: result.count, group: burstIndex * FireworksLayer.allCases.count + kindIndex,
-                kind: kind, burstCenter: burst.center,
-                travel: CGSize(width: CGFloat(cos(angle)) * distance, height: CGFloat(sin(angle)) * distance),
-                angle: angle, size: size, color: color
-            ))
-        }
-        for (index, burst) in bursts(in: size, origin: origin).enumerated() {
-            let big = burst.radius > 40
-            for ray in 0..<burst.rays {
-                let angle = Double(ray) / Double(burst.rays) * 2 * .pi + Double(index) * 0.37
-                let tint = ray.isMultiple(of: 2) ? burst.colors.0 : burst.colors.1
-                let length = burst.radius * 0.34
-                // 光束的中心往里收半个身长，尖端正好冲到半径上。
-                add(.streak, burst, burstIndex: index, angle: angle, distance: burst.radius - length / 2, size: length, color: tint)
-                add(.dot, burst, burstIndex: index, angle: angle + 0.12, distance: burst.radius * 0.62, size: big ? 3.4 : 2.8,
-                    color: burst.colors.1)
-                if ray.isMultiple(of: 2) {
-                    add(.glitter, burst, burstIndex: index, angle: angle + 0.18, distance: burst.radius * 1.18, size: big ? 2.6 : 2.2,
-                        color: burst.colors.0)
-                }
-            }
-            add(.core, burst, burstIndex: index, angle: 0, distance: 0, size: big ? 13 : 10, color: burst.colors.0)
-        }
-        return result
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let particles = Self.particles(in: proxy.size, origin: origin)
-            let side = min(proxy.size.width, proxy.size.height)
-            let hidden = FireworksTiming.hiddenLevel
-            let collapsed = FireworksTiming.collapsedScale
-            let groups = Dictionary(grouping: particles) { $0.group }.sorted { $0.key < $1.key }
-            ZStack {
-                ForEach(groups, id: \.key) { _, members in
-                    let layer = FireworksTiming.layer(members[0].kind)
-                    let drop = layer.drop * side
-                    // 同一个视图上的几样变化在小组件里只会共用一条动画，要各走各的就得是不同的视图，分三层：
-                    // 碎片自己长到原大、往外飞，越飞越慢，一直飞到散没；同一簇同一种碎片合成一组，先一下亮起，
-                    // 隔一层 `compositingGroup` 再整组越落越快、边落边暗（同一条先慢后快的曲线，像被重力拽下去）。
-                    let fall = previewTime.map { $0 > 0 ? FireworksTiming.fade(min($0 / layer.life, 1)) : 0 }
-                        ?? (active ? 1 : 0)
-                    ZStack {
-                        ForEach(members) { particle in
-                            let landing = CGPoint(
-                                x: particle.burstCenter.x + particle.travel.width,
-                                y: particle.burstCenter.y + particle.travel.height
-                            )
-                            if let previewTime {
-                                // 画廊逐帧出动画用：按和下面一样的曲线，自己算出第 previewTime 秒的样子。
-                                let burst = previewTime > 0
-                                    ? FireworksTiming.outward(min(previewTime / layer.life, 1)) : 0
-                                shape(particle)
-                                    .scaleEffect(collapsed + (1 - collapsed) * burst)
-                                    .position(
-                                        x: particle.burstCenter.x + (landing.x - particle.burstCenter.x) * burst,
-                                        y: particle.burstCenter.y + (landing.y - particle.burstCenter.y) * burst
-                                    )
-                            } else {
-                                // 平时缩小停在簇中心；按下时一边往外飞一边长到原大，飞到散没为止，不会半路停住。
-                                shape(particle)
-                                    .scaleEffect(active ? 1 : collapsed)
-                                    .position(active ? landing : particle.burstCenter)
-                                    .animation(active ? .easeOut(duration: layer.life) : nil, value: active)
-                            }
-                        }
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    // 平时整组暗到 hiddenLevel 藏住。先合成再调暗，叠在簇中心的一堆碎片才不会一层层透出来。
-                    .compositingGroup()
-                    .opacity(hidden + (1 - hidden) * (previewTime.map { $0 > 0 ? FireworksTiming.outward(min($0 / FireworksTiming.flashDuration, 1)) : 0 }
-                        ?? (active ? 1 : 0)))
-                    .animation(active && previewTime == nil ? .easeOut(duration: FireworksTiming.flashDuration) : nil, value: active)
-                    .compositingGroup()
-                    // 散完只暗到 hiddenLevel，不到 0。收起不靠这里：下一条换了 `.id`，整层按平时的样子重新放进来。
-                    .offset(y: drop * fall)
-                    .opacity(1 - (1 - hidden) * fall)
-                    .animation(active && previewTime == nil ? .easeIn(duration: layer.life) : nil, value: active)
-                }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-        }
-    }
-
-    @ViewBuilder
-    private func shape(_ particle: Particle) -> some View {
-        let color = particle.color
-        switch particle.kind {
-        case .streak:
-            // 朝外的一道光，靠中心那头渐隐，像拖着尾巴飞出去。
-            Capsule()
-                .fill(LinearGradient(
-                    colors: [particle.color.opacity(0), color],
-                    startPoint: .leading, endPoint: .trailing
-                ))
-                .frame(width: particle.size, height: 2.4)
-                .rotationEffect(.radians(particle.angle))
-        case .dot, .glitter:
-            Circle()
-                .fill(color)
-                .frame(width: particle.size, height: particle.size)
-        case .core:
-            Image(systemName: "sparkle")
-                .font(.system(size: particle.size, weight: .bold))
-                .foregroundStyle(color)
-        }
     }
 }
 

@@ -26,6 +26,8 @@ func reloadScheduleWidgetTimelines() {
 final class NativeWidgetSettings: ObservableObject {
     @Published var status: String?
     @Published var options: WidgetDisplayOptions
+    @Published private(set) var background = ScheduleWidgetBackgroundStore.shared.settings
+    @Published private(set) var backgroundRevision = 0
 
     private let defaults: UserDefaults?
 
@@ -115,6 +117,40 @@ final class NativeWidgetSettings: ObservableObject {
 
     func resetDisplayOptions() {
         setDisplayOptions(.default)
+    }
+
+    func setBackgroundSettings(_ value: ScheduleWidgetBackgroundStore.Settings) throws {
+        try ScheduleWidgetBackgroundStore.shared.saveSettings(value)
+        background = value
+        reloadScheduleWidgetTimelines()
+    }
+
+    func setBackground(cropped: Data, source: Data,
+                       placement: NativeSchedulePreferences.BackgroundPlacement, dark: Bool) throws {
+        try ScheduleWidgetBackgroundStore.shared.save(cropped: cropped, source: source,
+            placement: .init(scale: placement.scale, offsetX: placement.offsetX, offsetY: placement.offsetY), dark: dark)
+        background = ScheduleWidgetBackgroundStore.shared.settings
+        backgroundRevision += 1
+        reloadScheduleWidgetTimelines()
+    }
+
+    func removeBackground(dark: Bool) throws {
+        try ScheduleWidgetBackgroundStore.shared.remove(dark: dark)
+        background = ScheduleWidgetBackgroundStore.shared.settings
+        backgroundRevision += 1
+        reloadScheduleWidgetTimelines()
+    }
+
+    /// The extension cannot access StoreKit state held in the app process.
+    /// Retain images when access expires, and resume using them on renewal.
+    func updateBackgroundAccess(_ allowed: Bool, expiresAt: Date? = nil) {
+        let expiry = expiresAt?.timeIntervalSince1970
+        guard defaults?.object(forKey: ScheduleWidgetBackgroundStore.entitlementKey) as? Bool != allowed
+            || defaults?.object(forKey: ScheduleWidgetBackgroundStore.expiryKey) as? Double != expiry else { return }
+        defaults?.set(allowed, forKey: ScheduleWidgetBackgroundStore.entitlementKey)
+        defaults?.set(expiry, forKey: ScheduleWidgetBackgroundStore.expiryKey)
+        defaults?.synchronize()
+        reloadScheduleWidgetTimelines()
     }
 
     /// Writes the current timetable into the App Group. Safe to call on every

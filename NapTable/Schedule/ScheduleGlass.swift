@@ -75,6 +75,8 @@ extension EnvironmentValues {
     /// 课表页铺了背景图。格子和卡片的底色要跟着变透，否则一块块白底会盖在
     /// 图上，看起来像贴了纸。
     @Entry var scheduleHasBackgroundImage = false
+    /// 当前外观下背景图的不透明度。周视图面板按它决定压多少，见 `schedulePanelSurface`。
+    @Entry var scheduleBackgroundOpacity: Double = 0
 }
 
 /// 课表页与设置列表共用背景偏好，关闭主题背景时使用系统分组背景色。
@@ -95,9 +97,18 @@ extension ShapeStyle where Self == Color {
         return dark ? Color.white.opacity(0.05) : Color.white
     }
 
+    /// 周视图那一整块面板的底色。有背景图时不用磨砂：面板几乎盖住整张图，
+    /// 磨砂会把主体糊成一片颜色。只铺一层淡平涂，图片越实压得越多，
+    /// 节次和日期文字始终读得清，图片主体也照样看得见。
+    static func schedulePanelSurface(hasBackground: Bool, dark: Bool, imageOpacity: Double) -> Color {
+        guard hasBackground else { return dark ? Color.white.opacity(0.09) : Color.white.opacity(0.96) }
+        let veil = 0.14 + 0.32 * min(1, max(0, imageOpacity))
+        return dark ? Color.black.opacity(veil) : Color.white.opacity(veil)
+    }
+
     /// 格子和卡片外面那圈细边：浅色是带一点蓝的浅灰，深色是一层淡白。
     static func scheduleCellBorder(dark: Bool) -> Color {
-        dark ? Color.white.opacity(0.1) : Color(red: 0.16, green: 0.22, blue: 0.36).opacity(0.1)
+        dark ? Color.white.opacity(0.12) : Color(red: 0.14, green: 0.18, blue: 0.28).opacity(0.14)
     }
 }
 
@@ -117,14 +128,20 @@ struct ScheduleCardSurface: ShapeStyle {
 struct ScheduleSurface: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
+    @Environment(\.scheduleBackgroundOpacity) private var backgroundOpacity
     let cornerRadius: CGFloat
     /// 单独的一块卡片。有背景图时用磨砂材质；成片的格子不用实时模糊。
     var isCard = false
+    /// 周视图的整块面板。有背景图时只是一层淡平涂，不模糊，见 `schedulePanelSurface`。
+    var isPanel = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         Group {
-            if isCard {
+            if isPanel {
+                shape.fill(.schedulePanelSurface(hasBackground: hasBackground, dark: colorScheme == .dark,
+                                                 imageOpacity: backgroundOpacity))
+            } else if isCard {
                 shape.fill(ScheduleCardSurface(hasBackground: hasBackground))
             } else {
                 shape.fill(.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark))

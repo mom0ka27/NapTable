@@ -13,6 +13,9 @@ import AppKit
 struct NativeDeviceSettingsContent: View {
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
+    #if os(iOS)
+    @ObservedObject private var liveActivity = NativeLiveActivityController.shared
+    #endif
 
     @ViewBuilder
     var body: some View {
@@ -20,15 +23,17 @@ struct NativeDeviceSettingsContent: View {
             SettingsDestinationRow(
                 title: "桌面小组件",
                 detail: widgetSettings.isConfigured ? "已同步，可添加到桌面" : "暂无可显示的课表",
-                systemImage: "square.grid.2x2"
+                systemImage: "square.grid.2x2",
+                tint: .teal
             ) {
                 WidgetSettingsScreen(settings: widgetSettings, store: scheduleStore)
             }
             #if os(iOS)
             SettingsDestinationRow(
                 title: "实时活动",
-                detail: NativeLiveActivityController.shared.isEnabled ? "已开启" : "已关闭",
-                systemImage: "rectangle.topthird.inset.filled"
+                detail: liveActivity.isEnabled ? "已开启 · 灵动岛与锁屏提醒" : "已关闭 · 灵动岛与锁屏提醒",
+                systemImage: "rectangle.topthird.inset.filled",
+                tint: .teal
             ) {
                 LiveActivitySettingsScreen()
             }
@@ -39,27 +44,37 @@ struct NativeDeviceSettingsContent: View {
     }
 }
 
-/// One navigation row: icon, title, and a one-line summary of the current value.
+/// 统一的设置入口。摘要允许换行，长状态和辅助功能字号不会被强制截断。
 struct SettingsDestinationRow<Destination: View>: View {
     let title: String
     let detail: String
     let systemImage: String
+    var tint: Color = .cpuBrand
     @ViewBuilder let destination: () -> Destination
+    @ScaledMetric(relativeTo: .body) private var iconSize = 30.0
 
     var body: some View {
         NavigationLink(destination: destination) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Color.cpuBrand)
-                    .frame(width: 28, height: 28)
-                    .background(Color.cpuBrand.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.body.weight(.medium))
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: min(iconSize * 0.56, 22), weight: .medium))
+                    .foregroundStyle(tint)
+                    // 装饰图标适度放大，把辅助功能字号下的宽度留给文字。
+                    .frame(width: min(iconSize, 40), height: min(iconSize, 40))
+                    .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.vertical, 3)
+            .padding(.vertical, 5)
+            .frame(minHeight: 44, alignment: .leading)
         }
     }
 }
@@ -184,8 +199,11 @@ struct ScheduleSettingsSection: View {
             Toggle("显示周末", isOn: $preferences.showWeekend)
             Toggle("显示日期栏", isOn: $preferences.showDateHeader)
             Toggle("显示自由时间课程", isOn: $preferences.showFreeTimeCourses)
+            Toggle("标出当前时间", isOn: $preferences.showNowIndicator)
         } header: {
             Text("布局")
+        } footer: {
+            Text("今天在周课表的节次栏和日课表的时间栏上标出现在的时刻，以及正在上和下一节课。")
         }
 
         Section {
@@ -371,6 +389,15 @@ struct WidgetSettingsScreen: View {
                 Toggle("上课时间", isOn: optionBinding(\.showTime))
             } header: {
                 Text("显示内容")
+            }
+
+            Section {
+                SettingsDestinationRow(title: "背景图片", detail: "专业版 · 浅色与深色模式分别设置",
+                                       systemImage: "photo.on.rectangle") {
+                    WidgetBackgroundSettingsScreen(settings: settings)
+                }
+            } header: {
+                Text("外观")
             }
 
             Section {
@@ -655,7 +682,7 @@ struct LiveActivitySettingsScreen: View {
         } message: {
             Text(purchases.accessMode == .unavailable || purchases.accessMode == .loading
                  ? "连接失败，请联网后重试。"
-                 : "请先返回设置首页，在“版本与权益”中开始试用或买断实时活动。")
+                 : "请返回设置首页，点击顶部的“NapTable 专业版”卡片，开始试用或买断专业版。")
         }
     }
 }

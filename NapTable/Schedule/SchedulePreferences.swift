@@ -23,6 +23,8 @@ final class NativeSchedulePreferences: ObservableObject {
     @Published var showWeekend: Bool { didSet { persist() } }
     @Published var showDateHeader: Bool { didSet { persist() } }
     @Published var showFreeTimeCourses: Bool { didSet { persist() } }
+    /// 今天在周视图节次轴和日视图时间栏上标出「现在」：时间胶囊、红线、正在上 / 下一节。
+    @Published var showNowIndicator: Bool { didSet { persist() } }
     @Published var defaultView: String { didSet { persist() } }
     @Published var density: String { didSet { persist() } }
     /// 是否收起晚间的空行。关掉时 `hideSlotsAfter` 仍保留，再打开还是原来的节数。
@@ -59,6 +61,7 @@ final class NativeSchedulePreferences: ObservableObject {
         static let showWeekend = "nativeSchedule.showWeekend"
         static let showDateHeader = "nativeSchedule.showDateHeader"
         static let showFreeTimeCourses = "nativeSchedule.showFreeTimeCourses"
+        static let showNowIndicator = "nativeSchedule.showNowIndicator"
         static let defaultView = "nativeSchedule.defaultView"
         static let density = "nativeSchedule.density"
         static let hideSlotsAfter = "nativeSchedule.hideSlotsAfter"
@@ -73,7 +76,7 @@ final class NativeSchedulePreferences: ObservableObject {
         static let tableBackgroundProfiles = "nativeSchedule.tableBackgroundProfiles"
     }
 
-    private struct TableBackgroundProfile: Codable, Equatable {
+    struct TableBackgroundProfile: Codable, Equatable {
         var backgroundPath = ""
         var backgroundPathDark = ""
         var backgroundEnabled = true
@@ -96,6 +99,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeekend = defaults.object(forKey: Key.showWeekend) as? Bool ?? true
         showDateHeader = defaults.object(forKey: Key.showDateHeader) as? Bool ?? true
         showFreeTimeCourses = defaults.object(forKey: Key.showFreeTimeCourses) as? Bool ?? true
+        showNowIndicator = defaults.object(forKey: Key.showNowIndicator) as? Bool ?? true
         let savedView = defaults.string(forKey: Key.defaultView) ?? "week"
         defaultView = Self.viewOptions.contains(savedView) ? savedView : "week"
         let savedDensity = defaults.string(forKey: Key.density) ?? "comfortable"
@@ -119,7 +123,13 @@ final class NativeSchedulePreferences: ObservableObject {
         globalBackgroundProfile = currentBackgroundProfile
         if let data = defaults.data(forKey: Key.tableBackgroundProfiles),
            let profiles = try? JSONDecoder().decode([String: TableBackgroundProfile].self, from: data) {
-            tableBackgroundProfiles = profiles
+            for (key, profile) in profiles {
+                tableBackgroundProfiles[key] = Self.repairedProfile(profile, tableKey: key)
+            }
+            if tableBackgroundProfiles != profiles,
+               let repaired = try? JSONEncoder().encode(tableBackgroundProfiles) {
+                defaults.set(repaired, forKey: Key.tableBackgroundProfiles)
+            }
         }
         ready = true
     }
@@ -150,6 +160,12 @@ final class NativeSchedulePreferences: ObservableObject {
         return Int(key.dropFirst("table:".count))
     }
 
+    /// 设置首页的「背景图片」编辑的是默认背景，摘要也只看它，
+    /// 不随课表页此刻激活的那张课表变。
+    var defaultBackgroundProfile: TableBackgroundProfile {
+        activeTableKey == nil ? currentBackgroundProfile : globalBackgroundProfile
+    }
+
     var usesDefaultBackground: Bool {
         activeTableKey != nil && activeStorageKey == nil && (backgroundImage != nil || backgroundImageDark != nil)
     }
@@ -165,16 +181,43 @@ final class NativeSchedulePreferences: ObservableObject {
     }
 
     private func saveCurrentBackgroundProfile(promote: Bool = true) {
-        if promote { promoteActiveTableIfNeeded() }
-        let profile = currentBackgroundProfile
-        if let activeTableKey {
-            tableBackgroundProfiles[activeTableKey] = profile
-            if let data = try? JSONEncoder().encode(tableBackgroundProfiles) {
-                defaults.set(data, forKey: Key.tableBackgroundProfiles)
-            }
-        } else {
-            globalBackgroundProfile = profile
+        guard let activeTableKey else {
+            globalBackgroundProfile = currentBackgroundProfile
+            return
         }
+        if activeStorageKey == nil {
+            // 还在沿用默认背景：背景没改就什么也不存。切走课表或改别的显示
+            // 选项时若照样存，会给这张课表留下一份没有图片文件的设置，
+            // 课表页就读不到图，之后设的默认背景也不再跟着走。
+            guard promote, currentBackgroundProfile != globalBackgroundProfile else { return }
+            promoteActiveTableIfNeeded()
+        }
+        tableBackgroundProfiles[activeTableKey] = currentBackgroundProfile
+        if let data = try? JSONEncoder().encode(tableBackgroundProfiles) {
+            defaults.set(data, forKey: Key.tableBackgroundProfiles)
+        }
+    }
+
+    /// 旧版本切换课表时会把沿用默认背景的课表也存一份，路径指向从没复制过的
+    /// 图片文件。启动时把缺图的路径清掉；清完一张图都没有、也从没单独存过图的
+    /// 课表，回到沿用默认背景。
+    private static func repairedProfile(_ profile: TableBackgroundProfile, tableKey: String) -> TableBackgroundProfile? {
+        var profile = profile
+        let fileManager = FileManager.default
+        if !profile.backgroundPath.isEmpty,
+           !fileManager.fileExists(atPath: backgroundFileURL(dark: false, tableKey: tableKey).path) {
+            profile.backgroundPath = ""
+        }
+        if !profile.backgroundPathDark.isEmpty,
+           !fileManager.fileExists(atPath: backgroundFileURL(dark: true, tableKey: tableKey).path) {
+            profile.backgroundPathDark = ""
+        }
+        let directory = backgroundFileURL(dark: false, tableKey: tableKey).deletingLastPathComponent()
+        if profile.backgroundPath.isEmpty, profile.backgroundPathDark.isEmpty,
+           !fileManager.fileExists(atPath: directory.path) {
+            return nil
+        }
+        return profile
     }
 
     /// Creates a private copy only when the user edits an inherited table.
@@ -234,7 +277,8 @@ final class NativeSchedulePreferences: ObservableObject {
         min(backgroundOpacityRange.upperBound, max(backgroundOpacityRange.lowerBound, value))
     }
 
-    static let defaultBackgroundOpacity = 0.18
+    /// 周视图面板有背景图时不再磨砂，图片能透出来，默认值比原来的 18% 高一些。
+    static let defaultBackgroundOpacity = 0.3
 
     /// 深色默认比浅色高 10 个百分点。
     static func defaultDarkOpacity(light: Double) -> Double {
@@ -302,6 +346,8 @@ final class NativeSchedulePreferences: ObservableObject {
         var showDateHeader: Bool
         /// Optional so backups made before this preference existed still decode.
         var showFreeTimeCourses: Bool? = nil
+        /// Optional so backups made before this preference existed still decode.
+        var showNowIndicator: Bool? = nil
         var defaultView: String
         var density: String
         /// Optional so backups made before this preference existed still decode.
@@ -326,6 +372,7 @@ final class NativeSchedulePreferences: ObservableObject {
             showWeekend: showWeekend,
             showDateHeader: showDateHeader,
             showFreeTimeCourses: showFreeTimeCourses,
+            showNowIndicator: showNowIndicator,
             defaultView: defaultView,
             density: density,
             hideSlotsAfter: hideLateSlots ? hideSlotsAfter : 0,
@@ -349,6 +396,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeekend = snapshot.showWeekend
         showDateHeader = snapshot.showDateHeader
         showFreeTimeCourses = snapshot.showFreeTimeCourses ?? true
+        showNowIndicator = snapshot.showNowIndicator ?? true
         defaultView = Self.viewOptions.contains(snapshot.defaultView) ? snapshot.defaultView : "week"
         density = Self.densityOptions.contains(snapshot.density) ? snapshot.density : "comfortable"
         let hideAfter = snapshot.hideSlotsAfter ?? Self.defaultHideSlotsAfter
@@ -426,6 +474,7 @@ final class NativeSchedulePreferences: ObservableObject {
         showWeekend = true
         showDateHeader = true
         showFreeTimeCourses = true
+        showNowIndicator = true
         defaultView = "week"
         density = "comfortable"
         hideLateSlots = true
@@ -508,6 +557,7 @@ final class NativeSchedulePreferences: ObservableObject {
         defaults.set(showWeekend, forKey: Key.showWeekend)
         defaults.set(showDateHeader, forKey: Key.showDateHeader)
         defaults.set(showFreeTimeCourses, forKey: Key.showFreeTimeCourses)
+        defaults.set(showNowIndicator, forKey: Key.showNowIndicator)
         defaults.set(Self.viewOptions.contains(defaultView) ? defaultView : "week", forKey: Key.defaultView)
         defaults.set(Self.densityOptions.contains(density) ? density : "comfortable", forKey: Key.density)
         defaults.set(hideLateSlots, forKey: Key.hideLateSlots)

@@ -14,6 +14,7 @@ struct ContentView: View {
     @StateObject private var scheduleStore = NativeScheduleStore()
     @StateObject private var widgetSettings = NativeWidgetSettings()
     @StateObject private var themeSettings = NativeThemeSettings.shared
+    @ObservedObject private var purchases = PurchaseManager.shared
     @State private var showImport = false
     @State private var showSettings = false
     @State private var showLiveActivityDismissal = false
@@ -29,11 +30,15 @@ struct ContentView: View {
             #endif
         }
         .preferredColorScheme(store.settings.appearance.colorScheme)
+        .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
+        .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         .sheet(isPresented: $showImport) {
             ImportView()
                 .environmentObject(store)
                 .environmentObject(scheduleStore)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
+        .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
+        .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         }
         // Schedule edits update both companion surfaces. Caring changes only
         // the Live Activity source; the displayed timetable and widgets stay put.
@@ -132,6 +137,16 @@ struct ContentView: View {
         .onAppear { scheduleStore.connect(store) }
     }
 
+    private func updateWidgetBackgroundAccess() {
+        // Keep the last verified access while policy or StoreKit is loading.
+        guard purchases.accessMode != .loading,
+              purchases.accessMode != .paid || purchases.state != .loading else { return }
+        let expiry: Date?
+        if !purchases.isBeta, case .trial(let expiresAt) = purchases.state { expiry = expiresAt }
+        else { expiry = nil }
+        widgetSettings.updateBackgroundAccess(purchases.allowsProFeatures, expiresAt: expiry)
+    }
+
     private func syncCompanionFeatures(updateWidgets: Bool = true) {
         guard let snapshot = scheduleStore.snapshot() else {
             #if os(iOS)
@@ -184,6 +199,8 @@ struct ContentView: View {
                 .environmentObject(store)
                 .frame(minWidth: 520, minHeight: 640)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
+        .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
+        .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         }
         .tint(themeSettings.brandColor)
     }

@@ -81,7 +81,7 @@ struct OnboardingChecks {
         precondition(!demoConsent.onboardingCompleted)
         let demoAdapter = NativeScheduleStore()
         demoAdapter.connect(store)
-        let referenceDate = WeekCalculator.parseDay("2026-09-30")!
+        let referenceDate = Date()
         let demoTable = store.installDemoSchedule(referenceDate: referenceDate)
         // 批量导入的更新合并后，界面仍应自动拿到最终课表和自由时间课程。
         for _ in 0..<50 {
@@ -91,7 +91,8 @@ struct OnboardingChecks {
         precondition(demoAdapter.selectedSemester == String(demoTable.id) && demoAdapter.selectedWeek == "1")
         precondition(!demoAdapter.freeCourses.isEmpty)
         precondition(store.selectedTableId == demoTable.id && store.displayWeek == 1)
-        precondition(demoTable.semesterStartMonday == "2026-09-28" && store.maxWeeks == DemoSchedule.weekCount)
+        precondition(demoTable.semesterStartMonday == WeekCalculator.format(WeekCalculator.monday(of: referenceDate))
+                     && store.maxWeeks == DemoSchedule.weekCount)
         precondition(demoTable.schoolID == nil && demoTable.termID == nil)
         precondition(demoTable.unifiedHolidaysEnabled == false, "Holidays must not hide the demo")
         let demoCourses = store.currentCourses
