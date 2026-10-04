@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// 显示偏好随备份导出 / 恢复的离线校验。
@@ -76,6 +77,7 @@ struct DisplaySnapshotChecks {
         source.showWeekend = false
         source.showDateHeader = false
         source.showFreeTimeCourses = false
+        source.showNowIndicator = false
         source.defaultView = "day"
         source.density = "compact"
         source.backgroundOpacity = 0.33
@@ -92,6 +94,7 @@ struct DisplaySnapshotChecks {
         expect(target.hideLateSlots && target.hideSlotsAfter == 6, "隐藏节次已还原")
         expect(!target.showWeekend && !target.showDateHeader, "周末与日期栏开关已还原")
         expect(!target.showFreeTimeCourses, "自由时间开关已还原")
+        expect(!target.showNowIndicator, "当前时间标注开关已还原")
         expect(target.defaultView == "day" && target.density == "compact", "视图与密度已还原")
         expect(target.makeSnapshot().rowHeight == 44, "备份行高固定为 44")
         expect(abs(target.backgroundOpacity - 0.33) < 0.0001, "背景不透明度已还原")
@@ -113,6 +116,7 @@ struct DisplaySnapshotChecks {
         )
         let clamped = makePreferences("clamped")
         clamped.apply(hostile)
+        expect(clamped.showNowIndicator, "旧备份没有当前时间开关时默认开启")
         expect(clamped.defaultView == "week", "未知视图回落到周课表")
         expect(clamped.density == "comfortable", "未知密度回落到舒适")
         expect(clamped.makeSnapshot().rowHeight == 44, "旧备份行高不会改变固定布局")
@@ -236,8 +240,57 @@ struct DisplaySnapshotChecks {
         )
         expect(legacy.display == nil && legacy.version == 1, "旧备份仍可解码")
 
+        // 按课表的背景：没改过背景的课表一直沿用默认背景，切走再切回来也一样
+        func pngData() -> Data {
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                                       samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                       colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            return rep.representation(using: .png, properties: [:])!
+        }
+        let tableID = 990_001
+        let tableDirectory = NativeSchedulePreferences.backgroundFileURL.deletingLastPathComponent()
+            .appendingPathComponent("backgrounds/table-\(tableID)", isDirectory: true)
+        try? FileManager.default.removeItem(at: tableDirectory)
+        let perTable = makePreferences("perTable")
+        try! perTable.setBackgroundData(nil)
+        try! perTable.setBackgroundData(nil, dark: true)
+        // 默认背景还没设时进过一次设置页，之后才设默认背景
+        perTable.activate(tableID: tableID)
+        perTable.showWeekend.toggle()
+        perTable.activate(tableID: nil)
+        try! perTable.setBackgroundData(pngData())
+        perTable.activate(tableID: tableID)
+        expect(!perTable.hasOwnBackground(dark: false) && perTable.usesDefaultBackground,
+               "进过设置页的课表仍沿用之后设的默认背景")
+        expect(perTable.visibleBackgroundImage(dark: false) != nil, "课表页显示默认背景")
+        // 默认背景已有时切到设置页再切回来，图不能丢
+        perTable.activate(tableID: nil)
+        perTable.activate(tableID: tableID)
+        expect(perTable.visibleBackgroundImage(dark: false) != nil, "切回课表后默认背景还在")
+        expect(perTable.defaultBackgroundProfile.backgroundPath.isEmpty == false,
+               "设置首页摘要按默认背景算")
+        // 旧版本留下的坏数据：存了路径却没有课表自己的图片文件
+        let brokenSuite = "naptable.checks.perTable"
+        let broken = #"{"table:\#(tableID)":{"backgroundPath":"/missing/light.jpg","backgroundPathDark":"","backgroundEnabled":true,"backgroundOpacity":0.18,"backgroundOpacityDark":0.28}}"#
+        UserDefaults(suiteName: brokenSuite)!.set(Data(broken.utf8), forKey: "nativeSchedule.tableBackgroundProfiles")
+        let repaired = NativeSchedulePreferences(defaults: UserDefaults(suiteName: brokenSuite)!)
+        repaired.activate(tableID: tableID)
+        expect(repaired.usesDefaultBackground && repaired.visibleBackgroundImage(dark: false) != nil,
+               "启动时修复缺图的课表背景设置")
+        // 真正改了这张课表的背景才单独存一份
+        repaired.backgroundOpacity = 0.5
+        expect(repaired.hasOwnBackground(dark: false) && !repaired.usesDefaultBackground, "改过背景后单独存一份")
+        expect(repaired.visibleBackgroundImage(dark: false) != nil, "单独存的那份带着图片")
+        repaired.activate(tableID: nil)
+        repaired.activate(tableID: tableID)
+        expect(repaired.visibleBackgroundImage(dark: false) != nil && abs(repaired.backgroundOpacity - 0.5) < 0.0001,
+               "单独的课表背景切走再回来还在")
+        repaired.activate(tableID: nil)
+        try! repaired.setBackgroundData(nil)
+        try? FileManager.default.removeItem(at: tableDirectory)
+
         try? FileManager.default.removeItem(at: NativeSchedulePreferences.backgroundFileURL)
-        for name in ["fresh", "source", "target", "clamped", "keeper"] {
+        for name in ["fresh", "source", "target", "clamped", "keeper", "perTable"] {
             UserDefaults.standard.removePersistentDomain(forName: "naptable.checks.\(name)")
         }
         print("ok")

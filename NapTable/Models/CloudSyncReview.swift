@@ -131,8 +131,8 @@ nonisolated struct CloudSyncReview: Identifiable {
         if a.name != b.name { result.append("名称：\(a.name) → \(b.name)") }
         if a.semesterStartMonday != b.semesterStartMonday { result.append("第一周周一：\(a.semesterStartMonday) → \(b.semesterStartMonday)") }
         if a.termWeekCount != b.termWeekCount { result.append("学期周数：\(a.termWeekCount ?? 0) → \(b.termWeekCount ?? 0)") }
-        if a.classTimeList != b.classTimeList { result.append("节次时间更新") }
-        if a.seasonalPeriods != b.seasonalPeriods { result.append("季节作息更新") }
+        if a.classTimeList != b.classTimeList || a.customClassTimeList != b.customClassTimeList || a.usesCustomClassTimes != b.usesCustomClassTimes { result.append("节次时间更新") }
+        if a.seasonalPeriods != b.seasonalPeriods || a.customSeasonalPeriods != b.customSeasonalPeriods { result.append("季节作息更新") }
         if a.calendarAdjustments != b.calendarAdjustments { result.append("课表调休安排更新") }
         if a.unifiedHolidaysEnabled != b.unifiedHolidaysEnabled { result.append("统一放假设置更新") }
         if a.unifiedMakeupEnabled != b.unifiedMakeupEnabled { result.append("统一补班设置更新") }

@@ -169,6 +169,10 @@ nonisolated struct ManualMeetingDraft: Identifiable, Equatable {
 // MARK: - 节次时间
 
 nonisolated enum ClassTimeValidator {
+    // 与远程提醒协议使用相同的作息范围。
+    static let maxCustomPeriods = 32
+    static let maxSeasonalSchedules = 4
+
     /// 解析 `HH:mm`，返回当天第几分钟。
     static func minutes(_ value: String) -> Int? {
         let parts = value.trimmingCharacters(in: .whitespaces)
@@ -182,6 +186,27 @@ nonisolated enum ClassTimeValidator {
     static func format(_ minutes: Int) -> String {
         let clamped = min(max(minutes, 0), 23 * 60 + 59)
         return String(format: "%02d:%02d", clamped / 60, clamped % 60)
+    }
+
+    /// 日期按每年循环解析；所有作息都必须覆盖已有课程使用的节次。
+    static func problem(base: [ClassTime], seasons: [SeasonalClassTimes], requiredPeriods: Int) -> String? {
+        guard seasons.count <= maxSeasonalSchedules else { return "最多设置 4 套日期作息" }
+        var dates = Set<String>()
+        for season in seasons {
+            guard season.from.count == 5,
+                  let date = WeekCalculator.parseDay("2001-" + season.from),
+                  String(WeekCalculator.format(date).suffix(5)) == season.from else {
+                return "生效日期格式不对，应为 05-01 这样"
+            }
+            guard dates.insert(season.from).inserted else { return "每套作息的生效日期不能重复" }
+        }
+        for (label, periods) in [("基础作息", base)] + seasons.map({ ($0.from + " 起的作息", $0.periods) }) {
+            if let problem = problem(in: periods) { return label + "：" + problem }
+            if periods.count > maxCustomPeriods { return label + "：节次数量超出上限" }
+            if periods.count < requiredPeriods { return label + "：已有课程使用第 \(requiredPeriods) 节，请保留对应节次" }
+        }
+        if seasons.contains(where: { $0.periods.count != base.count }) { return "各套日期作息的节次数量须与基础作息一致" }
+        return nil
     }
 
     static func problem(in list: [ClassTime]) -> String? {
@@ -211,7 +236,8 @@ nonisolated struct ClassTimeGenerator: Equatable {
     }
 
     var lessonMinutes = 45
-    var breakMinutes = 10
+    var smallBreakMinutes = 10
+    var largeBreakMinutes = 20
     var blocks: [Block] = [
         Block(title: "上午", start: 8 * 60, count: 4),
         Block(title: "下午", start: 14 * 60, count: 4),
@@ -224,10 +250,13 @@ nonisolated struct ClassTimeGenerator: Equatable {
         var list: [ClassTime] = []
         for block in blocks where block.count > 0 {
             var start = block.start
-            for _ in 0..<block.count {
+            for index in 0..<block.count {
                 let end = start + lessonMinutes
                 list.append(ClassTime(start: ClassTimeValidator.format(start), end: ClassTimeValidator.format(end)))
-                start = end + breakMinutes
+                // 每个时段重新配对；奇数节时，最后一节接在上一节后用小课间。
+                let isLastSingle = block.count % 2 == 1 && index == block.count - 2
+                let small = index % 2 == 0 || isLastSingle
+                start = end + (small ? smallBreakMinutes : largeBreakMinutes)
             }
         }
         return list

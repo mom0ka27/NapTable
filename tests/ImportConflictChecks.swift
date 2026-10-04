@@ -49,7 +49,7 @@ struct ImportConflictChecks {
         precondition(ImportConflictFinder.hasUnresolvedConflicts(in: halfTerm, keeping: [0: 0]))
         precondition(!ImportConflictFinder.hasUnresolvedConflicts(in: halfTerm, keeping: [0: 0, halfGroups[1].id: 1]))
 
-        // 完全相同的两行也各自安装，网格、小组件快照和编辑都能区分身份。
+        // 相同名称归为一门课，但每条安排仍各自保留，网格、小组件快照能区分行身份。
         let duplicate = course("重复课")
         let duplicates = [duplicate, duplicate, duplicate]
         precondition(ImportConflictFinder.expandedGroups(in: duplicates, keeping: [0: 2]).count == 1)
@@ -61,6 +61,9 @@ struct ImportConflictChecks {
         app.install(payload: ImportedSchedule(name: "重复课表", courses: picked, semesterStartMonday: "2026-09-07"), mode: .replaceCurrent)
         precondition(app.currentCourses.count == 3 && app.currentHiddenCourses.isEmpty)
         precondition(Set(app.currentCourses.map(\.id)).count == 3)
+        precondition(Set(app.currentCourses.map(\.courseKey)).count == 1)
+        precondition(app.courseFamily(containing: app.currentCourses[0]).count == 3)
+        precondition(app.coursesInTimeRange(of: app.currentCourses[0]).count == 1)
         let logic = ScheduleLogic(courses: app.currentCourses, nowWeek: 1)
         precondition(logic.multiCourses.count == 1 && logic.multiCourses[0].count == 3)
         precondition(logic.multiCourses[0][0].id == app.currentCourses[2].id)
@@ -71,6 +74,51 @@ struct ImportConflictChecks {
         let nativeRows = snapshot.data!.cells.flatMap(\.courses)
         precondition(nativeRows.count == 3 && Set(nativeRows.map(\.id)).count == 3)
         precondition(nativeRows.filter { ($0.displayPriority ?? 0) > 0 }.count == 1)
+
+        // 实际课表卡片必须采用导入选择，不能只把优先课程排到并排卡片的左边。
+        func blocks(_ rows: [NativeScheduleCourse]) -> [NativeScheduleCourseBlock] {
+            rows.map { row in
+                NativeScheduleCourseBlock(id: row.id, course: row, bigSlot: 1,
+                    startSlot: row.startSlot ?? 1, endSlot: row.endSlot ?? 2)
+            }
+        }
+        let visibleDuplicates = NativeScheduleCourseBlock.resolvingDisplayPriorities(blocks(nativeRows))
+        precondition(visibleDuplicates.count == 1)
+        precondition(visibleDuplicates[0].course.displayPriority == 1 && visibleDuplicates[0].lane == 0)
+        precondition(NativeScheduleCourseBlock.resolvingDisplayPriorities(blocks(nativeRows.reversed()))
+            .map(\.id) == visibleDuplicates.map(\.id))
+
+        // 优先课仅覆盖中间两节时，另一门课的前后两段仍显示，且保留原课程身份。
+        let longer = NativeScheduleCourse(name: "长课", weeks: "1-16", weekList: Array(1...16),
+            startSlot: 1, endSlot: 6, customId: "long")
+        let preferred = NativeScheduleCourse(name: "优先课", weeks: "1-8", weekList: Array(1...8),
+            startSlot: 3, endSlot: 4, customId: "preferred", displayPriority: 2)
+        let split = NativeScheduleCourseBlock.resolvingDisplayPriorities(blocks([longer, preferred]))
+        precondition(split.count == 3 && Set(split.map(\.id)).count == 3)
+        precondition(split.allSatisfy { $0.lane == 0 })
+        let remaining = split.filter { $0.course.customId == "long" }
+        precondition(remaining.map(\.startSlot) == [1, 5] && remaining.map(\.endSlot) == [2, 6])
+        precondition(remaining.allSatisfy { $0.course.startSlot == 1 && $0.course.endSlot == 6 })
+        // 后半学期优先课程不上课，整段恢复显示。
+        let later = NativeScheduleCourseBlock.resolvingDisplayPriorities(
+            blocks([longer, preferred].filter { $0.weekList.contains(9) }))
+        precondition(later.count == 1 && later[0].startSlot == 1 && later[0].endSlot == 6)
+        // 连环冲突按每一节的最高优先级选择，不把整组其余课程一起隐藏。
+        let middle = NativeScheduleCourse(name: "第二优先", weeks: "1-16", weekList: Array(1...16),
+            startSlot: 2, endSlot: 5, customId: "middle", displayPriority: 1)
+        let chainBlocks = NativeScheduleCourseBlock.resolvingDisplayPriorities(blocks([longer, middle, preferred]))
+        precondition(chainBlocks.count == 5 && chainBlocks.allSatisfy { $0.lane == 0 })
+        for slot in 1...6 {
+            let shown = chainBlocks.filter { $0.startSlot <= slot && slot <= $0.endSlot }
+            precondition(shown.count == 1)
+            let expected = (3...4).contains(slot) ? "preferred" : ((2...5).contains(slot) ? "middle" : "long")
+            precondition(shown[0].course.customId == expected)
+        }
+        // 没有选择优先级的旧课表继续并排显示。
+        let unranked = NativeScheduleCourse(name: "另一门", weeks: "1-16", weekList: Array(1...16),
+            startSlot: 1, endSlot: 6, customId: "other")
+        let parallel = NativeScheduleCourseBlock.resolvingDisplayPriorities(blocks([longer, unranked]))
+        precondition(parallel.count == 2 && Set(parallel.map(\.lane)) == [0, 1])
 
         let widgetPayload = NativeWidgetSettings.payload(from: snapshot, selectedWeek: 1)!
         let widgetCourses = widgetPayload.weekDays!.first { $0.day == 1 }!.courses!
@@ -92,7 +140,11 @@ struct ImportConflictChecks {
         let payload = CoursePayloadCodec.makeCourse(from: ["name": "分享课", "weeks": [1],
             "week_time": 1, "start_time": 1, "displayPriority": 2])!
         precondition(payload.displayPriority == 2)
-        // 长按同一时段能找到三门独立课程；批量保存保留各自的身份与安排。
+        // 改成三门不同名称的课，验证多课程批量保存及优先级。
+        for (index, var row) in app.currentCourses.enumerated() {
+            row.name = "独立课程 \(index + 1)"
+            app.updateCourse(row)
+        }
         let originals = app.currentCourses
         precondition(app.coursesInTimeRange(of: originals[0]).count == 3)
         var drafts = originals.map { CourseScheduleDraft(courses: app.courseFamily(containing: $0)) }

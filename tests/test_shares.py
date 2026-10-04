@@ -127,6 +127,35 @@ class ShareTests(JSONClientMixin, unittest.TestCase):
             "courses": courses, **extra,
         }, {"X-Write-Token": previous["writeToken"]}, expect=expect)
 
+    def test_custom_bells_and_seasons_are_frozen_in_share(self):
+        old = self.create()
+        base = [{"start": "08:00", "end": "08:50"}]
+        seasons = [{"from": "05-01", "periods": [{"start": "09:00", "end": "09:50"}]},
+                   {"from": "10-01", "periods": [{"start": "10:00", "end": "10:50"}]}]
+        rows = [{"name": "高等数学", "week_time": 1, "start_time": 1, "time_count": 2}]
+        custom = self.replace(old, rows, periods=base, seasonalPeriods=seasons)
+        fetched = self.req("GET", "/v1/shares/" + custom["id"])
+        self.assertEqual(fetched["class_time_list"][0]["start"], "08:00")
+        self.assertEqual(fetched["seasonalPeriods"], seasons)
+        self.replace(custom, rows, expect=400, periods=base, seasonalPeriods=seasons)
+        # Changing just the custom clock is a real share change.
+        base[0]["start"] = "07:50"
+        changed = self.replace(custom, rows, periods=base, seasonalPeriods=seasons)
+        self.assertEqual(changed["class_time_list"][0]["start"], "07:50")
+        school_share = self.create()
+        self.assertNotEqual(school_share["class_time_list"], changed["class_time_list"])
+        self.assertNotEqual(school_share["seasonalPeriods"], seasons)
+
+    def test_custom_share_rejects_invalid_bells(self):
+        old = self.create()
+        rows = [{"name": "数学"}]
+        base = [{"start": "08:00", "end": "08:50"}]
+        self.replace(old, rows, expect=400, periods=[{"start": "09:00", "end": "08:00"}])
+        self.replace(old, rows, expect=400, periods=base,
+                     seasonalPeriods=[{"from": "02-30", "periods": base}])
+        self.replace(old, rows, expect=400, seasonalPeriods=[])
+        self.assertEqual(self.req("GET", "/v1/shares/" + old["id"])["id"], old["id"])
+
     def test_an_out_of_range_course_is_refused_with_400(self):
         refused = self.req("POST", "/v1/shares", {"owner": "张三", "schoolID": "nju", "termID": "2026-fall-template",
                                                   "courses": [{"name": "课", "week_time": 1, "start_time": 99}]}, expect=400)

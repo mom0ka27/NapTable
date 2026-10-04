@@ -465,3 +465,73 @@ struct ScheduleSlot: Identifiable, Equatable {
 
     static var all: [ScheduleSlot] = fallback
 }
+
+nonisolated struct NativeScheduleCourseBlock: Identifiable {
+    let id: String
+    let course: NativeScheduleCourse
+    let bigSlot: Int
+    let startSlot: Int
+    let endSlot: Int
+    let lane: Int
+
+    init(id: String, course: NativeScheduleCourse, bigSlot: Int, startSlot: Int, endSlot: Int, lane: Int = 0) {
+        self.id = id
+        self.course = course
+        self.bigSlot = bigSlot
+        self.startSlot = startSlot
+        self.endSlot = endSlot
+        self.lane = lane
+    }
+
+    func withLane(_ lane: Int) -> NativeScheduleCourseBlock {
+        NativeScheduleCourseBlock(id: id, course: course, bigSlot: bigSlot, startSlot: startSlot, endSlot: endSlot, lane: lane)
+    }
+}
+
+nonisolated extension NativeScheduleCourseBlock {
+    /// 只让较高优先级覆盖实际重叠的节次；未选优先级的课程仍可并排显示。
+    /// 输入是同一天、已筛选教学周的卡片，原课程保留在快照中供编辑使用。
+    static func resolvingDisplayPriorities(_ blocks: [Self]) -> [Self] {
+        let ordered = blocks.sorted {
+            let left = $0.course.displayPriority ?? 0, right = $1.course.displayPriority ?? 0
+            if left != right { return left > right }
+            return ($0.startSlot, $0.endSlot, $0.id) < ($1.startSlot, $1.endSlot, $1.id)
+        }
+        var visible: [Self] = []
+        for block in ordered {
+            let priority = block.course.displayPriority ?? 0
+            let covering = ordered.filter {
+                ($0.course.displayPriority ?? 0) > priority
+                    && $0.startSlot <= block.endSlot && block.startSlot <= $0.endSlot
+            }
+            var start: Int?
+            func appendSegment(endingAt end: Int) {
+                guard let start else { return }
+                visible.append(Self(
+                    id: start == block.startSlot && end == block.endSlot
+                        ? block.id : "\(block.id)-segment-\(start)-\(end)",
+                    course: block.course, bigSlot: block.bigSlot, startSlot: start, endSlot: end
+                ))
+            }
+            for slot in block.startSlot...block.endSlot {
+                if covering.contains(where: { $0.startSlot <= slot && slot <= $0.endSlot }) {
+                    appendSegment(endingAt: slot - 1)
+                    start = nil
+                } else if start == nil {
+                    start = slot
+                }
+            }
+            appendSegment(endingAt: block.endSlot)
+        }
+        var laneRanges: [[ClosedRange<Int>]] = []
+        return visible.map { block in
+            let range = block.startSlot...block.endSlot
+            let lane = laneRanges.firstIndex { ranges in
+                ranges.allSatisfy { !$0.overlaps(range) }
+            } ?? laneRanges.count
+            if lane == laneRanges.count { laneRanges.append([]) }
+            laneRanges[lane].append(range)
+            return block.withLane(lane)
+        }
+    }
+}

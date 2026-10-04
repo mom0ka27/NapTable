@@ -71,6 +71,8 @@ final class AppStore: ObservableObject {
         saveBlocked = state.saveBlocked
         didLoad = true
         normalize()
+        // 首次打开旧版本存档即持久化课程分组，后续启动保持相同身份。
+        if state.state.version < 2 { saveNow() }
         displayWeek = liveWeek > 0 ? liveWeek : 1
         #if canImport(UIKit)
         if saveBlocked {
@@ -112,6 +114,8 @@ final class AppStore: ObservableObject {
         retryObservers.forEach(NotificationCenter.default.removeObserver)
         retryObservers = []
         normalize()
+        // 首次打开旧版本存档即持久化课程分组，后续启动保持相同身份。
+        if state.state.version < 2 { saveNow() }
         displayWeek = liveWeek > 0 ? liveWeek : 1
     }
 
@@ -462,11 +466,44 @@ final class AppStore: ObservableObject {
         scheduleSave()
     }
 
-    func updateClassTimeList(_ list: [ClassTime], tableId: Int? = nil) {
+    @discardableResult
+    func updateClassTimeList(_ list: [ClassTime], tableId: Int? = nil) -> Bool {
         let target = tableId ?? selectedTableId
-        guard let index = tables.firstIndex(where: { $0.id == target }) else { return }
-        tables[index].classTimeList = list
+        if list.isEmpty { return setUsesCustomClassTimes(false, tableId: target) }
+        return updateCustomClassTimes(list, seasons: [], tableId: target)
+    }
+
+    @discardableResult
+    func setUsesCustomClassTimes(_ enabled: Bool, tableId: Int) -> Bool {
+        guard let index = tables.firstIndex(where: { $0.id == tableId }) else { return false }
+        if enabled {
+            let table = tables[index]
+            return updateCustomClassTimes(table.customClassTimeList ?? table.classTimes(on: WeekCalculator.format(Date())),
+                seasons: table.customSeasonalPeriods ?? table.effectiveSeasonalPeriods ?? [], tableId: tableId)
+        }
+        tables[index].usesCustomClassTimes = false
         scheduleSave()
+        return true
+    }
+
+    @discardableResult
+    func updateCustomClassTimes(_ list: [ClassTime], seasons: [SeasonalClassTimes], tableId: Int, enabled: Bool = true) -> Bool {
+        guard let index = tables.firstIndex(where: { $0.id == tableId }) else { return false }
+        let required = courses.filter { $0.tableId == tableId && !$0.isFreeTime }.map(\.endTime).max() ?? 1
+        guard ClassTimeValidator.problem(base: list, seasons: seasons, requiredPeriods: required) == nil else { return false }
+        func normalized(_ periods: [ClassTime]) -> [ClassTime] {
+            periods.map {
+                ClassTime(start: ClassTimeValidator.format(ClassTimeValidator.minutes($0.start)!),
+                          end: ClassTimeValidator.format(ClassTimeValidator.minutes($0.end)!))
+            }
+        }
+        tables[index].customClassTimeList = normalized(list)
+        tables[index].customSeasonalPeriods = seasons.map {
+            SeasonalClassTimes(from: $0.from, periods: normalized($0.periods))
+        }.sorted { $0.from < $1.from }
+        tables[index].usesCustomClassTimes = enabled
+        scheduleSave()
+        return true
     }
 
     func applyTerm(_ term: ServiceTermConfiguration, schoolID: String) {
@@ -558,7 +595,7 @@ final class AppStore: ObservableObject {
         }
         courses.append(value)
         scheduleSave()
-        return value
+        return courses.first { $0.id == value.id } ?? value
     }
 
     func updateCourse(_ course: Course) {
@@ -577,7 +614,7 @@ final class AppStore: ObservableObject {
             throw ScheduleServiceError.server("课表已不存在，请返回重新选择")
         }
         let slotCount = max(SchoolDefaults.maxClasses, table.effectiveClassTimeList.count,
-                            table.seasonalPeriods?.map { $0.periods.count }.max() ?? 0)
+                            table.effectiveSeasonalPeriods?.map { $0.periods.count }.max() ?? 0)
         let tableIDs = Set(courses.filter { $0.tableId == tableID }.map(\.id))
         var handled = deletedIDs
         guard deletedIDs.isSubset(of: tableIDs) else {
@@ -670,8 +707,10 @@ final class AppStore: ObservableObject {
     }
 
     func courseFamily(containing course: Course) -> [Course] {
-        courses.filter { row in
-            row.tableId == course.tableId && (course.courseKey.map { row.courseKey == $0 } ?? (row.id == course.id))
+        // 改名合并后旧视图仍可能持有之前的 key，先用稳定的行 id 找到当前归属。
+        guard let current = courses.first(where: { $0.id == course.id && $0.tableId == course.tableId }) else { return [] }
+        return courses.filter { row in
+            row.tableId == current.tableId && (current.courseKey.map { row.courseKey == $0 } ?? (row.id == current.id))
         }
     }
 
@@ -690,11 +729,8 @@ final class AppStore: ObservableObject {
 
     /// Deletes every row that belongs to the same course as `course`.
     func deleteCourseFamily(_ course: Course) {
-        if let key = course.courseKey {
-            courses.removeAll { $0.courseKey == key }
-        } else {
-            deleteCourse(id: course.id)
-        }
+        let ids = Set(courseFamily(containing: course).map(\.id))
+        courses.removeAll { ids.contains($0.id) }
         scheduleSave()
     }
 
@@ -955,10 +991,40 @@ final class AppStore: ObservableObject {
         if nextCourseKey <= (courses.compactMap(\.courseKey).max() ?? 0) {
             nextCourseKey = (courses.compactMap(\.courseKey).max() ?? 0) + 1
         }
+        normalizeCourseFamilies()
         settings.weekCount = min(max(settings.weekCount, 1), 40)
     }
 
+    /// 按课表和去除首尾空白后的名称合并课程身份，不删上课安排或覆盖行元数据。
+    /// 同时拆开旧数据里误用同一个 key 的不同名称，保证编辑和删除只影响一门课。
+    private func normalizeCourseFamilies() {
+        struct Identity: Hashable { let tableID: Int; let name: String }
+        var keys: [Identity: Int] = [:]
+        var used = Set<Int>()
+        nextCourseKey = max(nextCourseKey, (courses.compactMap(\.courseKey).max() ?? 0) + 1)
+        var updated = courses
+        for index in updated.indices {
+            let name = updated[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let identity = Identity(tableID: updated[index].tableId, name: name)
+            if keys[identity] == nil {
+                let key: Int
+                if let existing = updated[index].courseKey, !used.contains(existing) {
+                    key = existing
+                } else {
+                    key = nextCourseKey
+                    nextCourseKey += 1
+                }
+                keys[identity] = key
+                used.insert(key)
+            }
+            updated[index].name = name
+            updated[index].courseKey = keys[identity]
+        }
+        if updated != courses { courses = updated }
+    }
+
     private func scheduleSave() {
+        normalizeCourseFamilies()
         saveTask?.cancel()
         saveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)

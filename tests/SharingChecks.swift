@@ -87,6 +87,8 @@ struct SharingChecks {
         precondition(store.snapshot()?.periods.first?.startTime == "10:10")
         await store.selectSemester("share:TEST123")
         precondition(store.isReadOnly && store.sourceLabel == "小明同学")
+        precondition(store.viewedSharedSchedule?.name == "小明同学",
+                     "Current schedule details must use the viewed share")
         precondition(store.periods.first?.startTime == "10:10")
         precondition(store.result?.cells.first?.courses.first?.name == "对方课程")
         let sharedContentStamp = store.lastUpdatedAt
@@ -110,6 +112,12 @@ struct SharingChecks {
         try service.saveShared(another, remark: "小红")
         service.follow(service.sharedSchedules.first { $0.meta.code == "OTHER123" }!)
         precondition(store.snapshot()?.sourceLabel == "小红")
+        precondition(store.viewedSharedSchedule?.meta.code == "TEST123",
+                     "Changing the caring person must not change the current schedule")
+        await store.selectSemester(String(app.selectedTableId))
+        precondition(store.viewedSharedSchedule == nil && !store.isReadOnly,
+                     "Viewing a local table must restore its own settings entry")
+        await store.selectSemester("share:TEST123")
         service.follow(service.sharedSchedules.first { $0.meta.code == "TEST123" }!)
         precondition(store.snapshot()?.sourceLabel == "小明同学")
         let beforeRemoval = libraryChanges
@@ -119,6 +127,8 @@ struct SharingChecks {
                      "Removal must refresh once, including falling back to the local notification source")
         await store.refresh()
         precondition(!store.isReadOnly && service.followedCode == nil)
+        precondition(store.viewedSharedSchedule == nil,
+                     "Removing the viewed share must clear its settings entry")
         precondition(store.periods == ownPeriods)
 
         // MARK: Course editor round trip

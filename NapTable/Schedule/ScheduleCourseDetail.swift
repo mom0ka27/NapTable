@@ -15,6 +15,7 @@ struct SharedCourseDetailView: View {
                 Text("共享课表只读").foregroundStyle(.secondary)
             }
             .appListBackground()
+            .appSoftTopScrollEdge()
             .navigationTitle("课程详情")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }

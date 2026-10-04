@@ -857,6 +857,15 @@ class Store:
         a bare address may hold at most MAX_ACTIVE_SHARES shares at a time."""
         term = self.find_term(value.get("schoolID", ""), value.get("termID", ""))
         if not term: raise ValueError("unknown schoolID/termID")
+        # Freeze the sharer's custom bells without changing the school's term.
+        # Older clients omit these fields and keep using the school schedule.
+        if "periods" in value:
+            periods = normalize_periods(value["periods"])
+            if len(periods) > 32: raise ValueError("expected 1–32 periods")
+            seasons = school_times.normalize_seasons(value.get("seasonalPeriods", []), len(periods))
+            term = {**term, "periods": periods, "seasonalPeriods": seasons}
+        elif "seasonalPeriods" in value:
+            raise ValueError("custom seasonalPeriods require periods")
         _, payload = normalize_courses(value.get("courses"))
         owner = str(value.get("owner") or "匿名").strip()[:MAX_OWNER_LENGTH] or "匿名"
         token=secrets.token_urlsafe(24); stamp=now()

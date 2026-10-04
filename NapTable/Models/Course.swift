@@ -115,8 +115,8 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     /// Explicit `#RRGGBB` override. Imported courses leave this empty and get a
     /// colour from the pool.
     var color: String?
-    /// Stable identity of the course this row belongs to. Imported rows from the
-    /// same course share it; hand-written rows get their own.
+    /// 同一张课表内名称相同的所有上课安排共用一个课程身份。
+    /// 导入、编辑及旧存档升级时统一分组；行本身保留各自的周次和元数据。
     var courseKey: Int?
     /// 用户主动收起或旧版本导入时收起的行，不参与显示、分享和通知。
     /// 可以在编辑页恢复。旧存档没有这个键，所以用可选值。
@@ -273,6 +273,10 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
     var name: String
     /// Per-table bell schedule override. Empty means `SchoolDefaults`.
     var classTimeList: [ClassTime]
+    /// 用户自定义作息独立保存，关闭开关后仍保留，学校刷新只更新下发配置。
+    var customClassTimeList: [ClassTime]? = nil
+    var customSeasonalPeriods: [SeasonalClassTimes]? = nil
+    var usesCustomClassTimes: Bool? = nil
     /// ISO `yyyy-MM-dd` of the Monday of week 1, when known.
     var semesterStartMonday: String
     var schoolID: String?
@@ -332,11 +336,13 @@ nonisolated struct CourseTable: Codable, Identifiable, Equatable, Hashable {
 
     /// The bell schedule actually used for rendering.
     var effectiveClassTimeList: [ClassTime] {
-        classTimeList.isEmpty ? SchoolDefaults.classTimeList : classTimeList
+        if usesCustomClassTimes == true, let customClassTimeList, !customClassTimeList.isEmpty { return customClassTimeList }
+        return classTimeList.isEmpty ? SchoolDefaults.classTimeList : classTimeList
     }
 
     var effectiveSeasonalPeriods: [SeasonalClassTimes]? {
-        seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
+        if usesCustomClassTimes == true { return customSeasonalPeriods ?? [] }
+        return seasonalPeriods ?? SeasonalClassTimes.defaults(for: schoolID)
     }
 
     func classTimes(on day: String) -> [ClassTime] {

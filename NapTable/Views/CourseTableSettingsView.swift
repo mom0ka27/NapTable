@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 一张课表自己的设置：学期、周次、节次时间、调休。
 ///
-/// 这些都是学校给的，不同学校、不同学期各不相同，存在 `CourseTable` 上而不是全局
+/// 不同学校、不同学期各不相同，存在 `CourseTable` 上而不是全局
 /// 设置里。所以入口放在「我的课表」里每张课表下面，改的就是那一张，不会误改到别的课表。
 struct CourseTableSettingsView: View {
     @EnvironmentObject private var store: AppStore
@@ -78,6 +78,14 @@ struct CourseTableSettingsView: View {
             .accessibilityHint("重命名这张课表")
 
             LabeledContent("课程", value: "\(courseCount) 门")
+
+            SettingsDestinationRow(
+                title: "编辑课表",
+                detail: "课程、上课周次与节次",
+                systemImage: "square.and.pencil"
+            ) {
+                ScheduleEditingView(tableID: tableId)
+            }
 
             if table.id == store.selectedTableId {
                 // 右边不能放 `Label`：表单会把它当成多个子视图拆开排，状态下面凭空多出一块空行。
@@ -211,7 +219,7 @@ struct CourseTableSettingsView: View {
             if !hidden.isEmpty {
                 SettingsDestinationRow(
                     title: "收起的课程",
-                    detail: "导入时被替换的 \(hidden.count) 门课程，可恢复",
+                    detail: "\(hidden.count) 条上课安排，可恢复",
                     systemImage: "eye.slash"
                 ) {
                     HiddenCoursesView(tableId: tableId)
@@ -236,10 +244,12 @@ struct CourseTableSettingsView: View {
     }
 
     private func periodSummary(_ table: CourseTable) -> String {
-        let list = table.effectiveClassTimeList
+        let list = table.classTimes(on: WeekCalculator.format(Date()))
         var parts = ["每天 \(list.count) 节"]
         if let first = list.first?.start, let last = list.last?.end { parts.append("\(first)–\(last)") }
-        if isServerManaged(table) {
+        if table.usesCustomClassTimes == true {
+            parts.append("自定义")
+        } else if isServerManaged(table) {
             parts.append("学校提供")
         } else if table.classTimeList.isEmpty {
             parts.append("默认")
@@ -281,92 +291,165 @@ struct CourseTableSettingsView: View {
     }
 
     private var courseCount: Int {
-        store.courses.filter { $0.tableId == tableId }.count
+        Set(store.courses.filter { $0.tableId == tableId }.map(\.name)).count
     }
 }
 
 // MARK: - 节次时间
 
-/// 一张课表每节课的起止时间。学校配置下发的只读，自己导入的可以改。
+/// 开关与多套作息都先编辑草稿，通过校验后一次保存。
 private struct ClassTimesEditor: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     let tableId: Int
+    @State private var usesCustom = false
+    @State private var list: [ClassTime] = []
+    @State private var seasons: [SeasonalClassTimes] = []
+    @State private var loaded = false
+    @State private var saveError: String?
 
     private var table: CourseTable? { store.tables.first { $0.id == tableId } }
-    private var list: [ClassTime] { table?.effectiveClassTimeList ?? SchoolDefaults.classTimeList }
-    private var isServerManaged: Bool { table?.termID != nil }
+    private var requiredPeriods: Int {
+        store.courses.filter { $0.tableId == tableId && !$0.isFreeTime }.map(\.endTime).max() ?? 1
+    }
+    private var problem: String? {
+        usesCustom ? ClassTimeValidator.problem(base: list, seasons: seasons, requiredPeriods: requiredPeriods) : nil
+    }
 
     var body: some View {
         Form {
             Section {
-                ForEach(Array(list.enumerated()), id: \.offset) { index, time in
-                    HStack(spacing: 10) {
-                        Text("第 \(index + 1) 节")
-                            .frame(width: 66, alignment: .leading)
-                        if isServerManaged {
-                            Text(time.start).frame(maxWidth: 80)
-                        } else {
-                            TextField("08:00", text: timeBinding(index, \.start))
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 80)
-                        }
-                        Text("–").foregroundStyle(.secondary)
-                        if isServerManaged {
-                            Text(time.end).frame(maxWidth: 80)
-                        } else {
-                            TextField("08:50", text: timeBinding(index, \.end))
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 80)
-                        }
-                    }
-                    .font(.subheadline.monospacedDigit())
-                }
-                .onDelete { offsets in
-                    guard !isServerManaged else { return }
-                    var list = list
-                    list.remove(atOffsets: offsets)
-                    store.updateClassTimeList(list, tableId: tableId)
-                }
-
-                if !isServerManaged {
-                    Button {
-                        var list = list
-                        let last = list.last ?? ClassTime(start: "08:00", end: "08:50")
-                        list.append(ClassTime(start: last.end, end: last.end))
-                        store.updateClassTimeList(list, tableId: tableId)
-                    } label: {
-                        Label("添加节次", systemImage: "plus")
-                    }
-                    if !(table?.classTimeList.isEmpty ?? true) {
-                        Button("恢复默认节次时间", role: .destructive) {
-                            store.updateClassTimeList([], tableId: tableId)
-                        }
-                    }
-                }
-            } header: {
-                Text("每节课的起止时间")
+                Toggle("使用自定义节次时间", isOn: $usesCustom)
             } footer: {
-                if isServerManaged {
-                    Text("由学校的学期配置提供，不可修改。")
-                } else {
-                    Text("采用 24 小时制，如 08:00；左滑可删除。仅对「\(table?.name ?? "本课表")」生效。")
+                Text("关闭后使用学校下发或原有的作息，自定义配置会保留。修改后点保存，仅对这张课表生效。")
+            }
+            if usesCustom {
+                Section {
+                    ClassTimeRows(list: $list, requiredPeriods: requiredPeriods)
+                } header: {
+                    Text("基础作息")
+                } footer: {
+                    Text("采用 24 小时制，如 08:00。没有设置按日期切换的作息时，全年使用这份时间。")
                 }
+                ForEach(seasons.indices, id: \.self) { index in
+                    Section {
+                        TextField("生效日期（月-日）", text: $seasons[index].from, prompt: Text("05-01"))
+                            .accessibilityHint("每年的生效日期，例如 05-01")
+                        ClassTimeRows(list: $seasons[index].periods, requiredPeriods: requiredPeriods)
+                        Button("删除这套作息", role: .destructive) { seasons.remove(at: index) }
+                    } header: {
+                        Text("日期作息 \(index + 1) · 每年 \(seasons[index].from) 起")
+                    }
+                }
+                Section {
+                    Button {
+                        let date = nextSeasonDate
+                        seasons.append(SeasonalClassTimes(from: date, periods: list))
+                    } label: {
+                        Label("添加按日期切换的作息", systemImage: "calendar.badge.plus")
+                    }
+                    .disabled(seasons.count >= ClassTimeValidator.maxSeasonalSchedules)
+                } footer: {
+                    Text("例如设置 05-01 起的夏令作息、10-01 起的冬令作息。各套作息节次数量须一致，最多 4 套。配置后，每天使用最近一次生效的日期作息；年初沿用上一年最后一套，不使用基础作息。")
+                }
+            } else if let table {
+                Section {
+                    let times = table.classTimeList.isEmpty ? SchoolDefaults.classTimeList : table.classTimeList
+                    ForEach(Array(times.enumerated()), id: \.offset) { index, time in
+                        LabeledContent("第 \(index + 1) 节", value: "\(time.start)–\(time.end)")
+                    }
+                } header: { Text("学校下发或原有作息") }
+                let suppliedSeasons = table.seasonalPeriods ?? SeasonalClassTimes.defaults(for: table.schoolID) ?? []
+                ForEach(Array(suppliedSeasons.enumerated()), id: \.offset) { _, season in
+                    Section {
+                        ForEach(Array(season.periods.enumerated()), id: \.offset) { index, time in
+                            LabeledContent("第 \(index + 1) 节", value: "\(time.start)–\(time.end)")
+                        }
+                    } header: { Text("每年 \(season.from) 起") }
+                }
+            }
+            if let problem = saveError ?? problem {
+                Section { Text(problem).foregroundStyle(.red) }
             }
         }
         .appListBackground()
         .navigationTitle("节次时间")
         .appInlineNavigationTitle()
         .appSoftTopScrollEdge()
+        .onAppear {
+            guard !loaded, let table else { return }
+            usesCustom = table.usesCustomClassTimes == true
+            list = table.customClassTimeList ?? table.classTimes(on: WeekCalculator.format(Date()))
+            seasons = table.customSeasonalPeriods ?? table.effectiveSeasonalPeriods ?? []
+            loaded = true
+        }
+        .onChange(of: usesCustom) { _, _ in saveError = nil }
+        .onChange(of: list) { _, _ in saveError = nil }
+        .onChange(of: seasons) { _, _ in saveError = nil }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") {
+                    let saved = usesCustom
+                        ? store.updateCustomClassTimes(list, seasons: seasons, tableId: tableId)
+                        : (store.updateCustomClassTimes(list, seasons: seasons, tableId: tableId, enabled: false)
+                           || store.setUsesCustomClassTimes(false, tableId: tableId))
+                    if saved { dismiss() }
+                    else { saveError = "无法保存，请检查作息和课程使用的节次。" }
+                }
+                .disabled(!loaded || problem != nil || table == nil)
+            }
+        }
+    }
+
+    private var nextSeasonDate: String {
+        let used = Set(seasons.map(\.from))
+        if !used.contains("05-01") { return "05-01" }
+        if !used.contains("10-01") { return "10-01" }
+        let first = WeekCalculator.parseDay("2000-01-01")!
+        return (0..<366).lazy.compactMap { offset -> String? in
+            guard let date = WeekCalculator.calendar.date(byAdding: .day, value: offset, to: first) else { return nil }
+            let value = String(WeekCalculator.format(date).suffix(5))
+            return used.contains(value) ? nil : value
+        }.first ?? "01-01"
+    }
+}
+
+private struct ClassTimeRows: View {
+    @Binding var list: [ClassTime]
+    let requiredPeriods: Int
+
+    var body: some View {
+        ForEach(Array(list.enumerated()), id: \.offset) { index, _ in
+            HStack(spacing: 10) {
+                Text("第 \(index + 1) 节").frame(width: 66, alignment: .leading)
+                TextField("08:00", text: timeBinding(index, \.start))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 80)
+                    .accessibilityLabel("第 \(index + 1) 节上课时间")
+                Text("–").foregroundStyle(.secondary)
+                TextField("08:50", text: timeBinding(index, \.end))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 80)
+                    .accessibilityLabel("第 \(index + 1) 节下课时间")
+            }
+            .font(.subheadline.monospacedDigit())
+        }
+        Button {
+            let start = min((list.last.flatMap { ClassTimeValidator.minutes($0.end) } ?? 470) + 10, 1389)
+            list.append(ClassTime(start: ClassTimeValidator.format(start), end: ClassTimeValidator.format(start + 50)))
+        } label: { Label("添加节次", systemImage: "plus") }
+        .disabled(list.count >= ClassTimeValidator.maxCustomPeriods)
+        if list.count > max(1, requiredPeriods) {
+            Button("删除最后一节", role: .destructive) { list.removeLast() }
+        }
     }
 
     private func timeBinding(_ index: Int, _ keyPath: WritableKeyPath<ClassTime, String>) -> Binding<String> {
         Binding(
             get: { list.indices.contains(index) ? list[index][keyPath: keyPath] : "" },
             set: { value in
-                var list = list
                 guard list.indices.contains(index) else { return }
                 list[index][keyPath: keyPath] = value
-                store.updateClassTimeList(list, tableId: tableId)
             }
         )
     }

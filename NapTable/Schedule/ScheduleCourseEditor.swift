@@ -56,11 +56,14 @@ struct CourseScheduleEditorSheet: View {
     let tableID: Int
     @EnvironmentObject private var app: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drafts: [CourseScheduleDraft]
     @State private var selectedIndex = 0
     @State private var deletedIDs: Set<Int> = []
     @State private var errorMessage: String?
     @State private var confirmingDelete = false
+    @State private var meetingToRemove: UUID?
+    @ScaledMetric(relativeTo: .body) private var noteEditorHeight: CGFloat = 160
 
     init(tableID: Int, courses: [Course], alternatives: [[Course]] = [], defaultDay: Int = 1, defaultWeek: Int = 1, defaultSlot: Int = 1) {
         self.tableID = tableID
@@ -80,11 +83,27 @@ struct CourseScheduleEditorSheet: View {
         Binding(get: { draft }, set: { draft = $0 })
     }
 
+    private func meetingBinding(for initialMeeting: CourseScheduleMeeting) -> Binding<CourseScheduleMeeting> {
+        let draftIndex = selectedIndex
+        return Binding(
+            get: {
+                guard drafts.indices.contains(draftIndex) else { return initialMeeting }
+                // 移除动画期间，旧行的控件仍可能读取绑定；此时保留最后显示的值。
+                return drafts[draftIndex].meetings.first { $0.id == initialMeeting.id } ?? initialMeeting
+            },
+            set: { value in
+                guard drafts.indices.contains(draftIndex),
+                      let index = drafts[draftIndex].meetings.firstIndex(where: { $0.id == initialMeeting.id }) else { return }
+                drafts[draftIndex].meetings[index] = value
+            }
+        )
+    }
+
     private var table: CourseTable? { app.tables.first { $0.id == tableID } }
     private var weekCount: Int { table.map(app.weekCount(of:)) ?? app.maxWeeks }
     private var slotCount: Int {
         max(SchoolDefaults.maxClasses, table?.effectiveClassTimeList.count ?? 0,
-            table?.seasonalPeriods?.map { $0.periods.count }.max() ?? 0)
+            table?.effectiveSeasonalPeriods?.map { $0.periods.count }.max() ?? 0)
     }
     private var hasOverlappingCourses: Bool {
         app.hasCourseOverlap(in: drafts, selectedIndex: selectedIndex, tableID: tableID, deleting: deletedIDs)
@@ -113,9 +132,7 @@ struct CourseScheduleEditorSheet: View {
                 }
                 if !drafts.isEmpty {
                     Section("课程信息") {
-                        TextField("课程名称", text: draftBinding.name)
-                        TextField("教师（选填）", text: draftBinding.teacher)
-                        TextField("备注（选填）", text: draftBinding.note)
+                        CourseIdentityFields(name: draftBinding.name, teacher: draftBinding.teacher)
                         if hasOverlappingCourses {
                             Button {
                                 draft.displayPriority = priorityRank < Int.max ? priorityRank + 1 : priorityRank
@@ -125,12 +142,18 @@ struct CourseScheduleEditorSheet: View {
                             .disabled(isPreferred)
                         }
                     }
-                    ForEach(draftBinding.meetings) { $meeting in
+                    ForEach(draft.meetings) { initialMeeting in
+                        let meetingID = initialMeeting.id
+                        let meeting = meetingBinding(for: initialMeeting)
                         Section {
-                            TextField("教室（选填）", text: $meeting.classroom)
-                            Toggle("自由时间", isOn: $meeting.isFreeTime)
-                            if !meeting.isFreeTime {
-                                Picker("星期", selection: $meeting.day) {
+                            LabeledContent("教室") {
+                                TextField("教室", text: meeting.classroom, prompt: Text("选填"))
+                                    .multilineTextAlignment(.trailing)
+                                    .accessibilityLabel("教室，选填")
+                            }
+                            Toggle("自由时间", isOn: meeting.isFreeTime)
+                            if !meeting.wrappedValue.isFreeTime {
+                                Picker("星期", selection: meeting.day) {
                                     ForEach(1...7, id: \.self) { day in
                                         Text(WeekCalculator.weekdayName(day)).tag(day)
                                     }
@@ -141,31 +164,51 @@ struct CourseScheduleEditorSheet: View {
                                     Text("上课周次").font(.subheadline.weight(.semibold))
                                     Spacer()
                                     Menu("快捷选择") {
-                                        Button("全部周") { meeting.weeks = Set(1...weekCount) }
-                                        Button("单周") { meeting.weeks = Set((1...weekCount).filter { $0 % 2 == 1 }) }
-                                        Button("双周") { meeting.weeks = Set((1...weekCount).filter { $0 % 2 == 0 }) }
-                                        Button("清空") { meeting.weeks = [] }
+                                        Button("全部周") { meeting.weeks.wrappedValue = Set(1...weekCount) }
+                                        Button("单周") { meeting.weeks.wrappedValue = Set((1...weekCount).filter { $0 % 2 == 1 }) }
+                                        Button("双周") { meeting.weeks.wrappedValue = Set((1...weekCount).filter { $0 % 2 == 0 }) }
+                                        Button("清空") { meeting.weeks.wrappedValue = [] }
                                     }
                                     .font(.caption)
                                 }
-                                numberPicker(values: Array(1...weekCount), selection: $meeting.weeks, unit: "周")
+                                numberPicker(values: Array(1...weekCount), selection: meeting.weeks, unit: "周")
                             }
                             .padding(.vertical, 6)
-                            if !meeting.isFreeTime {
+                            if !meeting.wrappedValue.isFreeTime {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text("上课节次").font(.subheadline.weight(.semibold))
-                                    numberPicker(values: Array(1...slotCount), selection: $meeting.slots, unit: "节")
+                                    numberPicker(values: Array(1...slotCount), selection: meeting.slots, unit: "节")
                                 }
                                 .padding(.vertical, 6)
                             }
-                            Toggle("收起这组安排", isOn: $meeting.hidden)
+                            Toggle("隐藏这组安排", isOn: meeting.hidden)
                             if draft.meetings.count > 1 {
                                 Button("移除这组安排", role: .destructive) {
-                                    draft.meetings.removeAll { $0.id == meeting.id }
+                                    meetingToRemove = meetingID
+                                }
+                                // 确认框跟随触发按钮；按稳定 ID 移除，避免动画期间读取已删除的绑定。
+                                .confirmationDialog(
+                                    "移除这组上课安排？",
+                                    isPresented: Binding(
+                                        get: { meetingToRemove == meetingID },
+                                        set: { if !$0 && meetingToRemove == meetingID { meetingToRemove = nil } }
+                                    ),
+                                    titleVisibility: .visible
+                                ) {
+                                    Button("移除", role: .destructive) {
+                                        guard draft.meetings.count > 1 else { return }
+                                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                                            draft.meetings.removeAll { $0.id == meetingID }
+                                        }
+                                        meetingToRemove = nil
+                                    }
+                                    Button("取消", role: .cancel) { meetingToRemove = nil }
+                                } message: {
+                                    Text("只移除这组安排，其他安排保留。点「保存」后生效。")
                                 }
                             }
                         } header: {
-                            Text("上课安排 \(arrangementNumber(meeting.id))")
+                            Text("上课安排 \(arrangementNumber(meetingID))")
                         } footer: {
                             Text("可选择多个周次和节次。不同周的节次不同，可添加另一组安排。")
                         }
@@ -174,7 +217,9 @@ struct CourseScheduleEditorSheet: View {
                         Button {
                             var meeting = CourseScheduleMeeting(day: 1, weeks: Set(1...weekCount), slots: [1, 2])
                             meeting.classroom = draft.meetings.last?.classroom ?? ""
-                            draft.meetings.append(meeting)
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) {
+                                draft.meetings.append(meeting)
+                            }
                         } label: {
                             Label("添加上课安排", systemImage: "plus.circle")
                         }
@@ -186,8 +231,39 @@ struct CourseScheduleEditorSheet: View {
                 if let errorMessage {
                     Section { Text(errorMessage).foregroundStyle(.red) }
                 }
+                if !drafts.isEmpty {
+                    Section {
+                        TextEditor(text: draftBinding.note)
+                            .font(.body)
+                            .frame(height: noteEditorHeight)
+                            .scrollContentBackground(.hidden)
+                            .overlay(alignment: .topLeading) {
+                                if draft.note.isEmpty {
+                                    Text("记录作业、考试安排或课堂提醒…")
+                                        .font(.body)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 8)
+                                        .allowsHitTesting(false)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .accessibilityLabel("备注（选填）")
+                    } header: {
+                        HStack {
+                            Text("备注")
+                            Spacer()
+                            Text("选填")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             .appListBackground()
+            .appSoftTopScrollEdge()
+            .onChange(of: selectedIndex) { _, _ in meetingToRemove = nil }
             .navigationTitle(!drafts.isEmpty && draft.originals.isEmpty ? "添加课程" : "编辑课程")
                 .appInlineNavigationTitle()
             .toolbar {
@@ -262,6 +338,62 @@ struct CourseScheduleEditorSheet: View {
                 .accessibilityLabel("第 \(value) \(unit)")
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
+        }
+    }
+}
+
+/// 新增与编辑课程共用：固定标签在上，输入内容放在独立输入框内。
+struct CourseIdentityFields: View {
+    @Binding var name: String
+    @Binding var teacher: String
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case name, teacher }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            input("课程名称", requirement: "必填", text: $name, field: .name)
+            input("教师", requirement: "选填", text: $teacher, field: .teacher)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func input(
+        _ title: String, requirement: String,
+        text: Binding<String>, field: Field
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(requirement)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityHidden(true)
+
+            TextField(title, text: text, prompt: Text(""))
+                .textFieldStyle(.plain)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+                .focused($focusedField, equals: field)
+                .submitLabel(field == .name ? .next : .done)
+                .onSubmit { focusedField = field == .name ? .teacher : nil }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(
+                            focusedField == field ? Color.cpuBrand : Color.appSeparator.opacity(0.55),
+                            lineWidth: focusedField == field ? 1.5 : 1
+                        )
+                        .allowsHitTesting(false)
+                }
+                .accessibilityLabel("\(title)，\(requirement)")
         }
     }
 }

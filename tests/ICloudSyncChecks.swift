@@ -72,6 +72,9 @@ struct ICloudSyncChecks {
         hidden.hidden = true
         first.addCourse(hidden)
         first.updateWeekCount(20)
+        let customTimes = [ClassTime(start: "10:00", end: "10:50")]
+        let customSeasons = [SeasonalClassTimes(from: "05-01", periods: customTimes)]
+        precondition(first.updateCustomClassTimes(customTimes, seasons: customSeasons, tableId: table.id))
         precondition(first.saveNow())
         let originalID = first.tables[0].syncID!
         precondition(AppStore(fileURL: directory.appendingPathComponent("first.json")).tables[0].syncID == originalID)
@@ -84,8 +87,10 @@ struct ICloudSyncChecks {
         let imported = second.tables.first { $0.syncID == originalID }!
         let importedCourses = second.courses.filter { $0.tableId == imported.id }
         precondition(importedCourses.count == 2 && importedCourses[1].isHidden)
-        precondition(importedCourses[0].courseKey == importedCourses[1].courseKey)
+        precondition(importedCourses[0].courseKey != importedCourses[1].courseKey) // 不同名称各自成课
         precondition(imported.termWeekCount == 20 && imported.classTimeList == table.classTimeList)
+        precondition(imported.usesCustomClassTimes == true && imported.customClassTimeList == customTimes)
+        precondition(imported.customSeasonalPeriods == customSeasons)
         try first.applyCloudDocument(second.cloudSync.document)
         try second.applyCloudDocument(first.cloudSync.document)
         precondition(first.cloudSnapshot() == second.cloudSnapshot(), "Same-named independent tables must converge")

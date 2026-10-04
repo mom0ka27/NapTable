@@ -81,6 +81,7 @@ struct ICloudSyncReviewView: View {
             }
         }
         .appListBackground()
+        .appSoftTopScrollEdge()
         .navigationTitle("接收课表更新")
         .appInlineNavigationTitle()
         .toolbar {

@@ -542,6 +542,7 @@ private struct SharedScheduleImportView: View {
                 }
             }
             .appListBackground()
+            .appSoftTopScrollEdge()
             .navigationTitle("导入共享课表")
             .appInlineNavigationTitle()
             .toolbar {

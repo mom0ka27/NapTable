@@ -107,6 +107,39 @@ struct SeasonalTimetableChecks {
         precondition(disabled.classTimes(on: "2026-09-30")[4].start == "14:00")
         let frozen = try CoursePayloadCodec.decode(object: ["name": "共享", "courses": [], "schoolID": "xjtu", "seasonalPeriods": []])
         precondition(frozen.seasonalPeriods == [])
+        // 自定义日期作息沿用同一条渲染、组件、ICS 和通知管线。
+        var customSummer = fixture.seasons[0].periods
+        var customWinter = winter
+        customSummer[4] = ClassTime(start: "14:10", end: "15:00")
+        customWinter[4] = ClassTime(start: "13:10", end: "14:00")
+        let customSeasons = [SeasonalClassTimes(from: "05-01", periods: customSummer),
+                             SeasonalClassTimes(from: "10-01", periods: customWinter)]
+        precondition(app.updateCustomClassTimes(winter, seasons: customSeasons, tableId: app.selectedTableId))
+        await store.selectWeek("1")
+        await store.refresh()
+        precondition(store.periods(on: "2026-09-30")[4].startTime == "14:10")
+        precondition(store.periods(on: "2026-10-01")[4].startTime == "13:10")
+        let customSnapshot = store.snapshot()!
+        precondition(customSnapshot.seasonalPeriods == customSeasons)
+        let customWidget = NativeWidgetSettings.payload(from: customSnapshot, selectedWeek: 1)!
+        precondition(customWidget.weekDays!.first { $0.date == "2026-10-01" }!.courses!.first!.startTime == "13:10")
+        let customICS = NativeScheduleICSExporter.make(result: customSnapshot.data!, week: customSnapshot.calendar!.weeks[0],
+            periods: customSnapshot.periods, seasonalPeriods: customSnapshot.seasonalPeriods)
+        precondition(customICS.contains("DTSTART;TZID=Asia/Shanghai:20261001T131000"))
+        let customOccurrences = LiveActivityTimeline.build(customSnapshot,
+            now: Date(timeIntervalSince1970: stamp("2026-10-01", "00:00")), lead: 30, perPeriod: false).occurrences
+        precondition(customOccurrences.first!.start == stamp("2026-10-01", "13:10"))
+        let customUpload = LiveActivityTimeline.timetable(own: customSnapshot, share: nil, choices: [:], lead: 30, sharedLead: 30, perPeriod: true)!
+        let customBody = customUpload["own"] as! [String: Any]
+        let uploadedSeasons = try JSONDecoder().decode([SeasonalClassTimes].self,
+            from: JSONSerialization.data(withJSONObject: customBody["seasonalPeriods"]!))
+        precondition(uploadedSeasons == customSeasons)
+        precondition(app.setUsesCustomClassTimes(false, tableId: app.selectedTableId))
+        await store.refresh()
+        precondition(store.periods(on: "2026-10-01")[4].startTime == "14:00")
+        precondition(app.setUsesCustomClassTimes(true, tableId: app.selectedTableId))
+        await store.refresh()
+        precondition(store.periods(on: "2026-10-01")[4].startTime == "13:10")
         print("PASS: XJTU seasonal boundaries, daily widget clocks, local reservations, per-period breaks, swaps, ICS, APNs upload, previews and legacy archives")
     }
 }

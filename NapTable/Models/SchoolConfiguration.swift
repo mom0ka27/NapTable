@@ -138,8 +138,12 @@ private func napTableSupportedSchools(_ schools: [ServiceSchoolConfiguration]) -
             throw ScheduleServiceError.server("课表没有变更，请继续使用现有分享码")
         }
         let rows = try courses.map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
-        let body: [String: Any] = ["owner": owner, "schoolID": schoolID, "termID": termID, "courses": rows,
+        var body: [String: Any] = ["owner": owner, "schoolID": schoolID, "termID": termID, "courses": rows,
             "previousShares": obsolete.filter { $0.code != previous?.code }.map { ["code": $0.code, "token": $0.token] }]
+        if table.usesCustomClassTimes == true {
+            body["periods"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(table.effectiveClassTimeList))
+            body["seasonalPeriods"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(table.effectiveSeasonalPeriods ?? []))
+        }
         let path = previous.map { "/v1/shares/\($0.code)/replace" } ?? "/v1/shares"
         let headers = previous.map { ["X-Write-Token": $0.token] } ?? [:]
         let data: Data

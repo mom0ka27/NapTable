@@ -3,12 +3,10 @@ import SwiftUI
 /// 设置中的完整课程列表，非本周和已收起的安排也能编辑。
 struct ScheduleEditingView: View {
     @EnvironmentObject private var app: AppStore
-    @State private var tableID: Int
+    let tableID: Int
     @State private var selectedCourse: Course?
     @State private var addingCourse = false
     @State private var search = ""
-
-    init(tableID: Int) { _tableID = State(initialValue: tableID) }
 
     private var rows: [Course] { app.courses.filter { $0.tableId == tableID } }
     private var families: [[Course]] {
@@ -28,13 +26,11 @@ struct ScheduleEditingView: View {
 
     var body: some View {
         List {
-            if !app.tables.isEmpty {
+            if let table = app.tables.first(where: { $0.id == tableID }) {
                 Section {
-                    Picker("课表", selection: $tableID) {
-                        ForEach(app.tables) { table in Text(table.name).tag(table.id) }
-                    }
+                    Text(table.name)
                 } footer: {
-                    Text("所有课程安排均保留，包括同一时段的重复课程。点课程可编辑不同周次的节次。")
+                    Text("同名课程归为一门课，保留所有上课安排。点课程可编辑不同周次的节次。")
                 }
                 Section {
                     if families.isEmpty {
@@ -66,10 +62,10 @@ struct ScheduleEditingView: View {
                         }
                     }
                 } header: {
-                    Text("课程安排 · \(rows.count) 条")
+                    Text("\(families.count) 门课程 · \(families.reduce(0) { $0 + $1.count }) 条安排")
                 }
             } else {
-                Text("请先导入或创建一张课表。")
+                Text("这张课表已删除。")
                     .foregroundStyle(.secondary)
             }
         }
@@ -86,8 +82,6 @@ struct ScheduleEditingView: View {
                 .disabled(!app.tables.contains { $0.id == tableID })
             }
         }
-        .onAppear { repairTableSelection() }
-        .onChange(of: app.tables) { _, _ in repairTableSelection() }
         .sheet(item: $selectedCourse) { course in
             CourseScheduleEditorSheet(tableID: course.tableId, courses: app.courseFamily(containing: course),
                                       alternatives: app.coursesInTimeRange(of: course))
@@ -98,12 +92,6 @@ struct ScheduleEditingView: View {
             CourseScheduleEditorSheet(tableID: tableID, courses: [])
                 .appSheetDetents([.large])
                 .appDragIndicatorVisible()
-        }
-    }
-
-    private func repairTableSelection() {
-        if !app.tables.contains(where: { $0.id == tableID }) {
-            tableID = app.selectedTable?.id ?? app.tables.first?.id ?? 0
         }
     }
 
