@@ -547,7 +547,7 @@ struct OnboardingView: View {
                         ProgressView().controlSize(.small)
                         Text(purchases.busy ? "正在确认…" : "正在读取购买信息…")
                     } else {
-                        Text(purchases.state.isEntitled ? "开启并继续" : (purchases.trialConsumed ? "一次买断并开启" : "开始 30 天试用并开启"))
+                        Text(purchases.state.isEntitled ? "开启并继续" : (purchases.trialConsumed ? "一次买断并开启" : "免费试用 30 天并开启"))
                     }
                     Spacer()
                     Image(systemName: "arrow.right").font(.subheadline.weight(.semibold))
@@ -566,6 +566,10 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
             } else if purchases.state == .unavailable {
                 Text("试用与购买暂不可用，可点右上角「跳过」，之后在设置中开启。")
+                    .font(.caption2).foregroundStyle(colors.secondary)
+                    .multilineTextAlignment(.center)
+            } else if purchases.accessMode == .paid && purchases.state == .locked && !purchases.trialConsumed {
+                Text("经 Apple 确认领取后自动开启，到期不会自动扣款。")
                     .font(.caption2).foregroundStyle(colors.secondary)
                     .multilineTextAlignment(.center)
             }

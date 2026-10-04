@@ -86,6 +86,8 @@ for script in tests/check-*.sh; do bash "$script" || break; done
 
 `tests/check-seasonal-timetable.sh` 验证西交大切换日、跨年、调休、每日小组件、本地实时活动、日历导出和旧存档；`tests/test_seasonal_times.py` 验证分季配置、分享快照、旧设备登记迁移，以及不再上传课表时切换日前后的 APNs 启动与广播结束。两端共享 `tests/fixtures/xjtu-seasonal-times.json` 中的官方时间基准。
 
+`tests/check-trial-reminders.sh` 验证试用提醒的 3 天阈值、到期边界、提醒持久化与间隔，以及上课和课前 10 分钟避让、连堂课课间放行、调休、分季作息、时区和跨午夜课程。
+
 ```sh
 uv run --frozen python -m unittest discover -s tests -p 'test_*.py'
 ```

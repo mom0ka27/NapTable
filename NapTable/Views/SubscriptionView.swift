@@ -2,23 +2,45 @@ import SwiftUI
 import StoreKit
 
 struct SubscriptionView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var purchases = PurchaseManager.shared
-    @State private var selectedTier: EntitlementTier = .free
+    @State private var selectedTier: EntitlementTier = .pro
+    var reminder: TrialReminder? = nil
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                tierPicker
-                    .padding(.top, 8)
-
-                EntitlementCardDeck(selectedTier: $selectedTier)
-                    .padding(.bottom, 24)
+                if let reminder {
+                    trialHeader(reminder)
+                        .padding(.horizontal, 28)
+                        .padding(.top, 24)
+                        .padding(.bottom, 28)
+                    // Keep the same benefits and StoreKit controls as the
+                    // entitlement deck, fully readable on the reminder page.
+                    EntitlementCard(tier: .pro)
+                        .padding(.horizontal, 24)
+                    Text("课表管理、分享、基础小组件和 iCloud 同步继续免费使用，你的课表数据会保留。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                        .padding(.top, 24)
+                    Button(reminder.expiresAt <= Date() ? "继续使用免费版" : "稍后再说") { dismiss() }
+                        .font(.subheadline.weight(.medium))
+                        .frame(minHeight: 48)
+                        .padding(.bottom, 24)
+                } else {
+                    tierPicker
+                        .padding(.top, 8)
+                    EntitlementCardDeck(selectedTier: $selectedTier)
+                        .padding(.bottom, 24)
+                }
             }
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
         .background(.appGroupedBackground)
-        .navigationTitle("版本与权益")
+        .navigationTitle(reminder == nil ? "版本与权益" : "专业版试用")
         .appInlineNavigationTitle()
         .appSoftTopScrollEdge()
         .task { await purchases.load() }
@@ -29,6 +51,38 @@ struct SubscriptionView: View {
             Button("知道了", role: .cancel) { purchases.errorMessage = nil }
         } message: {
             Text(purchases.errorMessage ?? "")
+        }
+    }
+
+    private func trialHeader(_ reminder: TrialReminder) -> some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let expired = reminder.expiresAt <= context.date
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 8) {
+                    Image(systemName: expired ? "sparkles" : "hourglass")
+                    Text(expired ? "感谢这 30 天的体验" : "试用即将结束")
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(EntitlementTier.bunnyText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(EntitlementTier.bunnyTint(white: 0.83), in: Capsule())
+
+                Text(expired ? "30 天试用已结束" : "30 天试用即将结束")
+                    .font(.largeTitle.bold())
+                    .tracking(-0.7)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(expired
+                     ? "继续使用以下专业版功能，需要一次买断。谢谢你让 NapTable 陪伴每一堂课。"
+                     : "试用将于 \(reminder.expiresAt.formatted(.dateTime.month().day().hour().minute().locale(Locale(identifier: "zh_CN"))))结束。一次买断，即可继续使用以下专业版功能。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label("试用到期不会自动扣款", systemImage: "checkmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -57,6 +111,132 @@ struct SubscriptionView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("切换版本")
+    }
+}
+
+/// Shared vocabulary keeps the settings entry and the purchase page aligned.
+private enum ProBenefit: CaseIterable, Identifiable {
+    case liveActivity, themes, widgetBackground
+    var id: Self { self }
+    var icon: String {
+        switch self {
+        case .liveActivity: "rectangle.topthird.inset.filled"
+        case .themes: "photo.on.rectangle.angled"
+        case .widgetBackground: "square.grid.2x2"
+        }
+    }
+    var title: String {
+        switch self {
+        case .liveActivity: "实时活动"
+        case .themes: "高级主题设置"
+        case .widgetBackground: "小组件背景图片"
+        }
+    }
+    var shortTitle: String {
+        switch self {
+        case .liveActivity: "实时活动"
+        case .themes: "高级主题"
+        case .widgetBackground: "小组件背景"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .liveActivity: "锁屏与灵动岛上的课程和倒计时"
+        case .themes: "每张课表可为浅色与深色模式分别设置背景图"
+        case .widgetBackground: "为浅色与深色小组件选择图片，调整裁剪与不透明度"
+        }
+    }
+}
+
+/// The first item in Settings makes both the paid features and current access
+/// visible without requiring someone to discover the help section.
+struct SubscriptionSettingsCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ObservedObject private var purchases = PurchaseManager.shared
+    private var accent: Color {
+        colorScheme == .dark ? EntitlementTier.bunnyHighlight : EntitlementTier.bunnyText
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "sparkles")
+                        .font(.title2)
+                        .foregroundStyle(accent)
+                        .frame(width: 46, height: 46)
+                        .background(accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 15))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("NapTable 专业版")
+                            .font(.title3.bold())
+                            .foregroundStyle(.primary)
+                        Text(status(at: context.date))
+                            .font(.caption)
+                            .foregroundStyle(accent)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+                    : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
+                layout {
+                    ForEach(ProBenefit.allCases) { benefit in
+                        HStack(spacing: 5) {
+                            Image(systemName: benefit.icon)
+                                .imageScale(.small)
+                                .accessibilityHidden(true)
+                            Text(benefit.shortTitle)
+                        }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary.opacity(0.8))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
+                HStack {
+                    Text("查看专业版权益")
+                    Spacer(minLength: 8)
+                    Image(systemName: "arrow.up.right")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(accent)
+                .padding(.top, 14)
+                .overlay(alignment: .top) { Rectangle().fill(accent.opacity(0.13)).frame(height: 0.5) }
+            }
+            .padding(20)
+            .background {
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(LinearGradient(
+                        colors: colorScheme == .dark
+                            ? [Color(red: 0.25, green: 0.16, blue: 0.18), Color(red: 0.16, green: 0.12, blue: 0.15)]
+                            : [EntitlementTier.bunnyTint(white: 0.78), EntitlementTier.bunnyTint(white: 0.93)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
+            }
+            .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(accent.opacity(0.12), lineWidth: 0.5) }
+        }
+    }
+
+    private func status(at now: Date) -> String {
+        if purchases.isBeta { return "Beta 期间免费体验全部专属功能" }
+        guard purchases.accessMode == .paid else { return purchases.versionDetail }
+        if case .trial(let expiresAt) = purchases.state {
+            let remaining = expiresAt.timeIntervalSince(now)
+            if remaining <= 0 { return "30 天试用已结束 · 查看解锁方式" }
+            if remaining < 24 * 60 * 60 { return "试用剩余不足 1 天 · 到期不自动扣款" }
+            return "30 天免费试用中 · 剩余 \(Int(ceil(remaining / 86400))) 天"
+        }
+        if purchases.state == .lifetime { return "已永久解锁 · 感谢你的支持" }
+        if let expiresAt = purchases.trialExpiresAt, expiresAt <= now {
+            return "30 天试用已结束 · 查看解锁方式"
+        }
+        if purchases.state == .locked && !purchases.trialConsumed { return "免费试用 30 天 · 专属功能等你体验" }
+        return purchases.versionDetail
     }
 }
 
@@ -92,25 +272,35 @@ private struct EntitlementPurchaseActions: View {
         case .lifetime:
             status("已永久解锁", icon: "checkmark.seal.fill")
         case .trial(let expiresAt):
-            status("试用至 \(formattedDate(expiresAt))", icon: "gift")
+            status(expiresAt <= Date() ? "30 天试用已结束" : "试用至 \(formattedDate(expiresAt))", icon: "gift")
         case .locked:
             if !purchases.trialConsumed {
                 purchaseButton(
                     "免费试用 30 天", detail: "到期不自动扣款", prominent: false,
                     productID: PurchaseManager.trialProductID
                 ) { await purchases.beginTrial() }
+            } else if let expiresAt = purchases.trialExpiresAt, expiresAt <= Date() {
+                status("30 天试用已结束", icon: "clock")
             }
         case .unavailable:
             status("购买暂不可用，请稍后重试", icon: "info.circle")
+            Button("重新获取价格") { Task { await purchases.load() } }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(accent)
+                .frame(minHeight: 44)
         }
 
         if purchases.state != .lifetime && purchases.state != .loading {
             purchaseButton(
-                "一次买断",
+                "一次买断专业版",
                 detail: purchases.products.first { $0.id == PurchaseManager.lifetimeProductID }?.displayPrice ?? "价格待获取",
                 prominent: true,
                 productID: PurchaseManager.lifetimeProductID
             ) { await purchases.buyLifetime() }
+            Text("一次付费，永久解锁 · 无自动续费")
+                .font(.caption2)
+                .foregroundStyle(muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -496,7 +686,7 @@ private struct EntitlementCard: View {
     private var proBenefits: some View {
         VStack(alignment: .leading, spacing: 13) {
             VStack(alignment: .leading, spacing: 12) {
-                benefit("rectangle.topthird.inset.filled", title: "实时活动", detail: "锁屏与灵动岛上的课程和倒计时")
+                benefit(ProBenefit.liveActivity.icon, title: ProBenefit.liveActivity.title, detail: ProBenefit.liveActivity.detail)
                 HStack(spacing: 9) {
                     Image(systemName: "graduationcap.fill")
                         .font(.system(size: 11))
@@ -526,7 +716,9 @@ private struct EntitlementCard: View {
                     .strokeBorder(accent.opacity(0.14), lineWidth: 0.5)
             }
 
-            benefit("photo.on.rectangle.angled", title: "高级主题设置", detail: "每张课表可为浅色与深色模式分别设置背景图")
+            ForEach([ProBenefit.themes, .widgetBackground]) { item in
+                benefit(item.icon, title: item.title, detail: item.detail)
+            }
         }
     }
 
@@ -631,6 +823,16 @@ extension PurchaseManager {
     }
 }
 
-#Preview("免费版") {
+#Preview("专业版权益") {
     NavigationStack { SubscriptionView() }
+}
+
+#Preview("试用到期提醒") {
+    NavigationStack { SubscriptionView(reminder: TrialReminder(stage: .expired, expiresAt: .now)) }
+}
+
+#Preview("试用即将到期") {
+    NavigationStack {
+        SubscriptionView(reminder: TrialReminder(stage: .endingSoon, expiresAt: .now.addingTimeInterval(2 * 86400)))
+    }
 }

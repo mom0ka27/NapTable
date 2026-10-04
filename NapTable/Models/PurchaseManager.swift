@@ -40,6 +40,9 @@ final class PurchaseManager: ObservableObject {
     @Published private(set) var state: State = .loading
     @Published private(set) var products: [Product] = []
     @Published private(set) var trialConsumed = false
+    /// Retained after expiry so reminders can distinguish an ended trial from
+    /// someone who has never started one. Only verified, unrevoked receipts count.
+    @Published private(set) var trialExpiresAt: Date?
     @Published private(set) var busy = false
     @Published var errorMessage: String?
 
@@ -59,11 +62,18 @@ final class PurchaseManager: ObservableObject {
     deinit { updatesTask?.cancel() }
 
     var isBeta: Bool { accessMode == .beta }
-    var allowsLiveActivities: Bool { isBeta || (accessMode == .paid && state.isEntitled) }
+    private var hasActiveEntitlement: Bool {
+        switch state {
+        case .lifetime: return true
+        case .trial(let expiresAt): return expiresAt > Date()
+        default: return false
+        }
+    }
+    var allowsLiveActivities: Bool { isBeta || (accessMode == .paid && hasActiveEntitlement) }
 
     /// Pro-only display customizations. Beta builds intentionally receive the
     /// same entitlement so they can exercise the complete product surface.
-    var allowsProFeatures: Bool { isBeta || (accessMode == .paid && state.isEntitled) }
+    var allowsProFeatures: Bool { isBeta || (accessMode == .paid && hasActiveEntitlement) }
     var allowsPerTableBackgrounds: Bool { allowsProFeatures }
 
     func start() {
@@ -147,14 +157,20 @@ final class PurchaseManager: ObservableObject {
         // An expired non-consumable trial remains a historical transaction;
         // inspect the history so it cannot be purchased repeatedly.
         var hasHistoricalTrial = trialPurchase != nil
+        var reminderPurchase = trialPurchase
         for await result in Transaction.all {
             guard case .verified(let transaction) = result else { continue }
             if transaction.productID == Self.trialProductID {
                 hasHistoricalTrial = true
+                if transaction.revocationDate == nil,
+                   reminderPurchase == nil || transaction.purchaseDate < reminderPurchase! {
+                    reminderPurchase = transaction.purchaseDate
+                }
                 queue(transaction, jws: result.jwsRepresentation)
             }
         }
         trialConsumed = hasHistoricalTrial
+        trialExpiresAt = reminderPurchase?.addingTimeInterval(Self.trialDuration)
         if lifetime {
             state = .lifetime
         } else if let purchase = trialPurchase {
@@ -163,6 +179,11 @@ final class PurchaseManager: ObservableObject {
         } else {
             state = .locked
         }
+    }
+
+    /// A foreground session can span the expiry without another StoreKit event.
+    func expireTrialIfNeeded(now: Date = Date()) {
+        if case .trial(let expiresAt) = state, expiresAt <= now { state = .locked }
     }
 
     func beginTrial() async {

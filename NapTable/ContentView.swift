@@ -17,6 +17,7 @@ struct ContentView: View {
     @ObservedObject private var purchases = PurchaseManager.shared
     @State private var showImport = false
     @State private var showSettings = false
+    @State private var selectedTab = 0
     @State private var showLiveActivityDismissal = false
     @State private var dismissalOccurrence = ""
     @State private var restorationFailure: String?
@@ -30,6 +31,11 @@ struct ContentView: View {
             #endif
         }
         .preferredColorScheme(store.settings.appearance.colorScheme)
+        .modifier(TrialReminderHost(
+            scheduleStore: scheduleStore,
+            isBlocked: selectedTab != 0 || showImport || showSettings
+                || showLiveActivityDismissal || restorationFailure != nil
+        ))
         .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
         .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         .sheet(isPresented: $showImport) {
@@ -37,8 +43,6 @@ struct ContentView: View {
                 .environmentObject(store)
                 .environmentObject(scheduleStore)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
-        .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
-        .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         }
         // Schedule edits update both companion surfaces. Caring changes only
         // the Live Activity source; the displayed timetable and widgets stay put.
@@ -199,16 +203,15 @@ struct ContentView: View {
                 .environmentObject(store)
                 .frame(minWidth: 520, minHeight: 640)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
-        .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
-        .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
         }
         .tint(themeSettings.brandColor)
     }
     #else
     private var phoneLayout: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             timetable
                 .tabItem { Label("课表", systemImage: "calendar") }
+                .tag(0)
 
             NavigationStack {
                 SettingsView(
@@ -218,6 +221,7 @@ struct ContentView: View {
                 )
             }
             .tabItem { Label("设置", systemImage: "gearshape") }
+            .tag(1)
         }
         .tint(themeSettings.brandColor)
     }
