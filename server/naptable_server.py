@@ -19,11 +19,11 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import app_attest, entitlements, holidays, image_import, live_activity, school_times
+    from . import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times
     from .live_activity_timeline import ProtocolError, identifier
     from .device_models import device_model_name
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import app_attest, entitlements, holidays, image_import, live_activity, school_times
+    import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times
     from live_activity_timeline import ProtocolError, identifier
     from device_models import device_model_name
 
@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS usage_devices (
 CREATE INDEX IF NOT EXISTS usage_devices_last_seen ON usage_devices(last_seen);
 CREATE TABLE IF NOT EXISTS usage_daily (
  day TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, new INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS announcement_config (
+ id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL,
+ messages_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS configuration_migrations (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS apns_config (
@@ -374,6 +378,22 @@ class Store:
             self.db.commit(); self.seed(); self._migrate_configuration_model()
         self.expired_at = 0.0
         self.expire_shares()
+    def announcement_config(self):
+        with self.lock:
+            row = self.db.execute("SELECT * FROM announcement_config WHERE id=1").fetchone()
+            return {"revision": row["revision"], "messages": json.loads(row["messages_json"])} if row else {"revision": 0, "messages": []}
+
+    def save_announcements(self, value):
+        messages = announcements.validate(value)
+        with self.lock, self.db:
+            current = self.announcement_config()
+            if value["revision"] != current["revision"]:
+                raise ValueError("配置已被其他管理员修改，请重新加载后再保存")
+            revision = current["revision"] + 1
+            self.db.execute("INSERT INTO announcement_config VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,messages_json=excluded.messages_json",
+                            (revision, json.dumps(messages, ensure_ascii=False)))
+        return {"revision": revision, "messages": messages}
+
     def close(self):
         with self.lock: self.db.close()
     @staticmethod
@@ -1285,6 +1305,25 @@ def health(x): x.send_json(200,{"ok":True})
 def admin_session(x):
     if admin_only(x): return
     x.send_json(200, {"authenticated": True, "admin": x.admin})
+
+@route("GET HEAD", "/v1/announcements")
+def public_announcements(x):
+    config = x.store.announcement_config()
+    stamp = time.time()
+    x.send_json(200, {"messages": [item for item in config["messages"] if announcements.active(item, stamp)]},
+                [("Cache-Control", "no-store")])
+
+@route("GET HEAD", "/v1/admin/announcements")
+def admin_announcements(x):
+    if admin_only(x): return
+    x.send_json(200, x.store.announcement_config(), [("Cache-Control", "no-store")])
+
+@route("POST", "/v1/admin/announcements")
+def save_announcements(x):
+    if admin_only(x): return
+    config = x.store.save_announcements(x.body())
+    x.audit("announcement.save", "", {"revision": config["revision"], "ids": [item["id"] for item in config["messages"]]})
+    x.send_json(200, config)
 
 @route("GET HEAD", "/v1/admin/apns")
 def admin_apns(x):

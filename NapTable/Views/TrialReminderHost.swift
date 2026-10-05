@@ -7,13 +7,24 @@ import AppKit
 
 /// Mounted after onboarding. Checks again while foregrounded so a reminder
 /// deferred by a class or an editor can appear at the next quiet opportunity.
-struct TrialReminderHost: ViewModifier {
+struct AutomaticReminderHost: ViewModifier {
+    private enum Presentation: Identifiable {
+        case trial(TrialReminder)
+        case announcement(AppAnnouncement, source: String)
+        var id: String {
+            switch self {
+            case .trial(let item): return "trial:" + item.id
+            case .announcement(let item, let source): return source + item.historyID
+            }
+        }
+    }
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var purchases = PurchaseManager.shared
+    @ObservedObject private var announcements = AnnouncementStore.shared
     @ObservedObject private var cloudSync = ICloudSyncService.shared
     @ObservedObject var scheduleStore: NativeScheduleStore
     let isBlocked: Bool
-    @State private var reminder: TrialReminder?
+    @State private var reminder: Presentation?
     @State private var anchor = TrialReminderPresentationAnchor()
 
     func body(content: Content) -> some View {
@@ -21,12 +32,17 @@ struct TrialReminderHost: ViewModifier {
             .background { TrialReminderPresentationProbe(anchor: anchor).allowsHitTesting(false) }
             .sheet(item: $reminder) { item in
                 NavigationStack {
-                    SubscriptionView(reminder: item)
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("关闭", systemImage: "xmark") { reminder = nil }
+                    switch item {
+                    case .trial(let trial):
+                        SubscriptionView(reminder: trial)
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("关闭", systemImage: "xmark") { reminder = nil }
+                                }
                             }
-                        }
+                    case .announcement(let announcement, _):
+                        AnnouncementView(item: announcement)
+                    }
                 }
                 #if os(macOS)
                 .frame(minWidth: 520, minHeight: 680)
@@ -34,7 +50,22 @@ struct TrialReminderHost: ViewModifier {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 #endif
-                .onAppear { TrialReminderPolicy.markPresented(item) }
+                .onAppear {
+                    AnnouncementPolicy.markAutomatic()
+                    switch item {
+                    case .trial(let trial): TrialReminderPolicy.markPresented(trial)
+                    case .announcement(let announcement, let source): AnnouncementPolicy.markSeen(announcement, source: source)
+                    }
+                }
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                do {
+                    while !Task.isCancelled {
+                        await announcements.refresh()
+                        try await Task.sleep(for: .seconds(300))
+                    }
+                } catch { }
             }
             // Restart when the parent changes tabs or presentation state; a
             // running task otherwise retains the old value of `isBlocked`.
@@ -51,10 +82,10 @@ struct TrialReminderHost: ViewModifier {
                 } catch { /* Backgrounding cancels this foreground-only task. */ }
             }
             .onChange(of: purchases.state) { _, state in
-                if state == .lifetime { reminder = nil }
+                if state == .lifetime, case .trial = reminder { reminder = nil }
             }
             .onChange(of: purchases.accessMode) { _, mode in
-                if mode == .beta { reminder = nil }
+                if mode == .beta, case .trial = reminder { reminder = nil }
             }
     }
 
@@ -62,17 +93,22 @@ struct TrialReminderHost: ViewModifier {
         let now = Date()
         purchases.expireTrialIfNeeded(now: now)
         guard scenePhase == .active, reminder == nil, !isBlocked,
+              AnnouncementPolicy.canPresent(now: now),
               !cloudSync.isReviewPresented, !purchases.busy, purchases.errorMessage == nil,
-              let candidate = TrialReminderPolicy.pending(
-                accessMode: purchases.accessMode, state: purchases.state,
-                expiresAt: purchases.trialExpiresAt, now: now
-              ), anchor.canPresent,
+              anchor.canPresent,
               let own = scheduleStore.snapshot(useSharedNotifications: false),
               TrialReminderPolicy.isSafeToPresent(in: own, now: now) else { return }
         // A followed timetable must not replace the reader's own class check.
         if let followed = scheduleStore.snapshot(), followed.sourceLabel != nil,
            !TrialReminderPolicy.isSafeToPresent(in: followed, now: now) { return }
-        reminder = candidate
+        if let candidate = announcements.pending {
+            reminder = .announcement(candidate, source: announcements.source)
+        } else if !announcements.isLoading, let candidate = TrialReminderPolicy.pending(
+            accessMode: purchases.accessMode, state: purchases.state,
+            expiresAt: purchases.trialExpiresAt, now: now
+        ) {
+            reminder = .trial(candidate)
+        }
     }
 }
 

@@ -68,6 +68,7 @@
     }
   };
   const viewCopy = {
+    announcements: ["更新与通知", "发布新版本与重要消息，按 App 版本、平台和时间精准展示。"],
     schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
     calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
     stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
@@ -117,9 +118,10 @@
     term: () => state.term ? JSON.stringify(formTerm()) : "",
     calendar: () => JSON.stringify(adjustmentRows()),
     apns: () => JSON.stringify(formApns()),
+    announcements: () => JSON.stringify(formAnnouncements()),
     imageImport: () => JSON.stringify(formImageImport())
   };
-  const formNames = { school: "学校信息", term: "学期", calendar: "统一调休", apns: "APNs 配置", imageImport: "图片导入配置" };
+  const formNames = { announcements: "更新与通知", school: "学校信息", term: "学期", calendar: "统一调休", apns: "APNs 配置", imageImport: "图片导入配置" };
   const savedForms = {};
   const markClean = (...keys) => keys.forEach(key => { savedForms[key] = forms[key](); });
   // A form with nothing loaded ("") has nothing to lose.
@@ -630,6 +632,7 @@
   const auditActions = {
     "school.create": "新增学校", "school.save": "保存学校", "school.rename": "修改学校 ID", "school.delete": "删除学校",
     "term.save": "保存学期", "term.delete": "删除学期", "calendar.save": "保存调休", "share.delete": "删除分享",
+    "announcement.save": "保存更新与通知",
     "entitlement.settings": "保存实时活动权益规则",
     "apns.save": "保存 APNs", "imageImport.save": "保存图片导入配置", "session.signIn": "登录", "session.signOut": "退出", "session.failed": "登录失败"
   };
@@ -978,6 +981,134 @@
     try { await loadImageImport(); } catch (error) { notice(error.message, "error"); }
   };
 
+  let announcementRevision = null;
+  const publicationFields = ["kind", "platform", "title", "subtitle", "body", "version", "minVersion", "maxVersion", "actionTitle", "actionURL", "enabled", "startsAt", "endsAt"];
+  const readPublication = card => {
+    const item = { id: card.dataset.id };
+    for (const key of publicationFields) {
+      const field = card.querySelector(`[data-field="${key}"]`);
+      item[key] = key === "enabled" ? field.checked : ["startsAt", "endsAt"].includes(key)
+        ? (field.value ? new Date(field.value).getTime() / 1000 : null) : field.value.trim();
+    }
+    return item;
+  };
+  const formAnnouncements = () => ({ revision: announcementRevision, messages: [...$("announcementEditors").querySelectorAll(".publication-card")].map(readPublication) });
+  const localPublicationDate = stamp => {
+    if (stamp == null) return "";
+    const date = new Date(stamp * 1000);
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+  };
+  // Only create known DOM elements; raw HTML and non-HTTPS links stay inert.
+  const publicationInline = (element, text) => {
+    const tokens = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+    let start = 0;
+    for (const match of text.matchAll(tokens)) {
+      element.append(document.createTextNode(text.slice(start, match.index)));
+      let node;
+      if (match[2]) { node = document.createElement("strong"); node.textContent = match[2]; }
+      else if (match[3]) { node = document.createElement("code"); node.textContent = match[3]; }
+      else {
+        node = document.createElement("span"); node.textContent = match[4];
+        try {
+          const url = new URL(match[5]);
+          if (url.protocol === "https:" && !url.username && !url.password) {
+            node = document.createElement("a"); node.textContent = match[4]; node.href = url.href; node.target = "_blank"; node.rel = "noopener noreferrer";
+          }
+        } catch { /* Invalid links are plain text. */ }
+      }
+      element.append(node); start = match.index + match[0].length;
+    }
+    element.append(document.createTextNode(text.slice(start)));
+  };
+  const previewPublication = item => {
+    $("publicationPreviewKind").textContent = item.kind === "update" ? "发现新版本" : "重要通知";
+    $("publicationPreviewTitle").textContent = item.title || "消息标题";
+    $("publicationPreviewSubtitle").textContent = item.subtitle;
+    $("publicationPreviewVersion").textContent = item.kind === "update" && item.version ? `新版本 v${item.version}` : "";
+    $("publicationPreviewAction").textContent = item.actionURL ? (item.actionTitle || (item.kind === "update" ? "前往更新 ↗" : "查看详情 ↗")) : "知道了";
+    const body = $("publicationPreviewBody"); body.replaceChildren();
+    for (const line of item.body.split(/\r?\n/)) {
+      const heading = line.match(/^(#{1,3}) /);
+      const bullet = /^[-*] /.test(line), quote = line.startsWith("> ");
+      const element = document.createElement(heading ? `h${heading[1].length + 2}` : quote ? "blockquote" : "p");
+      publicationInline(element, heading ? line.slice(heading[0].length) : quote ? line.slice(2) : bullet ? `•  ${line.slice(2)}` : line || "\u00a0");
+      body.append(element);
+    }
+  };
+  const publicationCard = item => {
+    const card = document.createElement("details"); card.className = "publication-card"; card.dataset.id = item.id;
+    const input = (key, label, placeholder = "", type = "text", max = 160) => `<label><span>${label}</span><input data-field="${key}" type="${type}" maxlength="${max}" ${type === "datetime-local" ? 'step="1"' : ""} value="${escapeAttr(type === "datetime-local" ? localPublicationDate(item[key]) : item[key] || "")}" placeholder="${escapeAttr(placeholder)}"></label>`;
+    card.innerHTML = `<summary><span data-status></span><b data-title></b></summary><div class="form-grid">
+      <label><span>消息类型</span><select data-field="kind"><option value="notice">重要通知</option><option value="update">版本更新</option></select></label>
+      <label><span>适用平台</span><select data-field="platform"><option value="all">全部平台</option><option value="ios">iOS / iPadOS</option><option value="macos">macOS</option><option value="visionos">visionOS</option></select></label>
+      <label class="toggle-field wide"><input data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}><span><strong>启用发布</strong><small>保存后按生效时间向客户端开放；取消勾选可下线。</small></span></label>
+      ${input("title", "标题", "例如：更轻盈的课表体验", "text", 80)}
+      ${input("subtitle", "副标题（可选）", "用一句话说明这次消息")}
+      ${input("version", "更新目标版本（更新必填）", "例如 1.3.0", "text", 30)}
+      ${input("actionTitle", "按钮文字（可选）", "前往更新 / 查看详情", "text", 30)}
+      ${input("minVersion", "最低适用 App 版本（含）", "留空不限", "text", 30)}
+      ${input("maxVersion", "最高适用 App 版本（含）", "留空不限", "text", 30)}
+      <label class="wide"><span>正文 · Markdown</span><textarea data-field="body" maxlength="12000" placeholder="## 这次有什么新变化&#10;- **全新体验**：描述亮点&#10;- 修复与优化">${escapeHTML(item.body)}</textarea><small>支持 # 标题、- 列表、**粗体**、\`代码\`、&gt; 引用、[链接](https://…)。不执行 HTML；复杂图文请填写详情链接。</small></label>
+      <label class="wide"><span>HTTPS 跳转链接（更新必填）</span><input data-field="actionURL" type="url" maxlength="2048" value="${escapeAttr(item.actionURL)}" placeholder="App Store、TestFlight 或详情页面地址"></label>
+      ${input("startsAt", "开始时间（本地时区，留空立即）", "", "datetime-local")}
+      ${input("endsAt", "结束时间（本地时区，留空长期）", "", "datetime-local")}
+      <small class="wide">消息 ID：${escapeHTML(item.id)} · 保存同一条消息不会再次打扰已看过的用户。</small>
+      </div><button class="button publication-remove" type="button">删除此消息</button>`;
+    card.querySelector('[data-field="kind"]').value = item.kind;
+    card.querySelector('[data-field="platform"]').value = item.platform;
+    const update = () => {
+      const value = readPublication(card);
+      card.querySelector("[data-title]").textContent = value.title || "未命名消息";
+      card.querySelector("[data-status]").textContent = value.enabled ? "已启用" : "草稿";
+      previewPublication(value);
+    };
+    card.addEventListener("input", update);
+    card.addEventListener("toggle", () => { if (card.open) previewPublication(readPublication(card)); });
+    card.querySelector(".publication-remove").onclick = () => {
+      if (!confirm("删除这条消息？保存发布配置后生效。")) return;
+      card.remove();
+      const next = $("announcementEditors").querySelector(".publication-card");
+      if (next) previewPublication(readPublication(next));
+      else $("publicationPreviewBody").replaceChildren();
+    };
+    update(); return card;
+  };
+  const showAnnouncements = config => {
+    announcementRevision = config.revision;
+    const editor = $("announcementEditors"); editor.replaceChildren();
+    for (const item of config.messages) editor.append(publicationCard(item));
+    const first = editor.querySelector("details");
+    if (first) { first.open = true; previewPublication(readPublication(first)); }
+    else editor.innerHTML = '<p class="list-empty">还没有消息，点击「新增消息」开始。</p>';
+    $("saveAnnouncements").disabled = false; $("addAnnouncement").disabled = false;
+    markClean("announcements");
+  };
+  const loadAnnouncements = async () => showAnnouncements(await request("/v1/admin/announcements"));
+  $("addAnnouncement").onclick = () => {
+    if (formAnnouncements().messages.length >= 30) { notice("最多保留 30 条消息，请先删除旧消息", "error"); return; }
+    $("announcementEditors").querySelector(".list-empty")?.remove();
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const id = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const card = publicationCard({ id, kind: "notice", platform: "all", enabled: false, title: "", subtitle: "", body: "", version: "", minVersion: "", maxVersion: "", actionTitle: "", actionURL: "", startsAt: null, endsAt: null });
+    $("announcementEditors").prepend(card); card.open = true; card.querySelector('[data-field="title"]').focus();
+  };
+  $("saveAnnouncements").onclick = async () => {
+    const button = $("saveAnnouncements"); setLoading(button, true);
+    $("announcementEditors").inert = true; $("addAnnouncement").disabled = true; $("refreshAnnouncements").disabled = true;
+    try {
+      showAnnouncements(await request("/v1/admin/announcements", { method: "POST", body: JSON.stringify(formAnnouncements()) }));
+      notice("更新与通知配置已保存", "success");
+    } catch (error) { notice(error.message, "error"); }
+    finally {
+      setLoading(button, false); $("announcementEditors").inert = false;
+      $("addAnnouncement").disabled = false; $("refreshAnnouncements").disabled = false;
+    }
+  };
+  $("refreshAnnouncements").onclick = async () => {
+    if (!confirmDiscard(["announcements"])) return;
+    try { await loadAnnouncements(); } catch (error) { notice(error.message, "error"); }
+  };
+
   const loadConsole = async () => {
     const catalogue = await request("/v1/schools");
     state.authenticated = true;
@@ -997,6 +1128,7 @@
     section(() => request("/v1/admin/stats"), stats => { state.stats = stats; renderStats(); });
     section(loadEntitlements, () => {});
     section(loadImageImport, () => {});
+    section(loadAnnouncements, () => {});
     section(loadShares, () => {});
     if (state.view === "audit") section(loadAudit, () => {});
   };
@@ -1005,6 +1137,7 @@
     Object.keys(savedForms).forEach(key => delete savedForms[key]);
     $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
     $("saveImageImportButton").disabled = true;
+    $("saveAnnouncements").disabled = true; $("addAnnouncement").disabled = true;
     updateConnectionUI(false);
   };
   const connect = async event => {

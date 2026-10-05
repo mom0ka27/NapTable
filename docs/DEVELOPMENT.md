@@ -123,3 +123,5 @@ scripts/widget-gallery.sh --stop       # 关掉画廊用的模拟器
 更具体的服务端开发、APNs 配置和 API 示例见 [`server/README.md`](../server/README.md)。
 
 课程实时活动采用 v2：服务端按上传的课表计算提醒并远程启动；iOS 18 远程启动，iOS 26 及以上本地预约最近几节、其余远程启动，iOS 17 只保留预览。协议、加密依赖与验收见 [live-activity-v2.md](live-activity-v2.md)，设计取舍见 [server-scheduled-reminders.md](server-scheduled-reminders.md)。
+
+`tests/check-announcements.sh` 验证更新与通知的数字版本比较、平台/版本范围、生效时间、通知优先、最高更新选择、已读持久化和共用冷却时间。`tests/test_announcements.py` 验证发布权限、并发配置版本检查、数据库持久化、草稿与过期过滤、撤回和内容校验。后台操作说明见 [服务端更新与通知](../server/README.md#更新提示与重要通知)。

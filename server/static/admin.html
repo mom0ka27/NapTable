@@ -26,6 +26,10 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
           <span>统一调休</span>
         </button>
+        <button class="nav-item" type="button" data-view="announcements">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 16-6v16L3 14zM7 15l2 6h4l-2-5"/></svg>
+          <span>更新与通知</span>
+        </button>
         <button class="nav-item" type="button" data-view="apns">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10.3 21h3.4"/><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/></svg>
           <span>APNs 推送</span>
@@ -345,8 +349,30 @@
         </div>
       </section>
 
+      <section id="announcementsView" class="content-view" hidden>
+        <div class="section-toolbar">
+          <div><h2>每一次更新，都值得被看见</h2><p>配置新版本与重要消息，在用户空闲时轻轻提醒。</p></div>
+          <div class="term-actions">
+            <button id="refreshAnnouncements" class="button" type="button">重新加载</button>
+            <button id="addAnnouncement" class="button" type="button" disabled>新增消息</button>
+            <button id="saveAnnouncements" class="button primary" type="button" disabled>保存发布配置</button>
+          </div>
+        </div>
+        <p class="stats-explanation">勾选「启用发布」并保存后生效。重要通知优先于更新；更新只提醒低于目标版本的用户。与试用提醒合计 24 小时最多自动弹出一次，避开上课和课前 10 分钟。每条消息只自动展示一次，修改正文不会重复提醒；需要重新通知时请新建消息。</p>
+        <div class="publication-layout">
+          <div id="announcementEditors"></div>
+          <aside class="publication-preview" aria-label="消息内容预览">
+            <p class="section-kicker">CONTENT PREVIEW · 内容预览</p>
+            <div class="publication-hero"><span id="publicationPreviewKind" class="badge">重要通知</span><h2 id="publicationPreviewTitle">把重要的事，告诉大家</h2><p id="publicationPreviewSubtitle">在左侧编辑，即时预览内容。</p><span id="publicationPreviewVersion"></span></div>
+            <div id="publicationPreviewBody" class="publication-body"></div>
+            <div id="publicationPreviewAction" class="publication-action">知道了</div>
+            <p class="stats-explanation">App 使用原生卡片，自动适配深色模式与字体大小。此处为内容预览。</p>
+          </aside>
+        </div>
+      </section>
+
       <section id="auditView" class="content-view" hidden>
-        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="entitlement">实时活动权益</option><option value="apns">APNs</option><option value="session">登录</option></select></label></div>
+        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="entitlement">实时活动权益</option><option value="apns">APNs</option><option value="announcement">更新与通知</option><option value="session">登录</option></select></label></div>
         <section class="settings-panel">
           <div class="table-scroll share-scroll"><table class="account-table audit-table"><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody id="auditTable"></tbody></table></div>
         </section>

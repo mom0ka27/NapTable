@@ -245,6 +245,15 @@ struct SettingsView: View {
             }
 
             SettingsDestinationRow(
+                title: "更新与通知",
+                detail: "查看新版本与重要消息",
+                systemImage: "bell.badge",
+                tint: .secondary
+            ) {
+                AnnouncementCenterView()
+            }
+
+            SettingsDestinationRow(
                 title: "关于",
                 detail: "用户 QQ 群、版本信息与开源鸣谢",
                 systemImage: "info.circle",

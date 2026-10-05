@@ -31,7 +31,7 @@ struct ContentView: View {
             #endif
         }
         .preferredColorScheme(store.settings.appearance.colorScheme)
-        .modifier(TrialReminderHost(
+        .modifier(AutomaticReminderHost(
             scheduleStore: scheduleStore,
             isBlocked: selectedTab != 0 || showImport || showSettings
                 || showLiveActivityDismissal || restorationFailure != nil
