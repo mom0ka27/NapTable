@@ -6,6 +6,11 @@ struct ScheduleEmptyDayView: View {
     var holidayGreeting: String? = nil
     var outsideTerm = false
     var compact = false
+    /// 日视图用独立的休息卡片承接日期栏下方的留白。
+    var dayPresentation = false
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scheduleHasBackgroundImage) private var hasBackground
 
     private var subtitle: String {
         if outsideTerm { return "不在当前学期的教学周内" }
@@ -26,6 +31,8 @@ struct ScheduleEmptyDayView: View {
                         .frame(width: 72, height: 56)
                 }
                 .padding(.horizontal, 8)
+            } else if dayPresentation {
+                restDayContent
             } else {
                 VStack(spacing: 18) {
                     illustration
@@ -38,6 +45,65 @@ struct ScheduleEmptyDayView: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var restDayContent: some View {
+        VStack(spacing: 24) {
+            restDayIllustration
+                .frame(width: 184, height: 140)
+
+            VStack(spacing: 10) {
+                Text(outsideTerm ? "不在当前学期" : "这天没有课程")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(dayDetail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+            }
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityElement(children: .combine)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 32)
+        .frame(maxWidth: 360)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 32, style: .continuous)
+            shape
+                .fill(ScheduleCardSurface(hasBackground: hasBackground))
+                .overlay {
+                    shape.fill(Color.cpuBrand.opacity(colorScheme == .dark ? 0.06 : 0.025))
+                }
+                .overlay {
+                    shape.strokeBorder(Color.cpuBrand.opacity(colorScheme == .dark ? 0.12 : 0.07), lineWidth: 1)
+                }
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var restDayIllustration: some View {
+        if holidayGreeting != nil || outsideTerm {
+            ZStack {
+                Circle()
+                    .fill(Color.cpuBrand.opacity(colorScheme == .dark ? 0.10 : 0.05))
+                    .frame(width: 132, height: 132)
+                illustration
+            }
+        } else {
+            ScheduleRestIllustration()
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var dayDetail: String {
+        if outsideTerm { return "不在当前学期的教学周内" }
+        if let note = note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            return note
+        }
+        return holidayGreeting ?? "留点时间，做喜欢的事"
     }
 
     private func labels(alignment: HorizontalAlignment) -> some View {

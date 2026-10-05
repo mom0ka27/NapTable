@@ -15,7 +15,7 @@ struct NativeScheduleDayColumn: View {
     /// 表头上显示的日期：平时只写几号，月初写「10月」。为空时退回 `dateText`。
     var headerDateText: String? = nil
     let isToday: Bool
-    /// 这一天的调休。有值时日期旁边多一个「休」/「班」角标。
+    /// 这一天的调休。有值时表头右上角显示「休」/「班」角标。
     let adjustment: ResolvedCalendarAdjustment?
     let columnWidth: CGFloat
     let rowHeight: CGFloat
@@ -62,28 +62,29 @@ struct NativeScheduleDayColumn: View {
             if showsDateHeader {
                 // 和日视图星期条同一个写法：几号在上、星期在下，今天写「今天」。
                 VStack(spacing: 3) {
-                    HStack(spacing: 1) {
-                        Text(headerDateText ?? dateText ?? "–")
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(isToday ? Color.cpuBrand : Color.primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                        if let adjustment {
-                            ScheduleAdjustmentBadge(adjustment: adjustment)
-                        }
-                    }
-                    // The badge is fixed-size, so cap the row to the header's
-                    // inner box and let the date shrink instead of spilling out.
-                    .frame(maxWidth: max(0, columnWidth - 6))
+                    Text(headerDateText ?? dateText ?? "–")
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isToday ? Color.cpuBrand : Color.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .frame(maxWidth: max(0, columnWidth - 6))
                     Text(isToday ? "今天" : dayLabel)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(isToday ? Color.cpuBrand : Color.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
+                // 为角标留出顶部空间，窄列里的月初日期也不会与它重叠。
+                .padding(.top, 11)
                 // 星期表头不加框，直接把字放在底色上；今天靠主题色文字和整列淡底标出来。
                 .frame(width: columnWidth, height: Self.dateHeaderHeight)
+                .overlay(alignment: .topTrailing) {
+                    if let adjustment {
+                        ScheduleAdjustmentBadge(adjustment: adjustment)
+                            .padding(.trailing, 2)
+                    }
+                }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(headerAccessibilityLabel)
             }
@@ -314,7 +315,11 @@ struct NativeScheduleDayTimeline: View {
 
     var body: some View {
         if blocks.isEmpty {
-            ScheduleEmptyDayView(note: emptyNote, holidayGreeting: holidayGreeting)
+            ScheduleEmptyDayView(
+                note: emptyNote,
+                holidayGreeting: holidayGreeting,
+                dayPresentation: emptyHeight > 0
+            )
                 .frame(height: max(emptyHeight, Self.height(blocks: blocks, cardHeight: cardHeight)))
                 .modifier(ScheduleHolidayFireworks())
         } else {

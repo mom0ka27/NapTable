@@ -716,7 +716,7 @@ struct NativeScheduleView: View {
     }
 
     /// 日视图的星期条：和周视图表头一样「几号在上、星期在下」，今天写「今天」。
-    /// 选中的那天铺一块淡主题色圆角底，几号右上角的小数字是当天有几门课。
+    /// 选中的那天铺一块淡主题色圆角底，日期右上角显示调休角标。
     private func dayPicker(_ result: NativeScheduleResult) -> some View {
         let week = weekNumber(store.selectedWeek)
         return HStack(spacing: 4) {
@@ -741,21 +741,10 @@ struct NativeScheduleView: View {
                             .monospacedDigit()
                             .foregroundStyle(highlighted ? Color.cpuBrand : Color.primary)
                             .overlay(alignment: .topTrailing) {
-                                // 右上角：调休角标「休」/「班」，后面跟当天课程数。
-                                if dayAdjustment != nil || courseCount > 0 {
-                                    HStack(spacing: 1) {
-                                        if let dayAdjustment {
-                                            ScheduleAdjustmentBadge(adjustment: dayAdjustment)
-                                        }
-                                        if courseCount > 0 {
-                                            Text("\(courseCount)")
-                                                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                                                .foregroundStyle(isSelected ? Color.cpuBrand.opacity(0.8) : Color.secondary)
-                                        }
-                                    }
-                                    .fixedSize()
-                                    .frame(width: 0, alignment: .leading)
-                                    .offset(x: 2, y: -1)
+                                if let dayAdjustment {
+                                    ScheduleAdjustmentBadge(adjustment: dayAdjustment)
+                                        .frame(width: 0, alignment: .leading)
+                                        .offset(x: 2, y: -1)
                                 }
                             }
                         Text(isToday ? "今天" : dayLabel(day))
@@ -839,7 +828,7 @@ struct NativeScheduleView: View {
         // 无课状态按日期栏以下的可见空间居中，不受相邻日期的课程数量影响。
         // 横屏或大字号时至少保留内容所需高度，由外层继续提供纵向滚动。
         let emptyHeight = max(
-            NativeScheduleDayTimeline.height(blocks: [], cardHeight: dayTimelineCardHeight),
+            max(360, dayTimelineCardHeight * 3),
             viewportHeight - 2 * pressInset
         )
         let pages = [

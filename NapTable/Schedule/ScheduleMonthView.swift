@@ -227,7 +227,41 @@ struct NativeScheduleMonthView: View {
                     .font(.system(size: 18, weight: isSelected || isToday ? .bold : .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(numberColor(day, isSelected: isSelected, isToday: isToday))
-                    .frame(height: 24)
+                    .frame(width: 30, height: 30)
+                    .background {
+                        ZStack {
+                            Circle()
+                                .fill(isSelected ? Color.cpuBrand : .clear)
+                            if isToday && !isSelected {
+                                Circle()
+                                    .strokeBorder(Color.cpuBrand.opacity(0.5), lineWidth: 1)
+                            }
+                        }
+                        .mask {
+                            // 挖空圆形右上角，让角标嵌入；自定义背景也能透过缺口显示。
+                            Rectangle()
+                                .overlay(alignment: .topTrailing) {
+                                    if day.adjustment != nil {
+                                        Circle()
+                                            .frame(width: 14, height: 14)
+                                            .offset(x: 6, y: -6)
+                                            .blendMode(.destinationOut)
+                                    }
+                                }
+                                .compositingGroup()
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if let adjustment = day.adjustment {
+                            Text(adjustment.badge)
+                                .font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(adjustment.kind == .off ? holidayColor : Color.orange)
+                                .frame(width: 10, height: 10)
+                                .offset(x: 4, y: -4)
+                                .opacity(day.inMonth ? 1 : 0.4)
+                                .accessibilityHidden(true)
+                        }
+                    }
 
                 Text(day.subtitle.isEmpty ? " " : day.subtitle)
                     .font(.system(size: 10, weight: day.isFestival ? .medium : .regular))
@@ -240,27 +274,6 @@ struct NativeScheduleMonthView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: height)
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isSelected ? Color.cpuBrand.opacity(colorScheme == .dark ? 0.20 : 0.10) : .clear)
-            }
-            .overlay {
-                if isToday {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.cpuBrand.opacity(isSelected ? 0.45 : 0.3), lineWidth: 1)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if let adjustment = day.adjustment {
-                    Text(adjustment.badge)
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundStyle(adjustment.kind == .off ? holidayColor : Color.orange)
-                        .padding(.top, 3)
-                        .padding(.trailing, 3)
-                        .opacity(day.inMonth ? 1 : 0.4)
-                        .accessibilityHidden(true)
-                }
-            }
             .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -454,16 +467,16 @@ struct NativeScheduleMonthView: View {
     }
 
     private func numberColor(_ day: Day, isSelected: Bool, isToday: Bool) -> Color {
+        if isSelected { return .white }
         guard day.inMonth else { return .secondary.opacity(0.6) }
-        if isSelected { return Color.cpuBrand }
         if isToday { return Color.cpuBrand }
         return day.weekday >= 6 ? .secondary : .primary
     }
 
     private func subtitleColor(_ day: Day) -> Color {
+        guard day.isFestival else { return .secondary }
         if day.isStatutoryHoliday { return holidayColor }
-        if day.isFestival { return Color.cpuBrand }
-        return .secondary
+        return Color.cpuBrand
     }
 
     private var holidayColor: Color {
@@ -532,6 +545,8 @@ struct NativeScheduleMonthView: View {
             guard let date = calendar.date(byAdding: .day, value: offset - leading, to: firstOfMonth) else { return nil }
             let key = ChineseCalendarInfo.dateString(date)
             let info = ChineseCalendarInfo.cachedInfo(forDate: key)
+            // 节日名称只显示在当天，连休期间的其余日期仍显示农历。
+            let festival = info?.festivals.first ?? info?.solarTerm
             let slot = dateIndex[key]
             let weekdayIndex = (calendar.component(.weekday, from: date) + 5) % 7 + 1
             return Day(
@@ -539,8 +554,8 @@ struct NativeScheduleMonthView: View {
                 number: calendar.component(.day, from: date),
                 inMonth: calendar.component(.month, from: date) == month,
                 weekday: weekdayIndex,
-                subtitle: info?.displayLabel ?? "",
-                isFestival: info?.badge != nil,
+                subtitle: festival ?? info?.lunar.shortLabel ?? "",
+                isFestival: festival != nil,
                 isStatutoryHoliday: info?.isStatutoryHoliday ?? false,
                 adjustment: adjustments[key],
                 courses: slot.map { blocks($0.day, $0.week) } ?? []
