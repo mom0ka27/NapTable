@@ -256,9 +256,9 @@
 
       <section id="statsView" class="content-view" hidden>
         <div class="metric-strip stats-metrics" aria-label="使用统计">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>今日打开</span><strong id="todayUserCount">0</strong><small id="todayUserDetail">UTC+8 零点起 · 按安装去重</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>今日打开</span><strong id="todayUserCount">0</strong><small id="todayUserDetail">UTC+8 零点起 · 按匿名标识去重</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><span>近 7 天活跃</span><strong id="weeklyUserCount">0</strong><small>含今天在内的 7 天</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span><span>近 30 天活跃</span><strong id="totalUserCount">0</strong><small id="monthlyUserDetail">按安装去重</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span><span>近 30 天活跃</span><strong id="totalUserCount">0</strong><small id="monthlyUserDetail">按匿名标识去重</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>覆盖学校</span><strong id="activeSchoolCount">0</strong><small>近 30 天有设备使用</small></div>
         </div>
         <section class="settings-panel trend-panel">
@@ -272,7 +272,7 @@
           <section class="settings-panel stats-panel">
             <div class="card-heading"><div><h3>各学校使用人数</h3><p>以当前课表关联的学校为准</p></div><span class="soft-label">设备数</span></div>
             <div class="stats-head"><span>学校</span><span>学校 ID</span><span>今日</span><span>近 30 天</span></div><div id="statsList" class="stats-list"></div>
-            <div class="stats-footnote">切换学校后更新归属；重装 App 可能产生新的安装记录。</div>
+            <div class="stats-footnote">切换学校后更新归属；新版 App 重装时优先恢复本机标识。旧版重装记录仍可能重复，设备数不等于实际人数。</div>
           </section>
           <section class="settings-panel school-share-panel">
             <div class="card-heading"><div><h3>学校占比</h3><p>全部活跃设备的学校分布</p></div></div>

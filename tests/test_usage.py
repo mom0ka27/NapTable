@@ -40,7 +40,7 @@ class UsageTests(JSONClientMixin, unittest.TestCase):
         self.assertEqual(stats['totalUsers'], 1)
         self.assertEqual(stats['schools'][0]['users'], 1)
         self.assertEqual(stats['systemVersions'], [{'name': 'iOS 26.0', 'users': 1}])
-        self.assertEqual(stats['schools'][0]['deviceModels'], [{'name': 'iPhone17,1', 'users': 1}])
+        self.assertEqual(stats['schools'][0]['deviceModels'], [{'name': 'iPhone 16 Pro', 'users': 1}])
         self.report(dict(self.value, schoolID='', systemVersion='26.1'))
         stats = self.stats()
         self.assertEqual(stats['totalUsers'], 1)
@@ -64,6 +64,32 @@ class UsageTests(JSONClientMixin, unittest.TestCase):
         with self.store.lock:
             row = self.store.db.execute('SELECT * FROM usage_devices').fetchone()
             self.assertNotEqual(row['secret_hash'], self.secret)
+
+    def test_thirteen_reports_count_once_even_when_properties_change(self):
+        for index in range(13):
+            self.report(dict(self.value, schoolID='nju' if index % 2 == 0 else '',
+                             appVersion=f'1.{index}', systemVersion=f'26.{index}'))
+        stats = self.stats()
+        self.assertEqual((stats['totalUsers'], stats['todayUsers'], stats['newUsersToday'], stats['weeklyUsers']), (1, 1, 1, 1))
+        self.assertEqual(stats['schools'][0]['users'], 1)
+        self.assertEqual(stats['appVersions'], [{'name': '1.12', 'users': 1}])
+        row = self.store.db.execute('SELECT active,new FROM usage_daily').fetchone()
+        self.assertEqual(tuple(row), (1, 1))
+
+    def test_model_names_apply_to_existing_rows_and_group_hardware_variants(self):
+        # Simulate raw rows written by older clients, before a mapping existed.
+        for model in ('iPhone18,4', 'iPhone11,4', 'iPhone11,6', 'iPad13,18', 'iPhone99,1',
+                      'Simulator (iPhone18,4)', 'Mac14,2'):
+            self.report(dict(self.value, deviceModel=model), device=str(uuid.uuid4()))
+        expected = [{'name': name, 'users': count} for name, count in (
+            ('iPhone XS Max', 2), ('Mac14,2', 1), ('Simulator (iPhone Air)', 1),
+            ('iPad (10th generation)', 1), ('iPhone Air', 1), ('iPhone99,1', 1))]
+        stats = self.stats()
+        self.assertEqual(stats['totalUsers'], 7, 'Matching model names do not identify the same phone')
+        self.assertEqual(stats['deviceModels'], expected)
+        self.assertEqual(stats['schools'][0]['deviceModels'], expected)
+        stored = {row[0] for row in self.store.db.execute('SELECT device_model FROM usage_devices')}
+        self.assertIn('iPhone18,4', stored, 'Keep raw identifiers for future mapping corrections')
 
     def test_thirty_day_window_and_ninety_day_retention(self):
         self.report()

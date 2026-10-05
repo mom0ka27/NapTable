@@ -21,9 +21,11 @@ from starlette.convertors import Convertor, register_url_convertor
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
     from . import app_attest, entitlements, holidays, image_import, live_activity, school_times
     from .live_activity_timeline import ProtocolError, identifier
+    from .device_models import device_model_name
 except ImportError:  # pragma: no cover - depends on how the server was started
     import app_attest, entitlements, holidays, image_import, live_activity, school_times
     from live_activity_timeline import ProtocolError, identifier
+    from device_models import device_model_name
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
 SITE_ROOT = STATIC_ROOT / "site"
@@ -810,7 +812,7 @@ class Store:
                                                                     (_usage_day(today - timedelta(days=29)),))}
             rows = self.db.execute("SELECT id,name FROM school_configs ORDER BY name").fetchall()
         labels = {"systemVersions": lambda item: item["system_name"] + " " + item["system_version"],
-                  "deviceModels": lambda item: item["device_model"], "appVersions": lambda item: item["app_version"]}
+                  "deviceModels": lambda item: device_model_name(item["device_model"]), "appVersions": lambda item: item["app_version"]}
         def distribution(items, key):
             counts = {}
             for item in items:

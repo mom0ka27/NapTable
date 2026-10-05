@@ -10,6 +10,7 @@ import Darwin
 @MainActor final class UsageReportingService {
     static let shared = UsageReportingService()
     private let defaults: UserDefaults
+    private let identityStorage: UsageIdentity.Storage
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
     private var sending = false
     private var pending: (URL, String?)?
@@ -18,8 +19,10 @@ import Darwin
     private var lastSent = Date.distantPast
 
     init(defaults: UserDefaults = .standard,
+         identityStorage: UsageIdentity.Storage? = nil,
          transport: @escaping (URLRequest) async throws -> (Data, URLResponse) = { try await URLSession.shared.data(for: $0) }) {
         self.defaults = defaults
+        self.identityStorage = identityStorage ?? UsageIdentity.keychain
         self.transport = transport
     }
     func report(schoolID: String?, baseURL: URL?) async {
@@ -31,9 +34,9 @@ import Darwin
         while let (base, school) = pending {
             pending = nil
             guard PrivacyPolicy.basicAllowed(defaults), base.scheme == "https" else { return }
-            let id = storedValue("naptable.usage.installation", make: { UUID().uuidString.lowercased() })
-            let secret = storedValue("naptable.usage.secret", make: { UUID().uuidString.replacingOccurrences(of: "-", with: "") + UUID().uuidString.replacingOccurrences(of: "-", with: "") })
-            let url = base.appendingPathComponent("v1/usage/devices").appendingPathComponent(id)
+            // A temporarily inaccessible keychain is not a new device. Retry later.
+            guard let identity = try? UsageIdentity.resolve(defaults: defaults, storage: identityStorage) else { continue }
+            let url = base.appendingPathComponent("v1/usage/devices").appendingPathComponent(identity.installationID)
             let payload: [String: Any] = [
                 "consentVersion": PrivacyPolicy.version, "schoolID": school ?? "",
                 "systemName": Self.systemName, "systemVersion": Self.systemVersion,
@@ -49,7 +52,7 @@ import Darwin
             request.timeoutInterval = 15
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue(secret, forHTTPHeaderField: "X-Device-Secret")
+            request.setValue(identity.secret, forHTTPHeaderField: "X-Device-Secret")
             do {
                 let (_, response) = try await transport(await AppAttestService.shared.signed(request))
                 AppAttestService.shared.observe(response)
@@ -58,10 +61,6 @@ import Darwin
                 }
             } catch { /* Retry on next foreground or school change; never block import. */ }
         }
-    }
-    private func storedValue(_ key: String, make: () -> String) -> String {
-        if let value = defaults.string(forKey: key) { return value }
-        let value = make(); defaults.set(value, forKey: key); return value
     }
     nonisolated static func usageDay(_ date: Date) -> Int {
         Int((date.timeIntervalSince1970 + 8 * 3600) / 86_400)

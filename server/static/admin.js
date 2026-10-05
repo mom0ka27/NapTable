@@ -365,7 +365,7 @@
     $("todayUserDetail").textContent = `新设备 ${count(state.stats.newUsersToday)} · 昨日 ${count(state.stats.yesterdayUsers)}`;
     $("weeklyUserCount").textContent = count(state.stats.weeklyUsers);
     $("totalUserCount").textContent = count(state.stats.totalUsers);
-    $("monthlyUserDetail").textContent = `按安装去重 · 未关联学校 ${count(state.stats.unassignedUsers)}`;
+    $("monthlyUserDetail").textContent = `按匿名标识去重 · 未关联学校 ${count(state.stats.unassignedUsers)}`;
     $("activeSchoolCount").textContent = schools.filter(school => school.users > 0).length;
     const updatedAt = new Date(state.stats.updatedAt);
     $("statsUpdatedAt").textContent = Number.isNaN(updatedAt.getTime()) ? "近 30 天的设备使用情况" : `近 30 天 · 更新于 ${updatedAt.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}`;

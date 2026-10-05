@@ -3,6 +3,7 @@ import Foundation
 @main
 struct OnboardingChecks {
     @MainActor static func main() async throws {
+        try await checkUsageIdentity()
         let suite = "naptable.privacy.tests." + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
@@ -14,14 +15,16 @@ struct OnboardingChecks {
         precondition(!consent.onboardingCompleted, "Import alone cannot bypass privacy")
         var reports: [URLRequest] = []
         var offline = false
-        let reporter = UsageReportingService(defaults: preferences) { request in
+        var identity: UsageIdentity?
+        let identityStorage = UsageIdentity.Storage(read: { identity }, insert: { identity = $0 })
+        let reporter = UsageReportingService(defaults: preferences, identityStorage: identityStorage) { request in
             reports.append(request)
             if offline { throw URLError(.notConnectedToInternet) }
             return (Data(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         let base = URL(string: "https://example.invalid")!
         await reporter.report(schoolID: "nju", baseURL: base)
-        precondition(reports.isEmpty && preferences.string(forKey: "naptable.usage.installation") == nil,
+        precondition(reports.isEmpty && identity == nil && preferences.string(forKey: "naptable.usage.installation") == nil,
                      "No usage report or installation ID before mandatory consent")
         consent.acceptBasic(liveActivities: false)
         precondition(consent.basicAccepted && !consent.liveAccepted)

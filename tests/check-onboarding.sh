@@ -17,5 +17,5 @@ swiftc -swift-version 5 -parse-as-library \
     NapTable/Schedule/ScheduleSnapshot.swift \
     NapTable/Schedule/NativeWidgetSettings.swift \
     WidgetCore/*.swift \
-    tests/OnboardingChecks.swift -o "$check_dir/checks"
+    tests/UsageIdentityChecks.swift tests/OnboardingChecks.swift -o "$check_dir/checks"
 "$check_dir/checks"

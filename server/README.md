@@ -329,10 +329,12 @@ App 选择学校导入入口后自动读取配置；没有明确学期时使用�
 
 ## 基础使用统计与隐私许可
 
-`POST /v1/usage/devices/{installationUUID}` 使用客户端生成的随机 `X-Device-Secret` 作为该安装的写入凭据，首次请求创建记录，之后校验凭据并覆盖设备属性与当前学校。该凭据与实况通知凭据独立，服务端仅存储摘要。
+`POST /v1/usage/devices/{installationUUID}` 使用客户端生成的随机 `X-Device-Secret` 作为该安装的写入凭据，首次请求创建记录，之后校验凭据并覆盖设备属性与当前学校。该凭据与实况通知凭据独立，服务端仅存储摘要。客户端将随机标识与凭据作为一条记录保存在本机钥匙串（`AfterFirstUnlockThisDeviceOnly`，不参与 iCloud 同步），升级时优先迁移原 UserDefaults 中的完整凭据并清除旧副本；钥匙串暂时不可读或保存失败时跳过本次上报，避免生成新的统计记录。同机重装后如钥匙串仍可恢复，继续使用原标识，但必须重新同意基础协议。
 
 请求仅允许 `consentVersion: 1`、`schoolID`（可为空）、`systemName`、`systemVersion`、`deviceModel`、`appVersion`。不接受课程、姓名等额外字段。服务端记录首次与最近上报时间；客户端同意基础协议后于启动、回前台、学校变化时自动上报，相同属性在同一进程内最多每小时成功上报一次。失败不阻止导入，下次前台或属性变化时重试。
 
-`GET /v1/admin/stats` 仍需管理员认证，返回近 30 天按安装去重的 `totalUsers`、各学校 `users`、`unassignedUsers`，以及全局和各学校的 `systemVersions` / `deviceModels` / `appVersions` 分布。按 UTC+8 自然日另返回 `todayUsers`（各学校也有）、`newUsersToday`、`yesterdayUsers`、`weeklyUsers`（含今天的 7 天）和 30 项 `daily`（`date`、`users`、`newUsers`）。每日数据存于 `usage_daily`，只有日期与计数两列：设备当天首次上报时累加，不保存单台设备的使用日期，保留 90 天；今天一项直接由设备记录计算。客户端在跨过 UTC+8 零点后的首次打开会绕过一小时节流再上报一次。学校以当前选中的课表为准，单台安装仅归属一个学校；重装可能重复计数，所以界面同时标注设备数。原始记录在最后上报超过 90 天后，于下一次写入或统计查询时清理；备份保留最近 14 份。不会从旧版实时通知设备记录推断用户已同意隐私协议。
+`GET /v1/admin/stats` 仍需管理员认证，返回近 30 天按安装去重的 `totalUsers`、各学校 `users`、`unassignedUsers`，以及全局和各学校的 `systemVersions` / `deviceModels` / `appVersions` 分布。按 UTC+8 自然日另返回 `todayUsers`（各学校也有）、`newUsersToday`、`yesterdayUsers`、`weeklyUsers`（含今天的 7 天）和 30 项 `daily`（`date`、`users`、`newUsers`）。每日数据存于 `usage_daily`，只有日期、活跃计数、新增计数三列：设备当天首次上报时累加，不保存单台设备的使用日期，保留 90 天；今天一项直接由设备记录计算。客户端在跨过 UTC+8 零点后的首次打开会绕过一小时节流再上报一次。学校以当前选中的课表为准，同一匿名标识仅归属一个学校；旧版重装或钥匙串丢失仍可能重复计数，设备数不等于实际人数。历史上由不同随机标识产生的重复记录无法仅凭机型、系统或学校可靠合并，停止上报后会自然退出 30 天活跃窗口。原始记录在最后上报超过 90 天后，于下一次写入或统计查询时清理；备份保留最近 14 份。不会从旧版实时通知设备记录推断用户已同意隐私协议。
+
+设备型号在服务端汇总时通过 `server/device_models.py` 转成商品名称，例如 `iPhone18,4` → `iPhone Air`；数据库保留原始标识，因此已有记录立即适用。映射取自 [DeviceKit](https://github.com/devicekit/DeviceKit/blob/19528aa07e1426626ea9fb2c4a161edf43c4f9e8/Source/Device.swift.gyb) 的 iPhone、iPad、iPod 数据，快照日期 2026-10-05，MIT 许可随模块保留。运行时不请求外部服务；同一商品型号的不同硬件标识合并为一个分布项，设备总数仍按匿名标识去重；模拟器单独标注，未知型号和 Mac 标识原样显示。更新时按模块中的来源与 commit 核对映射，补充机型回归用例。
 
 客户端首次进入需明确同意基础统计协议，第二项实时通知上传许可为可选，均默认不勾选。未同意基础协议不挂载主界面或发送统计；同意后需成功导入至少一门课程才完成首次引导，取消或空导入不能跳过。已有课程的升级用户只需补充隐私选择，无需重新导入。实时通知许可同时保护 ActivityKit 控制器和网络协调器；可在设置的「隐私与数据」中撤回，撤回后的网络仅执行旧设备清除，离线时重试。iOS 26+ 本地预约不上传远程课表计划，仍独立参与基础使用统计。
