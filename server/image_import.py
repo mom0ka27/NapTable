@@ -13,7 +13,7 @@ from PIL import Image, ImageOps
 
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 MAX_BODY_BYTES = 4 * 1024 * 1024 + 4096
-DEFAULTS = {"enabled": False, "endpoint": "https://api.openai.com/v1/responses", "model": "",
+DEFAULTS = {"enabled": False, "endpoint": "https://api.openai.com/v1/responses", "model": "", "apiKey": "",
             "requireAttest": True, "deviceDailyLimit": 5, "ipHourlyLimit": 30,
             "globalDailyLimit": 300, "timeoutSeconds": 60, "maxOutputTokens": 12000}
 SCHEMA = """
@@ -180,15 +180,29 @@ class ImageImport:
         config = self.config()
         return {"enabled": config["enabled"] and self.ready(config), "maxImageBytes": MAX_IMAGE_BYTES}
 
+    def api_key(self, config):
+        """Use the key entered in the admin page, with the old env setting as fallback."""
+        return config.get("apiKey", "").strip() or os.environ.get("NAPTABLE_IMAGE_IMPORT_API_KEY", "").strip()
+
     def ready(self, config):
-        return bool(config["model"] and os.environ.get("NAPTABLE_IMAGE_IMPORT_API_KEY", "").strip())
+        return bool(config["model"] and self.api_key(config))
 
     def admin_config(self):
         config = self.config()
-        return config | {"configured": self.ready(config)}
+        # Never send the secret back to the browser. An empty input means
+        # "keep the existing key" when the form is saved.
+        return config | {"apiKey": "", "apiKeyConfigured": bool(self.api_key(config)), "configured": self.ready(config)}
 
     def save_config(self, value):
-        if set(value) != set(DEFAULTS): raise ValueError("图片导入配置字段不完整或不正确")
+        expected = set(DEFAULTS)
+        # Accept payloads from older admin pages which did not have the key field.
+        if set(value) not in (expected, expected - {"apiKey"}):
+            raise ValueError("图片导入配置字段不完整或不正确")
+        value = dict(value)
+        existing = self.config()
+        if "apiKey" not in value or value["apiKey"] == "":
+            value["apiKey"] = existing.get("apiKey", "")
+        value["apiKey"] = text(value["apiKey"], 500, "API 密钥")
         for key in ("enabled", "requireAttest"):
             if type(value[key]) is not bool: raise ValueError(f"{key} 必须是开关")
         from urllib.parse import urlparse
@@ -253,7 +267,7 @@ class ImageImport:
             started = time.monotonic()
             outcome, result, input_tokens, output_tokens = "upstreamError", None, 0, 0
             try:
-                response = self.transport(config, image, os.environ["NAPTABLE_IMAGE_IMPORT_API_KEY"].strip())
+                response = self.transport(config, image, self.api_key(config))
                 usage = response.get("usage") or {}
                 for field in ("input_tokens", "output_tokens"):
                     if type(usage.get(field)) is not int or not 0 <= usage[field] <= 10_000_000: usage[field] = 0
@@ -278,4 +292,28 @@ class ImageImport:
         with self.lock, self.db:
             self.db.execute("DELETE FROM image_import_events WHERE created<?", (self.clock() - 90 * 86400,))
             rows = self.db.execute("SELECT day,outcome,COUNT(*) requests,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(course_count) courses,SUM(duration_ms) durationMs FROM image_import_events WHERE created>=? GROUP BY day,outcome ORDER BY day DESC,outcome", (self.clock() - 30 * 86400,)).fetchall()
-        return {"today": day(self.clock()), "daily": [dict(row) for row in rows], "retentionDays": 90, "maxConcurrent": 2}
+        daily = [dict(row) for row in rows]
+        attempt_outcomes = {"pending", "success", "empty", "upstreamError", "invalidResult"}
+        summary = {"events": 0, "attempts": 0, "success": 0, "empty": 0, "failed": 0,
+                   "blocked": 0, "inputTokens": 0, "outputTokens": 0, "courses": 0, "durationMs": 0}
+        for row in daily:
+            count = row["requests"]
+            summary["events"] += count
+            summary["inputTokens"] += row["inputTokens"] or 0
+            summary["outputTokens"] += row["outputTokens"] or 0
+            summary["courses"] += row["courses"] or 0
+            summary["durationMs"] += row["durationMs"] or 0
+            if row["outcome"] in attempt_outcomes:
+                summary["attempts"] += count
+            if row["outcome"] == "success":
+                summary["success"] += count
+            elif row["outcome"] == "empty":
+                summary["empty"] += count
+            elif row["outcome"] in {"upstreamError", "invalidResult", "pending"}:
+                summary["failed"] += count
+            else:
+                summary["blocked"] += count
+        summary["successRate"] = round(summary["success"] / summary["attempts"] * 100, 1) if summary["attempts"] else 0
+        summary["averageDurationMs"] = round(summary["durationMs"] / summary["attempts"]) if summary["attempts"] else 0
+        return {"today": day(self.clock()), "daily": daily, "summary": summary,
+                "retentionDays": 90, "maxConcurrent": 2}

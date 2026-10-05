@@ -238,19 +238,40 @@
             <label class="toggle-field"><input id="imageImportRequireAttest" type="checkbox"><span><strong>要求 App Attest</strong><small>建议开启设备验证</small></span></label>
             <label class="wide"><span>Responses 接口完整地址</span><input id="imageImportEndpoint" type="url" required placeholder="https://api.openai.com/v1/responses"></label>
             <label class="field"><span>模型</span><input id="imageImportModel" type="text" maxlength="100" placeholder="支持图片和结构化输出的模型"></label>
+            <label class="wide"><span>API 密钥</span><input id="imageImportApiKey" type="password" maxlength="500" autocomplete="new-password" placeholder="留空表示保持现有密钥"></label>
             <label class="field"><span>每设备每日调用上限</span><input id="imageImportDeviceDailyLimit" type="number" min="1" max="100" required></label>
             <label class="field"><span>未验证设备每 IP 每小时上限</span><input id="imageImportIpHourlyLimit" type="number" min="1" max="1000" required></label>
             <label class="field"><span>全站每日调用上限</span><input id="imageImportGlobalDailyLimit" type="number" min="1" max="10000" required></label>
             <label class="field"><span>接口超时（秒）</span><input id="imageImportTimeoutSeconds" type="number" min="10" max="90" required></label>
             <label class="field"><span>最大输出 token</span><input id="imageImportMaxOutputTokens" type="number" min="1000" max="20000" required></label>
-            <p class="wide">密钥通过服务器环境变量 NAPTABLE_IMAGE_IMPORT_API_KEY 设置，不返回浏览器。默认关闭功能并要求设备验证。有效 App Attest 请求按设备和全站额度计算，不与校园统一出口的其他用户共享 IP 额度；未验证请求才使用 IP 限额。每日额度按 UTC+8 重置；失败调用也计入额度。</p>
+            <p class="wide">可直接在此设置 API 密钥；密钥不会返回浏览器。留空会保持现有密钥，旧部署也可继续使用服务器环境变量 NAPTABLE_IMAGE_IMPORT_API_KEY。默认关闭功能并要求设备验证。有效 App Attest 请求按设备和全站额度计算，不与校园统一出口的其他用户共享 IP 额度；未验证请求才使用 IP 限额。每日额度按 UTC+8 重置；失败调用也计入额度。</p>
             <button id="saveImageImportButton" class="button primary" type="submit" disabled>保存配置</button>
           </form>
         </section>
-        <section class="settings-panel">
-          <div class="section-toolbar"><div><h3>近 30 天识别统计</h3><p>只保存匿名调用记录，不保存图片和课程。最多同时识别 2 张图片。</p></div><button id="refreshImageImportButton" class="button secondary" type="button">刷新</button></div>
-          <p id="imageImportSummary"></p>
-          <div class="table-scroll"><table><thead><tr><th>日期</th><th>结果</th><th>次数</th><th>输入 token</th><th>输出 token</th><th>课程条数</th><th>平均耗时</th></tr></thead><tbody id="imageImportStats"></tbody></table></div>
+        <section class="image-analytics" aria-label="图片识别使用统计">
+          <div class="section-toolbar image-analytics-heading"><div><h2>识别运行概览</h2><p>近 30 天的匿名调用情况，失败和拦截请求也会计入监控。</p></div><button id="refreshImageImportButton" class="button secondary" type="button">刷新数据</button></div>
+          <div class="metric-strip image-metrics">
+            <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="m8 13 2 2 5-5"/></svg></span><span>今日识别尝试</span><strong id="imageTodayAttempts">0</strong><small id="imageTodayAttemptsDetail">按 UTC+8 自然日</small></div>
+            <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 16V8M10 16V5M16 16v-4M22 16V3"/></svg></span><span>30 天成功率</span><strong id="imageSuccessRate">0%</strong><small id="imageSuccessRateDetail">成功识别 / 识别尝试</small></div>
+            <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/></svg></span><span>平均处理时间</span><strong id="imageAverageDuration">—</strong><small id="imageAverageDurationDetail">仅统计已发起的识别</small></div>
+            <div class="metric-card metric-status"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v18M17 7H9.5a2.5 2.5 0 1 0 0 5H15a2.5 2.5 0 1 1 0 5H7"/></svg></span><span>今日全站额度</span><strong><i id="imageQuotaDot"></i><b id="imageQuota">0 / 0</b></strong><small id="imageQuotaDetail">失败请求同样计入额度</small></div>
+          </div>
+          <div class="image-analytics-grid">
+            <section class="settings-panel image-trend-panel">
+              <div class="card-heading"><div><h3>每日识别量</h3><p>按结果查看每天的识别尝试与拦截请求</p></div><div class="trend-legend image-legend"><span><i class="image-success"></i>成功</span><span><i class="image-empty"></i>空结果</span><span><i class="image-failed"></i>失败</span><span><i class="image-blocked"></i>拦截</span></div></div>
+              <div class="trend-chart image-trend-chart"><div class="trend-axis" aria-hidden="true"><span id="imageTrendMax">0</span><span>0</span></div><div id="imageDailyTrend" class="trend-bars"></div></div>
+              <div id="imageTrendTooltip" class="trend-tooltip" role="status" hidden></div>
+            </section>
+            <section class="settings-panel image-breakdown-panel">
+              <div class="card-heading"><div><h3>结果分布</h3><p>识别尝试与入口拦截分开统计</p></div></div>
+              <div id="imageOutcomeBreakdown" class="image-outcome-list"></div>
+              <div class="image-token-summary"><div><span>输入 token</span><strong id="imageInputTokens">0</strong></div><div><span>输出 token</span><strong id="imageOutputTokens">0</strong></div><div><span>识别课程</span><strong id="imageCourses">0</strong></div></div>
+            </section>
+          </div>
+          <section class="settings-panel image-detail-panel">
+            <div class="section-toolbar"><div><h3>明细记录</h3><p id="imageImportSummary">只保存匿名调用记录，不保存图片和课程。</p></div></div>
+            <details class="trend-table image-detail-table"><summary>查看按日期与结果汇总</summary><div class="table-scroll"><table><thead><tr><th>日期</th><th>结果</th><th>次数</th><th>输入 token</th><th>输出 token</th><th>课程条数</th><th>平均耗时</th></tr></thead><tbody id="imageImportStats"></tbody></table></div></details>
+          </section>
         </section>
       </section>
 

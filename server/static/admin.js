@@ -862,25 +862,104 @@
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
-  const imageImportFields = ["enabled", "endpoint", "model", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit", "timeoutSeconds", "maxOutputTokens"];
+  const imageImportFields = ["enabled", "endpoint", "model", "apiKey", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit", "timeoutSeconds", "maxOutputTokens"];
   const imageField = key => $("imageImport" + key[0].toUpperCase() + key.slice(1));
   const formImageImport = () => Object.fromEntries(imageImportFields.map(key => {
     const element = imageField(key);
     return [key, element.type === "checkbox" ? element.checked : element.type === "number" ? Number(element.value) : element.value.trim()];
   }));
+  const imageAttemptOutcomes = new Set(["pending", "success", "empty", "upstreamError", "invalidResult"]);
+  const imageOutcomeLabels = { success: "成功", empty: "空结果", failed: "失败", blocked: "拦截" };
+  const imageOutcomeClasses = { success: "image-success", empty: "image-empty", failed: "image-failed", blocked: "image-blocked" };
+  const imageDayShift = (value, amount) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + amount);
+    return date.toISOString().slice(0, 10);
+  };
+  const imageFormatCount = value => Number(value || 0).toLocaleString("zh-CN");
+  const imageAggregateSummary = rows => {
+    const summary = { events: 0, attempts: 0, success: 0, empty: 0, failed: 0, blocked: 0, inputTokens: 0, outputTokens: 0, courses: 0, durationMs: 0 };
+    rows.forEach(row => {
+      const count = Number(row.requests || 0); summary.events += count;
+      summary.inputTokens += Number(row.inputTokens || 0); summary.outputTokens += Number(row.outputTokens || 0);
+      summary.courses += Number(row.courses || 0); summary.durationMs += Number(row.durationMs || 0);
+      if (imageAttemptOutcomes.has(row.outcome)) summary.attempts += count;
+      if (row.outcome === "success") summary.success += count;
+      else if (row.outcome === "empty") summary.empty += count;
+      else if (["upstreamError", "invalidResult", "pending"].includes(row.outcome)) summary.failed += count;
+      else summary.blocked += count;
+    });
+    summary.successRate = summary.attempts ? summary.success / summary.attempts * 100 : 0;
+    summary.averageDurationMs = summary.attempts ? summary.durationMs / summary.attempts : 0;
+    return summary;
+  };
+  const renderImageTrend = (rows, today) => {
+    const byDay = new Map();
+    for (const row of rows) {
+      if (!byDay.has(row.day)) byDay.set(row.day, {});
+      byDay.get(row.day)[row.outcome] = Number(row.requests || 0);
+    }
+    const days = Array.from({ length: 30 }, (_, index) => imageDayShift(today, index - 29));
+    const data = days.map(day => {
+      const values = byDay.get(day) || {};
+      return { day, success: values.success || 0, empty: values.empty || 0,
+        failed: (values.upstreamError || 0) + (values.invalidResult || 0) + (values.pending || 0),
+        blocked: Object.entries(values).filter(([key]) => !imageAttemptOutcomes.has(key)).reduce((sum, [, value]) => sum + value, 0) };
+    });
+    const max = Math.max(1, ...data.map(item => item.success + item.empty + item.failed + item.blocked));
+    $("imageTrendMax").textContent = imageFormatCount(max);
+    const chart = $("imageDailyTrend"); chart.replaceChildren();
+    const tooltip = $("imageTrendTooltip"); const panel = $("imageDailyTrend").closest(".image-trend-panel");
+    for (const item of data) {
+      const total = item.success + item.empty + item.failed + item.blocked;
+      const bar = document.createElement("button"); bar.type = "button"; bar.className = `trend-bar${item.day === today ? " is-today" : ""}`;
+      bar.setAttribute("aria-label", `${item.day}，${total} 次`); bar.title = `${item.day} · ${total} 次`;
+      const stack = document.createElement("span"); stack.className = "trend-stack";
+      for (const key of ["blocked", "failed", "empty", "success"]) {
+        const segment = document.createElement("i"); segment.className = imageOutcomeClasses[key];
+        segment.style.height = `${item[key] / max * 100}%`; if (!item[key]) segment.hidden = true; stack.append(segment);
+      }
+      bar.append(stack); const label = document.createElement("small"); label.textContent = item.day.slice(5); bar.append(label); chart.append(bar);
+      bar.addEventListener("mouseenter", () => {
+        tooltip.hidden = false; tooltip.innerHTML = `<span>${item.day}</span>${["success", "empty", "failed", "blocked"].map(key => `<div><i class="${imageOutcomeClasses[key]}"></i>${imageOutcomeLabels[key]} <strong>${imageFormatCount(item[key])}</strong><em>次</em></div>`).join("")}`;
+        const panelRect = panel.getBoundingClientRect(); const barRect = bar.getBoundingClientRect();
+        tooltip.style.left = `${barRect.left - panelRect.left + barRect.width / 2}px`;
+      });
+      bar.addEventListener("mouseleave", () => { tooltip.hidden = true; });
+    }
+  };
+  const renderImageBreakdown = summary => {
+    const rows = ["success", "empty", "failed", "blocked"].map(key => ({ key, count: Number(summary[key] || 0) }));
+    const total = Math.max(1, Number(summary.events || 0));
+    $("imageOutcomeBreakdown").innerHTML = rows.map(row => `<div class="image-outcome-row"><div><span><i class="${imageOutcomeClasses[row.key]}"></i>${imageOutcomeLabels[row.key]}</span><strong>${imageFormatCount(row.count)}</strong></div><div class="image-outcome-track"><i class="${imageOutcomeClasses[row.key]}" style="width:${row.count / total * 100}%"></i></div><small>${(row.count / total * 100).toFixed(1)}%</small></div>`).join("");
+  };
   const showImageImport = data => {
     imageImportFields.forEach(key => {
       const element = imageField(key);
       if (element.type === "checkbox") element.checked = data.config[key];
       else element.value = data.config[key];
     });
-    $("imageImportStatus").textContent = `${data.config.enabled ? "已开放" : "已关闭"} · ${data.config.configured ? "模型与密钥已配置" : "请设置模型和服务器 API 密钥"}`;
+    $("imageImportStatus").textContent = `${data.config.enabled ? "已开放" : "已关闭"} · ${data.config.configured ? "模型与密钥已配置" : "请设置模型和 API 密钥"}`;
     $("saveImageImportButton").disabled = false;
-    const outcomes = { success: "成功", empty: "未识别到课程", upstreamError: "接口失败", invalidResult: "结果无效", pending: "处理中或被中断", attestRequired: "需要设备验证", invalidImage: "图片无效", busy: "并发已满", quotaRejected: "超过额度" };
     const rows = data.stats.daily || [];
-    const today = rows.filter(row => row.day === data.stats.today);
-    const attempts = today.filter(row => ["success", "empty", "upstreamError", "invalidResult", "pending"].includes(row.outcome)).reduce((sum, row) => sum + row.requests, 0);
-    $("imageImportSummary").textContent = `今日已调用 ${attempts} / ${data.config.globalDailyLimit} 次 · 成功 ${today.filter(row => row.outcome === "success").reduce((sum, row) => sum + row.requests, 0)} 次 · 统计保留 ${data.stats.retentionDays} 天`;
+    const todayRows = rows.filter(row => row.day === data.stats.today);
+    const summary = data.stats.summary || imageAggregateSummary(rows);
+    const todaySummary = imageAggregateSummary(todayRows);
+    $("imageTodayAttempts").textContent = imageFormatCount(todaySummary.attempts);
+    $("imageTodayAttemptsDetail").textContent = `${imageFormatCount(todaySummary.success)} 次成功 · ${imageFormatCount(todaySummary.blocked)} 次拦截`;
+    $("imageSuccessRate").textContent = `${Number(summary.successRate || 0).toFixed(1)}%`;
+    $("imageSuccessRateDetail").textContent = `${imageFormatCount(summary.success)} 次成功 / ${imageFormatCount(summary.attempts)} 次尝试`;
+    $("imageAverageDuration").textContent = summary.averageDurationMs ? `${(summary.averageDurationMs / 1000).toFixed(1)} 秒` : "—";
+    $("imageAverageDurationDetail").textContent = `${imageFormatCount(summary.attempts)} 次已发起识别`;
+    $("imageQuota").textContent = `${imageFormatCount(todaySummary.attempts)} / ${imageFormatCount(data.config.globalDailyLimit)}`;
+    $("imageQuotaDetail").textContent = data.config.enabled ? "失败请求同样计入额度" : "服务当前未开放";
+    $("imageQuotaDot").className = todaySummary.attempts >= data.config.globalDailyLimit ? "is-full" : "";
+    $("imageInputTokens").textContent = imageFormatCount(summary.inputTokens);
+    $("imageOutputTokens").textContent = imageFormatCount(summary.outputTokens);
+    $("imageCourses").textContent = imageFormatCount(summary.courses);
+    $("imageImportSummary").textContent = `共 ${imageFormatCount(summary.events)} 条事件 · 统计保留 ${data.stats.retentionDays} 天 · 最多同时识别 ${data.stats.maxConcurrent} 张图片`;
+    renderImageTrend(rows, data.stats.today); renderImageBreakdown(summary);
+    const outcomes = { success: "成功", empty: "未识别到课程", upstreamError: "接口失败", invalidResult: "结果无效", pending: "处理中或被中断", attestRequired: "需要设备验证", invalidImage: "图片无效", busy: "并发已满", quotaRejected: "超过额度" };
     $("imageImportStats").innerHTML = rows.length ? rows.map(row => `<tr><td>${escapeHTML(row.day)}</td><td>${escapeHTML(outcomes[row.outcome] || row.outcome)}</td><td>${row.requests}</td><td>${row.inputTokens}</td><td>${row.outputTokens}</td><td>${row.courses}</td><td>${(row.durationMs / row.requests / 1000).toFixed(1)} 秒</td></tr>`).join("") : '<tr><td colspan="7">暂无识别记录</td></tr>';
     markClean("imageImport");
   };

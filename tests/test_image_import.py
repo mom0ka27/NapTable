@@ -75,6 +75,9 @@ class RecognitionTests(unittest.TestCase):
         self.assertEqual(recognized['courses'][0]['weeks'], [1, 3, 5])
         row = self.service.stats()['daily'][0]
         self.assertEqual((row['outcome'], row['inputTokens'], row['outputTokens'], row['courses']), ('success', 100, 50, 1))
+        self.assertEqual(self.service.stats()['summary']['success'], 1)
+        self.assertEqual(self.service.stats()['summary']['attempts'], 1)
+        self.assertEqual(self.service.stats()['summary']['successRate'], 100.0)
         config, encoded, key = self.calls[0]
         self.assertEqual(key, 'test-server-key')
         with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
@@ -86,6 +89,19 @@ class RecognitionTests(unittest.TestCase):
         self.assertNotIn('address', stored.values())
         self.assertNotIn('数学', json.dumps(stored, ensure_ascii=False))
         self.assertNotIn('imageBase64', stored)
+
+    def test_admin_key_is_used_without_returning_secret(self):
+        with patch.dict(os.environ, {'NAPTABLE_IMAGE_IMPORT_API_KEY': ''}):
+            self.service.save_config(self.config | {'apiKey': 'configured-in-admin'})
+            self.assertTrue(self.service.public()['enabled'])
+            self.assertTrue(self.service.admin_config()['apiKeyConfigured'])
+            self.assertNotIn('configured-in-admin', json.dumps(self.service.admin_config()))
+            self.recognize()
+        self.assertEqual(self.calls[-1][2], 'configured-in-admin')
+        # An empty password field from the page keeps the existing secret.
+        with patch.dict(os.environ, {'NAPTABLE_IMAGE_IMPORT_API_KEY': ''}):
+            self.service.save_config(self.config | {'apiKey': ''})
+            self.assertTrue(self.service.public()['enabled'])
 
     def test_attest_and_invalid_images_never_call_upstream(self):
         self.error(403, lambda: self.recognize(key=None))
