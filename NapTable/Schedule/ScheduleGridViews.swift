@@ -449,6 +449,8 @@ struct NativeScheduleDayTimeline: View {
 
     let blocks: [NativeScheduleCourseBlock]
     let clocks: [ScheduleSlot]
+    /// 星期几（1–7）。格子风格的读屏标签报「周三 第1–2节」时用。
+    var day: Int = 1
     /// 没课时空状态下面的一行说明，比如调休的「国庆节放假」。
     var emptyNote: String? = nil
     var holidayGreeting: String? = nil
@@ -552,7 +554,7 @@ struct NativeScheduleDayTimeline: View {
 
     var body: some View {
         if style == .minimal { minimalBody } else {
-            ScheduleStyledDayView(blocks: blocks, clocks: clocks, slotCount: slotCount,
+            ScheduleStyledDayView(day: day, blocks: blocks, clocks: clocks, slotCount: slotCount,
                 nowMinutes: nowMinutes, completedBeforeMinutes: completedBeforeMinutes, cardHeight: cardHeight,
                 emptyNote: emptyNote, holidayGreeting: holidayGreeting, emptyHeight: emptyHeight,
                 isEditable: isEditable, onCourseSelected: onCourseSelected, onCoursePreview: onCoursePreview,

@@ -4,6 +4,8 @@ import SwiftUI
 struct ScheduleStyledDayView: View {
     @Environment(\.scheduleStyle) private var style
     @Environment(\.scheduleStaticRendering) private var staticRendering
+    /// Weekday (1–7) of the page, so the grid column's VoiceOver labels name the right day.
+    let day: Int
     let blocks: [NativeScheduleCourseBlock]
     let clocks: [ScheduleSlot]
     let slotCount: Int
@@ -83,7 +85,7 @@ struct ScheduleStyledDayView: View {
                     }
                 }
                 NativeScheduleDayColumn(
-                    day: 1, dateText: nil, isToday: nowMinutes != nil, adjustment: nil,
+                    day: day, dateText: nil, isToday: nowMinutes != nil, adjustment: nil,
                     columnWidth: max(24, geometry.size.width - 56), rowHeight: height,
                     slotCount: visibleClocks.count, clocks: clocks, compactCards: false,
                     showsDateHeader: false, isEditable: isEditable, blocks: blocks,

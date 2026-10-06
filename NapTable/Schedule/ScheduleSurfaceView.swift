@@ -873,6 +873,7 @@ struct NativeScheduleView: View {
             NativeScheduleDayTimeline(
                 blocks: blocks(for: day, week: week, result: result),
                 clocks: clocks,
+                day: day,
                 emptyNote: adjustment(day: day, week: week, result: result)?.detail,
                 holidayGreeting: date.flatMap { ChineseCalendarInfo.restGreeting(forDate: $0) },
                 nowMinutes: preferences.showNowIndicator ? now.map(nowMinutes) : nil,

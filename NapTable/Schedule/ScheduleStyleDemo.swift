@@ -95,6 +95,7 @@ private struct ScheduleStyleDemoContent: View {
                     NativeScheduleDayTimeline(
                         blocks: ScheduleStyleDemoData.blocks(day: 3, week: 7),
                         clocks: ScheduleStyleDemoData.clocks,
+                        day: 3,
                         nowMinutes: ScheduleStyleDemoData.nowMinutes,
                         completedBeforeMinutes: ScheduleStyleDemoData.nowMinutes,
                         isEditable: false,
