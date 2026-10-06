@@ -102,7 +102,8 @@ private struct ScheduleStyleDemoContent: View {
                         onCourseSelected: { _ in }
                     )
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
+                    // 正式日视图上下留有按压余量（`pressInset`），简约卡片探出顶边的「已结束」角标才不被裁掉。
+                    .padding(.vertical, 16)
                 }
             case .month:
                 NativeScheduleMonthView(
@@ -203,7 +204,9 @@ private struct ScheduleStyleDemoContent: View {
                         isEditable: false,
                         blocks: ScheduleStyleDemoData.blocks(day: day, week: 7),
                         onCourseSelected: { _ in },
-                        onEmptySlot: { _ in }
+                        onEmptySlot: { _ in },
+                        // 和正式周视图一样只把「现在」传给今天那列：格子的现在线、当前课程描边、站牌反白才会出现。
+                        nowMinutes: day == 3 ? ScheduleStyleDemoData.nowMinutes : nil
                     )
                 }
             }
