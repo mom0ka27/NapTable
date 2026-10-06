@@ -2991,7 +2991,7 @@ private struct OtherDayBanner: View {
     @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
-        let tint = widgetColors.accent(for: theme)
+        let solid = widgetColors.solidAccent(for: theme)
         let fullColor = renderingMode == .fullColor
         // 醒目只交给胶囊一处，后面的星期用灰字：再用强调色写一遍日期，就和上面日期栏的
         // 今天叠成两行日期，分不清哪个是课的日子。明天、后天不写日期，胶囊已经说了。
@@ -3005,9 +3005,9 @@ private struct OtherDayBanner: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background {
-                    Capsule().fill(fullColor ? tint : Color.white.opacity(0.28))
+                    Capsule().fill(fullColor ? solid.fill : Color.white.opacity(0.28))
                 }
-                .foregroundStyle(fullColor ? Color.white : widgetColors.primary)
+                .foregroundStyle(fullColor ? solid.text : widgetColors.primary)
                 .widgetAccentable()
             Text(detail)
                 .font(style.widgetFont(size: 11, weight: .semibold))

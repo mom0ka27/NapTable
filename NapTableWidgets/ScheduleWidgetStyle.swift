@@ -55,6 +55,16 @@ struct WidgetStyleColors: DynamicProperty {
         return style.styleAccent(dark: dark, fallback: ThemePalette.of(NextWidgetConfiguration.globalBrandColor).text(dark: dark))
     }
 
+    /// A solid accent fill and the text on it. Outside minimal, `accent(for:)` is a text tier that
+    /// turns light in dark mode, so white text would not hold on it: paper and board put their
+    /// canvas color on the accent, grid and table use the theme's fill tier.
+    func solidAccent(for theme: ScheduleWidgetTheme) -> (fill: Color, text: Color) {
+        guard styled else { return (accent(for: theme), .white) }
+        if let canvas = style.canvasColor(dark: dark) { return (accent(for: theme), canvas) }
+        let palette = ThemePalette.of(NextWidgetConfiguration.globalBrandColor)
+        return (palette.fill(dark: dark), palette.onFill(dark: dark))
+    }
+
     func accent(for course: WidgetCourse, theme: ScheduleWidgetTheme, colorful: Bool, colorScheme: ColorScheme) -> Color {
         if style == .minimal {
             return WidgetPalette.accent(for: course, theme: theme, colorful: colorful, colorScheme: colorScheme)

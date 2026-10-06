@@ -180,7 +180,9 @@ struct NativeScheduleDayColumn: View {
             }
             ZStack(alignment: .topLeading) {
                 styledEmptyCells
-                if let nowMinutes, !staticRendering, marksToday,
+                // 只有格子把「现在」线压在课程块下面、从空格子里露出来；其他风格由课表页画在
+                // 课程上方，这里再画一条就成了两条。
+                if style == .grid, let nowMinutes, !staticRendering, marksToday,
                    let y = styledNowY(nowMinutes) {
                     Rectangle().fill(.themeText).frame(width: columnWidth, height: 1.5)
                         .offset(y: y).allowsHitTesting(false).accessibilityHidden(true)
@@ -197,12 +199,17 @@ struct NativeScheduleDayColumn: View {
 
     private var styledEmptyCells: some View {
         let rows = Array(clocks.prefix(slotCount))
+        let laneCounts = clusterLaneCounts
         return VStack(spacing: style == .table ? 0 : Self.slotGap) {
             ForEach(rows) { slot in
-                let occupied = blocks.contains { $0.startSlot <= slot.number && slot.number <= $0.endSlot }
+                let covering = blocks.filter { $0.startSlot <= slot.number && slot.number <= $0.endSlot }
+                let occupied = !covering.isEmpty
+                // 并排的课没占满这一格的宽度时，空着的那一半还要露出格子。
+                let covered = occupied && Set(covering.map(\.lane)).count >= (laneCounts[covering[0].id] ?? 1)
                 let previous = rows.first { $0.number == slot.number - 1 }
                 ScheduleStyledWeekCell(today: marksToday, holiday: adjustment?.kind == .off,
-                    startsSession: previous.map { ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(slot.start) } ?? true)
+                    startsSession: previous.map { ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(slot.start) } ?? true,
+                    covered: covered, joinsBelow: covering.contains { $0.endSlot > slot.number })
                     .frame(width: columnWidth, height: rowHeight + (style == .table && slot.number != rows.last?.number ? Self.slotGap : 0))
                     .contentShape(Rectangle())
                     .modifier(ScheduleEmptySlotInteraction(slot: slot.number, isEditable: isEditable && !occupied, onAdd: onEmptySlot))
@@ -213,11 +220,15 @@ struct NativeScheduleDayColumn: View {
 
     private func styledCourse(_ block: NativeScheduleCourseBlock) -> some View {
         let lanes = clusterLaneCounts[block.id] ?? 1
-        let inset: CGFloat = style == .table ? 0.5 : 1
+        // 格子：课程块就是那一格，和旁边的空格子一样大，并排的课之间才留缝。
+        // 表格：贴着格线填满单元格。其余风格四周留 1pt。
+        let inset: CGFloat = style == .table ? 0.5 : (style == .grid && lanes == 1 ? 0 : 1)
         let status = ScheduleStyledDayStatus(clocks: clocks, now: staticRendering ? nil : nowMinutes,
                                              completedBefore: staticRendering ? nil : completedBeforeMinutes)
+        // 表格的行线画在每一节顶上，课程块要越过行距贴到下一条线；最后一节下面没有行距。
+        let reach = style == .table && block.endSlot < slotCount ? Self.slotGap : 0
         let height = CGFloat(block.endSlot - block.startSlot + 1) * rowHeight
-            + CGFloat(block.endSlot - block.startSlot) * Self.slotGap - inset * 2
+            + CGFloat(block.endSlot - block.startSlot) * Self.slotGap + reach - inset * 2
         return ZStack(alignment: .trailing) {
             ScheduleStyledCourseTile(course: block.course, compact: compactCards || columnWidth / CGFloat(lanes) < 70,
                                      start: clocks.first { $0.number == block.startSlot }?.start,
@@ -242,7 +253,8 @@ struct NativeScheduleDayColumn: View {
         for (index, slot) in clocks.prefix(slotCount).enumerated() {
             guard let start = scheduleClockMinutes(slot.start), let end = scheduleClockMinutes(slot.end), end > start else { continue }
             if current < start { return index == 0 ? nil : CGFloat(index) * (rowHeight + Self.slotGap) - Self.slotGap / 2 }
-            if current < end { return CGFloat(index) * (rowHeight + Self.slotGap) + rowHeight * CGFloat(current - start) / CGFloat(end - start) }
+            // 下课那一分钟仍停在这一节底部，和节次轴上的时间胶囊（`nowOffset`）同一个位置。
+            if current <= end { return CGFloat(index) * (rowHeight + Self.slotGap) + rowHeight * CGFloat(current - start) / CGFloat(end - start) }
         }
         return nil
     }

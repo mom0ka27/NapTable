@@ -163,7 +163,8 @@ private struct ScheduleStyleDemoContent: View {
     private var weekGrid: some View {
         GeometryReader { geometry in
             let axisWidth: CGFloat = 32
-            let gap: CGFloat = 3
+            // 和正式周视图一样，只有简约和格子在两天之间留缝。
+            let gap: CGFloat = style == .minimal || style == .grid ? 3 : 0
             let rowHeight = NativeScheduleDayColumn.slotHeight
             let columnWidth = max(12, (geometry.size.width - 12 - axisWidth - gap * 7) / 7)
             HStack(alignment: .top, spacing: gap) {
@@ -202,6 +203,19 @@ private struct ScheduleStyleDemoContent: View {
                         blocks: ScheduleStyleDemoData.blocks(day: day, week: 7),
                         onCourseSelected: { _ in },
                         onEmptySlot: { _ in }
+                    )
+                }
+            }
+            .background(alignment: .topLeading) {
+                if style == .table {
+                    ScheduleTableRules(
+                        headerHeight: NativeScheduleDayColumn.dateHeaderHeight, rowHeight: rowHeight,
+                        slotCount: ScheduleStyleDemoData.clocks.count, axisWidth: axisWidth,
+                        columnWidth: columnWidth, dayCount: 7,
+                        joined: { column, row in
+                            ScheduleStyleDemoData.blocks(day: column + 1, week: 7)
+                                .contains { $0.startSlot <= row && row < $0.endSlot }
+                        }
                     )
                 }
             }

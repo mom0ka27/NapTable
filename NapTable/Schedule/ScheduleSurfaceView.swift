@@ -1240,6 +1240,8 @@ struct NativeScheduleView: View {
             ?? ScheduleSlot.all)
         let headerHeight = showsDateHeader ? NativeScheduleDayColumn.dateHeaderHeight : 0
         let todayIndex = days.firstIndex { dayIsToday($0, week: week, result: result) }
+        // 表格风格的格线要避开跨节的课，见 `ScheduleTableRules`。
+        let tableBlocks = style == .table ? days.map { blocks(for: $0, week: week, result: result) } : []
         return HStack(alignment: .top, spacing: styleColumnGap) {
             slotAxis(rowHeight: rowHeight, slotCount: slotCount, showsHeader: showsDateHeader,
                      monthLabel: date.flatMap(monthLabel), clocks: clocks)
@@ -1283,13 +1285,16 @@ struct NativeScheduleView: View {
                 slotCount: slotCount,
                 leading: Self.slotAxisWidth + styleColumnGap / 2
                 )
+            } else if style == .table {
+                // 垫在课程下面：线不压课名，跨节的课中间也不画线。
+                ScheduleTableRules(headerHeight: headerHeight, rowHeight: rowHeight, slotCount: slotCount,
+                                   axisWidth: Self.slotAxisWidth, columnWidth: columnWidth, dayCount: days.count,
+                                   joined: { column, row in
+                                       tableBlocks[column].contains { $0.startSlot <= row && row < $0.endSlot }
+                                   })
             }
         }
         .overlay(alignment: .topLeading) {
-            if style == .table {
-                ScheduleTableRules(headerHeight: headerHeight, rowHeight: rowHeight, slotCount: slotCount,
-                                   axisWidth: Self.slotAxisWidth, columnWidth: columnWidth, dayCount: days.count)
-            }
             if showsNowLine, preferences.showNowIndicator, let todayIndex {
                 TimelineView(.everyMinute) { context in
                     let minutes = nowMinutes(context.date)
@@ -1450,6 +1455,7 @@ struct NativeScheduleView: View {
                 .frame(maxWidth: .infinity, minHeight: 42)
 
             GeometryReader { proxy in
+                let columnWidth = max(1, (proxy.size.width - Self.slotAxisWidth) / CGFloat(visibleDays.count))
                 HStack(alignment: .top, spacing: 0) {
                     slotAxis(rowHeight: weekGridRowHeight, slotCount: emptySlotCount)
                     ForEach(visibleDays, id: \.self) { day in
@@ -1458,7 +1464,7 @@ struct NativeScheduleView: View {
                             dateText: nil,
                             isToday: day == chinaWeekday,
                             adjustment: nil,
-                            columnWidth: max(1, (proxy.size.width - Self.slotAxisWidth) / CGFloat(visibleDays.count)),
+                            columnWidth: columnWidth,
                             rowHeight: weekGridRowHeight,
                             slotCount: emptySlotCount,
                             compactCards: true,
@@ -1467,6 +1473,14 @@ struct NativeScheduleView: View {
                             onCourseSelected: { _ in },
                             onEmptySlot: { _ in }
                         )
+                    }
+                }
+                .background(alignment: .topLeading) {
+                    if style == .table {
+                        ScheduleTableRules(headerHeight: NativeScheduleDayColumn.dateHeaderHeight,
+                                           rowHeight: weekGridRowHeight, slotCount: emptySlotCount,
+                                           axisWidth: Self.slotAxisWidth, columnWidth: columnWidth,
+                                           dayCount: visibleDays.count)
                     }
                 }
             }

@@ -178,6 +178,8 @@ struct NativeScheduleMonthView: View {
         switch style {
         case .grid: 44 + CGFloat(max(0, rows - 1)) * 5
         case .paper: 78
+        // 表格只有 28 高的星期表头，上下不留白，见 `styledMonthGrid`。
+        case .table: 28
         default: 44
         }
     }
@@ -199,8 +201,11 @@ struct NativeScheduleMonthView: View {
         return VStack(spacing: 0) {
             styledMonthGrid(days, rowHeight: rowHeight)
             if let selected = selectedDay(in: days) {
-                Rectangle().fill(styleRule).frame(height: style == .board ? 2 : 0.7)
-                    .padding(.horizontal, style == .table ? 0 : 12)
+                // 表格的外框底边已经把月历和摘要分开，不再叠一条分隔线。
+                if style != .table {
+                    Rectangle().fill(styleRule).frame(height: style == .board ? 2 : 0.7)
+                        .padding(.horizontal, 12)
+                }
                 styledSelectedDaySummary(selected, previewCount: count, previewHeight: previewHeight)
             }
         }
@@ -350,8 +355,8 @@ struct NativeScheduleMonthView: View {
             }
         }
         .padding(.horizontal, style == .table || style == .board ? 0 : 10)
-        .padding(.top, style == .paper ? 12 : 8)
-        .padding(.bottom, style == .paper ? 12 : 8)
+        // 表格的表头底色和格线要贴住外框：留白会在框里多出一条没有底色的空带。
+        .padding(.vertical, style == .paper ? 12 : (style == .table ? 0 : 8))
         .overlay {
             if style == .table {
                 Rectangle()
@@ -797,6 +802,8 @@ struct NativeScheduleMonthView: View {
                     .accessibilityLabel("查看当天安排")
                 }
             }
+            // 和右侧按钮一样高：选到没课的日期时这一行不变矮，摘要和面板底边不跟着跳。
+            .frame(minHeight: 36)
             Text(summarySubtitle(day))
                 .font(.system(size: 11, weight: .regular, design: style.fontDesign))
                 .foregroundStyle(styleInk.opacity(0.64))

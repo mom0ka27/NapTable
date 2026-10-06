@@ -24,9 +24,12 @@ struct ScheduleStyledDayView: View {
               completedBefore: staticRendering ? nil : completedBeforeMinutes)
     }
 
+    /// Paper and board show the shared rest card on a free day, and the card already carries the note.
+    private var showsRestCard: Bool { blocks.isEmpty && (style == .paper || style == .board) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let emptyNote {
+            if let emptyNote, !showsRestCard {
                 Text(emptyNote).font(.caption).foregroundStyle(.scheduleMeta).padding(.bottom, 12)
             }
             switch style {
@@ -60,7 +63,7 @@ struct ScheduleStyledDayView: View {
                 value + CGFloat(max(1, blocks.filter { $0.startSlot <= slot.number && slot.number <= $0.endSlot }.count)) * tableRowHeight(cardHeight)
             }
         case .paper, .board:
-            if blocks.isEmpty { return note + max(220, cardHeight * 2) }
+            if blocks.isEmpty { return max(220, cardHeight * 2) }
             // At most three time-of-day / status sections, including their headings and separators.
             return note + CGFloat(blocks.count) * cardHeight + 3 * 48 + 32
         case .minimal: return NativeScheduleDayTimeline.height(blocks: blocks, cardHeight: cardHeight)
@@ -184,7 +187,8 @@ private struct ScheduleDayTableHeading: View {
             Text("节").frame(width: 28)
             Text("时间").frame(width: 58)
             Text("课程").frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 8)
-            Text("教室").frame(width: 80, alignment: .leading)
+            // Same 6pt inset as the room text in the rows below.
+            Text("教室").padding(.leading, 6).frame(width: 80, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .frame(height: 32)
@@ -213,13 +217,14 @@ private struct ScheduleDayTableRow: View {
                 Text(slot.end)
             }
             .font(.system(size: 10, design: .monospaced))
-            .frame(width: 57.5)
+            // 28 + 0.5 + 57 + 0.5 = the heading's 28 + 58, so the course column starts under its title.
+            .frame(width: 57)
             Rectangle().fill(rule).frame(width: 0.5)
             if blocks.isEmpty {
                 HStack(spacing: 0) {
                     Text("—").frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 8)
                     Rectangle().fill(rule).frame(width: 0.5)
-                    Text("—").frame(width: 79.5, alignment: .leading).padding(.leading, 0)
+                    Text("—").padding(.leading, 6).frame(width: 79.5, alignment: .leading)
                 }
                 .contentShape(Rectangle())
                 .modifier(ScheduleEmptySlotInteraction(slot: slot.number, isEditable: isEditable, onAdd: onEmptySlot))

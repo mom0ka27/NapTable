@@ -13,7 +13,6 @@ struct ScheduleStylePicker: View {
                     } label: {
                         HStack(spacing: 14) {
                             StylePreview(style: style)
-                                .frame(width: 82, height: 54)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(style.title)
                                     .foregroundStyle(.primary)
@@ -43,32 +42,59 @@ struct ScheduleStylePicker: View {
 private struct StylePreview: View {
     let style: ScheduleStyle
 
+    private static let rowHeight: CGFloat = 32
+    private static let slotCount = 4
+    private static let padding: CGFloat = 8
+    /// The real components at full size: three day columns inside the week panel.
+    private static let canvas = CGSize(
+        width: 264,
+        height: NativeScheduleDayColumn.dateHeaderHeight + CGFloat(slotCount) * rowHeight
+            + CGFloat(slotCount - 1) * NativeScheduleDayColumn.slotGap + 2 * padding
+    )
+    /// The thumbnail is the whole canvas at one scale, so no edge of the panel is cut off.
+    private static let width: CGFloat = 82
+    private static var scale: CGFloat { width / canvas.width }
+
+    /// Same column gaps as the week view: only minimal and grid keep space between days.
+    private var gap: CGFloat { style == .minimal || style == .grid ? 4 : 0 }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 4) {
+        let columnWidth = (Self.canvas.width - 2 * Self.padding - 2 * gap) / 3
+        HStack(alignment: .top, spacing: gap) {
             ForEach(1...3, id: \.self) { day in
                 NativeScheduleDayColumn(
                     day: day, dateText: "\(day + 5)", isToday: false,
-                    adjustment: nil, columnWidth: 80, rowHeight: 32, slotCount: 4,
+                    adjustment: nil, columnWidth: columnWidth, rowHeight: Self.rowHeight, slotCount: Self.slotCount,
                     compactCards: true, showsDateHeader: true, isEditable: false,
                     blocks: [sample(day)], onCourseSelected: { _ in }, onEmptySlot: { _ in }
                 )
             }
         }
-        .padding(8)
+        .background(alignment: .topLeading) {
+            if style == .table {
+                ScheduleTableRules(headerHeight: NativeScheduleDayColumn.dateHeaderHeight, rowHeight: Self.rowHeight,
+                                   slotCount: Self.slotCount, axisWidth: 0, columnWidth: columnWidth, dayCount: 3,
+                                   joined: { column, row in row == sampleStart(column + 1) })
+            }
+        }
+        .padding(Self.padding)
         .background { ScheduleSurface(cornerRadius: 12, isPanel: true) }
         .environment(\.scheduleStyle, style)
         .environment(\.scheduleStaticRendering, true)
         .environment(\.dynamicTypeSize, .medium)
-        .frame(width: 264, height: 210, alignment: .top)
-        .scaleEffect(0.30, anchor: .topLeading)
-        .frame(width: 82, height: 54, alignment: .topLeading)
+        .frame(width: Self.canvas.width, height: Self.canvas.height, alignment: .top)
+        .scaleEffect(Self.scale, anchor: .topLeading)
+        .frame(width: Self.width, height: (Self.canvas.height * Self.scale).rounded(.up), alignment: .topLeading)
         .clipped()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
+    /// Each sample course covers two periods, starting here.
+    private func sampleStart(_ day: Int) -> Int { day == 2 ? 3 : 1 }
+
     private func sample(_ day: Int) -> NativeScheduleCourseBlock {
-        let start = day == 2 ? 3 : 1
+        let start = sampleStart(day)
         let course = NativeScheduleCourse(
             name: ["高等数学", "大学英语", "程序设计"][day - 1],
             location: "A10\(day)", startSlot: start, endSlot: start + 1
