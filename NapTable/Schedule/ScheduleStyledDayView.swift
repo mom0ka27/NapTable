@@ -3,6 +3,7 @@ import SwiftUI
 /// Four distinct day layouts, sharing the existing course callbacks and resolved bell schedule.
 struct ScheduleStyledDayView: View {
     @Environment(\.scheduleStyle) private var style
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.scheduleStaticRendering) private var staticRendering
     /// Weekday (1–7) of the page, so the grid column's VoiceOver labels name the right day.
     let day: Int
@@ -104,11 +105,18 @@ struct ScheduleStyledDayView: View {
                 ScheduleDayTableRow(
                     slot: slot, blocks: blocks.filter { $0.startSlot <= slot.number && slot.number <= $0.endSlot },
                     rowHeight: Self.tableRowHeight(cardHeight), status: status, isEditable: isEditable,
+                    showsBottomRule: slot.number != visibleClocks.last?.number,
                     onCourseSelected: onCourseSelected, onCoursePreview: onCoursePreview, onEmptySlot: onEmptySlot
                 )
             }
         }
-        .background { ScheduleSurface(cornerRadius: 0, isPanel: true) }
+        // The frame is stroked on top: course rows fill their cells edge to edge and would paint
+        // over a border drawn underneath them.
+        .background { ScheduleSurface(cornerRadius: 0, isPanel: true, showsBorder: false) }
+        .overlay {
+            Rectangle().strokeBorder(Color.scheduleCellBorder(dark: scheme == .dark), lineWidth: 0.5)
+                .allowsHitTesting(false)
+        }
     }
 
     private var paper: some View {
@@ -205,6 +213,8 @@ private struct ScheduleDayTableRow: View {
     let rowHeight: CGFloat
     let status: ScheduleStyledDayStatus
     let isEditable: Bool
+    /// The last row sits on the table frame, which already closes it.
+    var showsBottomRule = true
     let onCourseSelected: (NativeScheduleCourseBlock) -> Void
     let onCoursePreview: (NativeScheduleCourseBlock) -> Void
     let onEmptySlot: (Int) -> Void
@@ -244,7 +254,9 @@ private struct ScheduleDayTableRow: View {
             }
         }
         .frame(height: CGFloat(max(1, blocks.count)) * rowHeight)
-        .overlay(alignment: .bottom) { Rectangle().fill(rule).frame(height: 0.5) }
+        .overlay(alignment: .bottom) {
+            if showsBottomRule { Rectangle().fill(rule).frame(height: 0.5) }
+        }
     }
 }
 
