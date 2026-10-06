@@ -170,7 +170,9 @@ struct ScheduleStyledCourseTile: View {
     /// The board has no fill and no bar, so a small course-color mark leads the name.
     private var courseName: Text {
         guard style.layout.course == .departure else { return Text(course.name) }
-        return Text("■ ").font(.system(size: 7)).baselineOffset(1.5).foregroundColor(accent) + Text(course.name)
+        // The inverted tile swaps light and dark, so its mark takes the course color of the other scheme.
+        let mark = inverse ? swatch.accent(scheme: dark ? .light : .dark) : accent
+        return Text("■ ").font(.system(size: 7)).baselineOffset(1.5).foregroundColor(mark) + Text(course.name)
     }
 
     var body: some View {

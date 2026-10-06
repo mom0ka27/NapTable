@@ -336,8 +336,11 @@ private struct ScheduleStyledDepartureRow: View {
                 Text(status.end(block)).font(.system(size: 12, design: style.fontDesign))
             }
             .lineLimit(1).minimumScaleFactor(0.7).frame(width: style == .board ? 82 : 64, alignment: .leading)
+            // The inverted row swaps light and dark, so its bar takes the course color of the other scheme.
             Rectangle()
-                .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: scheme, solid: theme.solidCourseColor))
+                .fill(ScheduleCourseTint.accent(for: block.course.name,
+                                                scheme: inverse ? (dark ? .light : .dark) : scheme,
+                                                solid: theme.solidCourseColor))
                 .frame(width: 2).padding(.vertical, 16)
             VStack(alignment: .leading, spacing: 5) {
                 Text(block.course.name).font(.headline.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.8)
