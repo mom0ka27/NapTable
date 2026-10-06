@@ -77,12 +77,79 @@ extension EnvironmentValues {
     @Entry var scheduleHasBackgroundImage = false
     /// 当前外观下背景图的不透明度。周视图面板按它决定压多少，见 `schedulePanelSurface`。
     @Entry var scheduleBackgroundOpacity: Double = 0
+    /// 静态呈现：渲染分享图时打开。不标今天和「现在」，日视图不按「已上完」变灰，
+    /// 图上只留课表本身，什么时候打开看都一样。
+    @Entry var scheduleStaticRendering = false
+}
+
+/// 次要元信息灰：节次时间、月份、上完课的时间这类辅助文字。浅色 #6E6E73、深色 #98989D，
+/// 在画布和面板上都不低于 4.5:1。承载信息的字用它，不要再用 tertiary 或降透明度。
+struct ScheduleMetaTextStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        environment.colorScheme == .dark
+            ? Color(red: 0x98 / 255, green: 0x98 / 255, blue: 0x9D / 255)
+            : Color(red: 0x6E / 255, green: 0x6E / 255, blue: 0x73 / 255)
+    }
+}
+
+extension ShapeStyle where Self == ScheduleMetaTextStyle {
+    static var scheduleMeta: ScheduleMetaTextStyle { ScheduleMetaTextStyle() }
+}
+
+/// 主题色的语义档位。主题色由根视图放进环境，课表里的文字、实心控件和淡底都从
+/// `ThemePalette` 取值，这样自选亮色在画布、面板和今天列上也保持可读。
+struct ScheduleThemeTextStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        ThemePalette.of(environment.appThemeBrand)
+            .text(dark: environment.colorScheme == .dark)
+    }
+}
+
+struct ScheduleThemeFillStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        ThemePalette.of(environment.appThemeBrand)
+            .fill(dark: environment.colorScheme == .dark)
+    }
+}
+
+struct ScheduleThemeOnFillStyle: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> Color {
+        ThemePalette.of(environment.appThemeBrand)
+            .onFill(dark: environment.colorScheme == .dark)
+    }
+}
+
+struct ScheduleThemeTintStyle: ShapeStyle {
+    let amount: Double
+
+    func resolve(in environment: EnvironmentValues) -> Color {
+        ThemePalette.of(environment.appThemeBrand).tint(amount)
+    }
+}
+
+extension ShapeStyle where Self == ScheduleThemeTextStyle {
+    static var themeText: ScheduleThemeTextStyle { ScheduleThemeTextStyle() }
+}
+
+extension ShapeStyle where Self == ScheduleThemeFillStyle {
+    static var themeFill: ScheduleThemeFillStyle { ScheduleThemeFillStyle() }
+}
+
+extension ShapeStyle where Self == ScheduleThemeOnFillStyle {
+    static var themeOnFill: ScheduleThemeOnFillStyle { ScheduleThemeOnFillStyle() }
+}
+
+extension ShapeStyle where Self == ScheduleThemeTintStyle {
+    static func themeTint(_ amount: Double) -> ScheduleThemeTintStyle {
+        ScheduleThemeTintStyle(amount: amount)
+    }
 }
 
 /// 课表页与设置列表共用背景偏好，关闭主题背景时使用系统分组背景色。
 struct ScheduleCanvasStyle: ShapeStyle {
     func resolve(in environment: EnvironmentValues) -> Color {
-        AppBackgroundStyle(grouped: true).resolve(in: environment)
+        environment.scheduleStyle.canvasColor(dark: environment.colorScheme == .dark)
+            ?? AppBackgroundStyle(grouped: true).resolve(in: environment)
     }
 }
 
@@ -101,7 +168,9 @@ extension ShapeStyle where Self == Color {
     /// 磨砂会把主体糊成一片颜色。只铺一层淡平涂，图片越实压得越多，
     /// 节次和日期文字始终读得清，图片主体也照样看得见。
     static func schedulePanelSurface(hasBackground: Bool, dark: Bool, imageOpacity: Double) -> Color {
-        guard hasBackground else { return dark ? Color.white.opacity(0.09) : Color.white.opacity(0.96) }
+        guard hasBackground else {
+            return Color.white.opacity(ThemePalette.Surface.panelWhiteOpacity(dark: dark))
+        }
         let veil = 0.14 + 0.32 * min(1, max(0, imageOpacity))
         return dark ? Color.black.opacity(veil) : Color.white.opacity(veil)
     }
@@ -126,6 +195,7 @@ struct ScheduleCardSurface: ShapeStyle {
 /// 课表上的一块内容表面：平涂加一圈细边。格子、表头、周次导航和卡片都用它，
 /// 整页只有这一种描边语言，不再叠渐变、高光和投影。
 struct ScheduleSurface: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
     @Environment(\.scheduleBackgroundOpacity) private var backgroundOpacity
@@ -136,9 +206,12 @@ struct ScheduleSurface: View {
     var isPanel = false
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let radius = style == .minimal || style == .grid ? cornerRadius : CGFloat(style.layout.cornerRadius)
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         Group {
-            if isPanel {
+            if let canvas = style.canvasColor(dark: colorScheme == .dark), !hasBackground {
+                shape.fill(canvas)
+            } else if isPanel {
                 shape.fill(.schedulePanelSurface(hasBackground: hasBackground, dark: colorScheme == .dark,
                                                  imageOpacity: backgroundOpacity))
             } else if isCard {
@@ -148,6 +221,11 @@ struct ScheduleSurface: View {
             }
         }
         .overlay { shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1) }
+        .overlay {
+            if style == .paper {
+                shape.inset(by: 3).stroke(style.inkColor(dark: colorScheme == .dark).opacity(0.2), lineWidth: 0.5)
+            }
+        }
         .allowsHitTesting(false)
     }
 }

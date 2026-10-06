@@ -44,6 +44,8 @@ final class PurchaseManager: ObservableObject {
     /// someone who has never started one. Only verified, unrevoked receipts count.
     @Published private(set) var trialExpiresAt: Date?
     @Published private(set) var busy = false
+    /// 正在恢复购买。和 `busy` 分开，购买按钮不必跟着转圈。
+    @Published private(set) var restoring = false
     @Published var errorMessage: String?
 
     private static let pendingKey = "naptable.entitlement.pendingTransactions"
@@ -192,6 +194,45 @@ final class PurchaseManager: ObservableObject {
 
     func buyLifetime() async {
         await purchase(Self.lifetimeProductID)
+    }
+
+    /// 恢复购买的结果，权益页据此给一句提示。
+    enum RestoreOutcome: Equatable {
+        case restored
+        case nothingToRestore
+        case failed(String)
+    }
+
+    /// 「恢复购买」：先请 App Store 同步这个 Apple 账号的交易，再重新读取权益。
+    /// 非消耗型购买必须提供这个入口（审核指南 3.1.1）。返回 nil 表示不用提示：用户在
+    /// Apple 账号登录框里取消了、已有购买或恢复在进行，或者 Beta 期间本来就不用恢复。
+    func restore() async -> RestoreOutcome? {
+        guard accessMode == .paid else { return isBeta ? nil : .failed("连接失败，请联网后重试。") }
+        guard !busy, !restoring else { return nil }
+        let wasEntitled = hasActiveEntitlement
+        restoring = true
+        defer { restoring = false }
+        do {
+            // App 自己也有一个 AppStore 类型，这里要写全模块名。
+            try await StoreKit.AppStore.sync()
+        } catch {
+            return Self.restoreFailure(error)
+        }
+        await refreshEntitlements()
+        if products.isEmpty && state == .locked { state = .unavailable }
+        // 找回了买断，或者原本没有权益、现在有了试用，才算恢复成功。
+        return state == .lifetime || (!wasEntitled && hasActiveEntitlement) ? .restored : .nothingToRestore
+    }
+
+    /// 同步失败换成一句人话；用户自己取消返回 nil，不必提示。
+    static func restoreFailure(_ error: Error) -> RestoreOutcome? {
+        switch error as? StoreKitError {
+        case .userCancelled?: return nil
+        case .networkError?: return .failed("网络连接失败，请联网后重试。")
+        default: break
+        }
+        if error is URLError { return .failed("网络连接失败，请联网后重试。") }
+        return .failed("App Store 暂时无法完成恢复，请稍后重试。")
     }
 
     private func purchase(_ productID: String) async {

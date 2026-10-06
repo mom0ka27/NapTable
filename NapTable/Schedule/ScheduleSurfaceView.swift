@@ -30,8 +30,9 @@ struct NativeScheduleView: View {
     private let onWatch: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.colorScheme) private var colorScheme
-    @ScaledMetric(relativeTo: .headline) private var timelineCardHeight: CGFloat = 108
+    @ScaledMetric(relativeTo: .headline) private var timelineCardHeight: CGFloat = NativeScheduleDayTimeline.standardCardHeight
 
     @State private var selectedDay = 1
     @State private var didInitializeDay = false
@@ -246,22 +247,20 @@ struct NativeScheduleView: View {
                     pendingMonthAction = .openDay(selection.day.date)
                     monthDayDetails = nil
                 },
+                isEditable: !store.isReadOnly,
+                onCoursePreview: { block in
+                    pendingMonthAction = .course(block, date: selection.day.date, quickLook: true)
+                    monthDayDetails = nil
+                },
                 onCourseSelected: { block in
-                    pendingMonthAction = .course(block, date: selection.day.date)
+                    pendingMonthAction = .course(block, date: selection.day.date, quickLook: false)
                     monthDayDetails = nil
                 }
             )
         }
         .sheet(item: $selectedCourse) { selection in
-            Group {
-                if store.isReadOnly {
-                    SharedCourseDetailView(course: selection.course)
-                } else {
-                    NativeCourseEditorSheet(selection: selection, store: store, defaultWeek: Int(store.selectedWeek) ?? 1)
-                }
-            }
-                .appSheetDetents([.large])
-                .appDragIndicatorVisible()
+            // 速览、共享课表详情和编辑页都在这一个 sheet 里切换，见 `ScheduleCourseSheet`。
+            ScheduleCourseSheet(selection: selection, store: store, defaultWeek: Int(store.selectedWeek) ?? 1)
         }
         .sheet(item: $addCourseContext) { context in
             NativeCourseEditorSheet(
@@ -342,10 +341,10 @@ struct NativeScheduleView: View {
                 .overlay(alignment: .topTrailing) {
                     Text(courses.count > 99 ? "99+" : String(courses.count))
                         .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(courses.isEmpty ? Color.secondary : Color.white)
+                        .foregroundStyle(courses.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.themeOnFill))
                         .padding(.horizontal, 3)
                         .frame(minWidth: 14, minHeight: 14)
-                        .background(courses.isEmpty ? AnyShapeStyle(.scheduleCanvas) : AnyShapeStyle(Color.cpuBrand), in: Capsule())
+                        .background(courses.isEmpty ? AnyShapeStyle(.scheduleCanvas) : AnyShapeStyle(.themeFill), in: Capsule())
                         .offset(x: -1, y: 1)
                 }
         }
@@ -462,7 +461,7 @@ struct NativeScheduleView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(weekTitle(result))
                         .font(.headline)
-                        .foregroundStyle(Color.cpuBrand)
+                        .foregroundStyle(.themeText)
                     if let range = weekRange(result), !range.isEmpty {
                         Text(range)
                             .font(.subheadline)
@@ -506,7 +505,7 @@ struct NativeScheduleView: View {
             Text(monthTitle)
                 .font(.headline)
                 .monospacedDigit()
-                .foregroundStyle(Color.cpuBrand)
+                .foregroundStyle(.themeText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .padding(.leading, Self.navigatorTitleInset)
@@ -555,7 +554,7 @@ struct NativeScheduleView: View {
                 if selected?.isShared == true {
                     Image(systemName: "person.2.fill")
                         .font(.subheadline)
-                        .foregroundStyle(Color.cpuBrand)
+                        .foregroundStyle(.themeText)
                 }
                 Text(semesterTitle(result))
                     .font(.title3.weight(.bold))
@@ -564,9 +563,9 @@ struct NativeScheduleView: View {
                     .truncationMode(.tail)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .heavy))
-                    .foregroundStyle(Color.cpuBrand)
+                    .foregroundStyle(.themeText)
                     .frame(width: 18, height: 18)
-                    .background(Color.cpuBrand.opacity(0.12), in: Circle())
+                    .background(.themeTint(0.12), in: Circle())
             }
             .foregroundStyle(.primary)
             // Menu 会按标签的自然宽度居中；在标签内部固定靠左，长短名称共用起点。
@@ -739,7 +738,7 @@ struct NativeScheduleView: View {
                         Text(dayNumber(day, week: week, result: result) ?? "–")
                             .font(.system(size: 17, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                            .foregroundStyle(highlighted ? Color.cpuBrand : Color.primary)
+                            .foregroundStyle(highlighted ? AnyShapeStyle(.themeText) : AnyShapeStyle(.primary))
                             .overlay(alignment: .topTrailing) {
                                 if let dayAdjustment {
                                     ScheduleAdjustmentBadge(adjustment: dayAdjustment)
@@ -749,14 +748,14 @@ struct NativeScheduleView: View {
                             }
                         Text(isToday ? "今天" : dayLabel(day))
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(highlighted ? Color.cpuBrand : Color.secondary)
+                            .foregroundStyle(highlighted ? AnyShapeStyle(.themeText) : AnyShapeStyle(.secondary))
                     }
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, minHeight: 50)
                     .background {
                         if isSelected {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color.cpuBrand.opacity(colorScheme == .dark ? 0.2 : 0.1))
+                                .fill(.themeTint(colorScheme == .dark ? 0.2 : 0.1))
                         }
                     }
                     .contentShape(Rectangle())
@@ -786,7 +785,7 @@ struct NativeScheduleView: View {
                     // 节次轴和每一天之间都有一个间隔，n 天正好 n 个。
                     let columnWidth = max(
                         24,
-                        (contentWidth - panelInsets - Self.slotAxisWidth - dayCount * Self.columnGap) / dayCount
+                        (contentWidth - panelInsets - Self.slotAxisWidth - dayCount * styleColumnGap) / dayCount
                     )
                     scheduleRows(
                         result: result,
@@ -828,7 +827,7 @@ struct NativeScheduleView: View {
         // 无课状态按日期栏以下的可见空间居中，不受相邻日期的课程数量影响。
         // 横屏或大字号时至少保留内容所需高度，由外层继续提供纵向滚动。
         let emptyHeight = max(
-            max(360, dayTimelineCardHeight * 3),
+            max(360, dayTimelineCardHeight * 2),
             viewportHeight - 2 * pressInset
         )
         let pages = [
@@ -837,12 +836,18 @@ struct NativeScheduleView: View {
             adjacentDayPage(1, result: result)
         ].compactMap { $0 }
         let height = pages.map { page in
-            NativeScheduleDayTimeline.height(
-                blocks: blocks(for: page.day, week: page.week.flatMap(Int.init), result: result),
-                cardHeight: dayTimelineCardHeight
-            )
-        }.max() ?? 220
-        let pagerHeight = max(height, emptyHeight) + 2 * pressInset
+            let courses = blocks(for: page.day, week: page.week.flatMap(Int.init), result: result)
+            if style == .minimal {
+                return courses.isEmpty ? emptyHeight : NativeScheduleDayTimeline.height(blocks: courses, cardHeight: dayTimelineCardHeight)
+            }
+            let week = page.week.flatMap(Int.init)
+            return max(courses.isEmpty && (style == .paper || style == .board) ? emptyHeight : 0,
+                ScheduleStyledDayView.height(style: style, blocks: courses,
+                    clocks: periodSlots(on: rawDayDate(page.day, week: week, result: result)),
+                    slotCount: slotCount(week: week, result: result), cardHeight: dayTimelineCardHeight,
+                    hasNote: adjustment(day: page.day, week: week, result: result) != nil))
+        }.max() ?? emptyHeight
+        let pagerHeight = max(height, viewportHeight - 2 * pressInset) + 2 * pressInset
         return GeometryReader { proxy in
             dayPager(result: result, width: proxy.size.width) { page in
                 dayTimeline(result: result, week: page.week.flatMap(Int.init), day: page.day, emptyHeight: emptyHeight)
@@ -857,11 +862,11 @@ struct NativeScheduleView: View {
         .animation(nil, value: result.currentSemester)
     }
 
-    private func dayTimeline(result: NativeScheduleResult, week: Int?, day: Int, live: Bool = true, emptyHeight: CGFloat = 0) -> some View {
+    /// `cardHeight` 为空时按当前字号和密度算；分享图传固定值。
+    private func dayTimeline(result: NativeScheduleResult, week: Int?, day: Int, live: Bool = true,
+                             emptyHeight: CGFloat = 0, cardHeight: CGFloat? = nil) -> some View {
         let date = rawDayDate(day, week: week, result: result)
-        let clocks = date.map { date in
-            store.periods(on: date).map { ScheduleSlot(number: $0.number, start: $0.startTime, end: $0.endTime) }
-        } ?? ScheduleSlot.all
+        let clocks = periodSlots(on: date)
         let slot = effectiveSlot(day: day, week: week, result: result)
         let isToday = live && dayIsToday(day, week: week, result: result)
         func timeline(_ now: Date?) -> NativeScheduleDayTimeline {
@@ -876,17 +881,18 @@ struct NativeScheduleView: View {
                     if date < today { return 24 * 60 }
                     return date == today ? nowMinutes(now ?? .now) : nil
                 },
-                cardHeight: dayTimelineCardHeight,
+                cardHeight: cardHeight ?? dayTimelineCardHeight,
                 emptyHeight: emptyHeight,
+                isEditable: !store.isReadOnly,
                 onCourseSelected: { block in
-                    selectedCourse = SelectedCourse(
-                        course: block.course,
-                        day: slot.day,
-                        bigSlot: block.bigSlot,
-                        startSlot: block.startSlot,
-                        endSlot: block.endSlot
-                    )
-                }
+                    selectedCourse = courseSelection(block, day: day, editDay: slot.day, clocks: clocks)
+                },
+                onCoursePreview: { block in
+                    selectedCourse = courseSelection(block, day: day, editDay: slot.day, clocks: clocks,
+                                                     quickLook: true)
+                },
+                slotCount: slotCount(week: week, result: result),
+                onEmptySlot: { value in presentAddCourse(day: slot.day, week: slot.week, startSlot: value) }
             )
         }
         // 今天按分钟刷新课程状态；「现在」的节点和倒计时仍由设置控制。
@@ -928,9 +934,14 @@ struct NativeScheduleView: View {
                 selectMonthDate(day.date, result: result)
                 monthDayDetails = MonthDaySelection(day: day, slot: monthDateIndex[day.date])
             },
+            isEditable: !store.isReadOnly,
+            onCoursePreview: { day, block in
+                selectMonthDate(day.date, result: result)
+                openMonthCourse(block, date: day.date, quickLook: true)
+            },
             onCourseSelected: { day, block in
                 selectMonthDate(day.date, result: result)
-                openMonthCourse(block, date: day.date)
+                openMonthCourse(block, date: day.date, quickLook: false)
             },
             onMoveMonth: moveMonth
         )
@@ -946,7 +957,7 @@ struct NativeScheduleView: View {
 
     private enum MonthDayAction {
         case openDay(String)
-        case course(NativeScheduleCourseBlock, date: String)
+        case course(NativeScheduleCourseBlock, date: String, quickLook: Bool)
     }
 
     private func finishMonthDayAction() {
@@ -955,21 +966,16 @@ struct NativeScheduleView: View {
         switch action {
         case .openDay(let date):
             openDayView(date)
-        case .course(let block, let date):
-            openMonthCourse(block, date: date)
+        case .course(let block, let date, let quickLook):
+            openMonthCourse(block, date: date, quickLook: quickLook)
         }
     }
 
-    private func openMonthCourse(_ block: NativeScheduleCourseBlock, date: String) {
+    private func openMonthCourse(_ block: NativeScheduleCourseBlock, date: String, quickLook: Bool) {
         guard let result = store.result, let slot = monthDateIndex[date] else { return }
         let effective = effectiveSlot(day: slot.day, week: slot.week, result: result)
-        selectedCourse = SelectedCourse(
-            course: block.course,
-            day: effective.day,
-            bigSlot: block.bigSlot,
-            startSlot: block.startSlot,
-            endSlot: block.endSlot
-        )
+        selectedCourse = courseSelection(block, day: slot.day, editDay: effective.day,
+                                         clocks: periodSlots(on: date), quickLook: quickLook)
     }
 
     /// 日期 -> 教学周与星期几。学期日历之外的日期查不到，月历会把它当成非教学日。
@@ -1209,6 +1215,24 @@ struct NativeScheduleView: View {
         showsDateHeader: Bool = true,
         showsNowLine: Bool = true
     ) -> some View {
+        Group {
+            if style != .minimal && showsNowLine && preferences.showNowIndicator {
+                TimelineView(.everyMinute) { context in
+                    scheduleRowsContent(result: result, week: week, days: days, columnWidth: columnWidth,
+                        compactCards: compactCards, rowHeight: rowHeight, showsDateHeader: showsDateHeader,
+                        showsNowLine: showsNowLine, currentMinutes: nowMinutes(context.date))
+                }
+            } else {
+                scheduleRowsContent(result: result, week: week, days: days, columnWidth: columnWidth,
+                    compactCards: compactCards, rowHeight: rowHeight, showsDateHeader: showsDateHeader,
+                    showsNowLine: showsNowLine, currentMinutes: nil)
+            }
+        }
+    }
+
+    private func scheduleRowsContent(result: NativeScheduleResult, week: Int?, days: [Int], columnWidth: CGFloat,
+                                     compactCards: Bool, rowHeight: CGFloat, showsDateHeader: Bool,
+                                     showsNowLine: Bool, currentMinutes: Int?) -> some View {
         let slotCount = slotCount(week: week, result: result)
         let date = store.calendar?.weeks.first(where: { $0.week == week })?.days[safe: (days.first ?? 1) - 1]
         let clocks = (date.map { store.periods(on: $0) }?
@@ -1216,12 +1240,13 @@ struct NativeScheduleView: View {
             ?? ScheduleSlot.all)
         let headerHeight = showsDateHeader ? NativeScheduleDayColumn.dateHeaderHeight : 0
         let todayIndex = days.firstIndex { dayIsToday($0, week: week, result: result) }
-        return HStack(alignment: .top, spacing: Self.columnGap) {
+        return HStack(alignment: .top, spacing: styleColumnGap) {
             slotAxis(rowHeight: rowHeight, slotCount: slotCount, showsHeader: showsDateHeader,
                      monthLabel: date.flatMap(monthLabel), clocks: clocks)
 
             ForEach(days, id: \.self) { day in
                 let slot = effectiveSlot(day: day, week: week, result: result)
+                let dayClocks = periodSlots(on: rawDayDate(day, week: week, result: result))
                 NativeScheduleDayColumn(
                     day: day,
                     dateText: dayDate(day, week: week, result: result),
@@ -1231,45 +1256,54 @@ struct NativeScheduleView: View {
                     columnWidth: columnWidth,
                     rowHeight: rowHeight,
                     slotCount: slotCount,
+                    clocks: dayClocks,
                     compactCards: compactCards,
                     showsDateHeader: showsDateHeader,
+                    isEditable: !store.isReadOnly,
                     blocks: blocks(for: day, week: week, result: result),
                     onCourseSelected: { block in
-                        selectedCourse = SelectedCourse(
-                            course: block.course,
-                            day: slot.day,
-                            bigSlot: block.bigSlot,
-                            startSlot: block.startSlot,
-                            endSlot: block.endSlot
-                        )
+                        selectedCourse = courseSelection(block, day: day, editDay: slot.day, clocks: dayClocks)
+                    },
+                    onCoursePreview: { block in
+                        selectedCourse = courseSelection(block, day: day, editDay: slot.day, clocks: dayClocks,
+                                                             quickLook: true)
                     },
                     onEmptySlot: { value in
                         presentAddCourse(day: slot.day, week: slot.week, startSlot: value)
-                    }
+                    },
+                    nowMinutes: dayIsToday(day, week: week, result: result) ? currentMinutes : nil
                 )
             }
         }
         .background(alignment: .topLeading) {
-            ScheduleRowRules(
+            if style == .minimal {
+                ScheduleRowRules(
                 headerHeight: headerHeight,
                 rowHeight: rowHeight,
                 slotCount: slotCount,
-                leading: Self.slotAxisWidth + Self.columnGap / 2
-            )
+                leading: Self.slotAxisWidth + styleColumnGap / 2
+                )
+            }
         }
         .overlay(alignment: .topLeading) {
+            if style == .table {
+                ScheduleTableRules(headerHeight: headerHeight, rowHeight: rowHeight, slotCount: slotCount,
+                                   axisWidth: Self.slotAxisWidth, columnWidth: columnWidth, dayCount: days.count)
+            }
             if showsNowLine, preferences.showNowIndicator, let todayIndex {
                 TimelineView(.everyMinute) { context in
                     let minutes = nowMinutes(context.date)
                     if let y = nowOffset(minutes, clocks: Array(clocks.prefix(slotCount)), rowHeight: rowHeight) {
                         // 节次轴上一个时间胶囊，今天那列一条线，两者在同一高度连成「现在」。
                         ZStack(alignment: .topLeading) {
+                            if style != .grid {
                             ScheduleNowLine(width: columnWidth)
                                 .offset(
-                                    x: Self.slotAxisWidth + Self.columnGap
-                                        + CGFloat(todayIndex) * (columnWidth + Self.columnGap),
+                                    x: Self.slotAxisWidth + styleColumnGap
+                                        + CGFloat(todayIndex) * (columnWidth + styleColumnGap),
                                     y: headerHeight + y
                                 )
+                            }
                             ScheduleNowBadge(minutes: minutes)
                                 .frame(width: Self.slotAxisWidth)
                                 .offset(y: headerHeight + y - ScheduleNowBadge.height / 2)
@@ -1280,6 +1314,26 @@ struct NativeScheduleView: View {
                 .accessibilityHidden(true)
             }
         }
+    }
+
+    /// 三种视图共用课程选择：速览写实际上课的星期；编辑仍按调休换算后的
+    /// 星期存，见 `effectiveSlot`。
+    private func courseSelection(
+        _ block: NativeScheduleCourseBlock,
+        day: Int,
+        editDay: Int,
+        clocks: [ScheduleSlot],
+        quickLook: Bool = false
+    ) -> SelectedCourse {
+        SelectedCourse(
+            course: block.course,
+            day: editDay,
+            bigSlot: block.bigSlot,
+            startSlot: block.startSlot,
+            endSlot: block.endSlot,
+            schedule: ScheduleCourseTimeText(day: day, block: block, clocks: clocks).display,
+            quickLook: quickLook
+        )
     }
 
     /// 现在落在表上的纵向位置。课间停在两节之间的空隙里；第一节之前和最后一节
@@ -1319,24 +1373,32 @@ struct NativeScheduleView: View {
                 // 表头只写几号，月份放在节次轴顶上，像日历一样读。
                 Text(monthLabel ?? "节次")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.scheduleMeta)
                     .frame(width: Self.slotAxisWidth, height: NativeScheduleDayColumn.dateHeaderHeight)
             }
 
             VStack(spacing: NativeScheduleDayColumn.slotGap) {
                 ForEach(clocks.prefix(slotCount), id: \.number) { slot in
-                    // 只留节号和开始时间，结束时间在课程详情和日视图里看。
+                    if style != .minimal {
+                        ScheduleStyledSlotLabel(slot: slot,
+                            startsSession: clocks.first(where: { $0.number == slot.number - 1 }).map {
+                                ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(slot.start)
+                            } ?? true)
+                            .frame(width: Self.slotAxisWidth, height: rowHeight)
+                    } else {
+                    // 简约保留原节号和开始时间。
                     VStack(spacing: 3) {
                         Text("\(slot.number)")
                             .font(.system(size: 14, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(.primary)
                         Text(slot.start)
                             .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.scheduleMeta)
                     }
                     .frame(width: Self.slotAxisWidth, height: rowHeight)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("第 \(slot.number) 节，\(slot.start) 至 \(slot.end)")
+                    }
                 }
             }
         }
@@ -1425,7 +1487,7 @@ struct NativeScheduleView: View {
             Button("去登录", action: onLogin)
                 .font(.caption.weight(.semibold))
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.cpuBrand)
+                .foregroundStyle(.themeText)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -1473,11 +1535,11 @@ struct NativeScheduleView: View {
                                 Text(week.value)
                                     .font(.subheadline.weight(.medium))
                                     .frame(maxWidth: .infinity, minHeight: 40)
-                                .foregroundStyle(isSelected ? Color.white : (isCurrent ? Color.cpuBrand : .primary))
+                                .foregroundStyle(isSelected ? AnyShapeStyle(.themeOnFill) : (isCurrent ? AnyShapeStyle(.themeText) : AnyShapeStyle(.primary)))
                                     .background {
                                         if isSelected {
                                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                .fill(Color.cpuBrand)
+                                                .fill(.themeFill)
                                         } else {
                                             ScheduleSurface(cornerRadius: 10)
                                         }
@@ -1485,7 +1547,8 @@ struct NativeScheduleView: View {
                                     .overlay {
                                         if isCurrent && !isSelected {
                                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                .strokeBorder(Color.cpuBrand.opacity(0.6), lineWidth: 1)
+                                                .strokeBorder(.themeText, lineWidth: 1)
+                                                .opacity(0.6)
                                         }
                                     }
                             }
@@ -1574,6 +1637,8 @@ struct NativeScheduleView: View {
             ? [dayLabel(selectedDay), dayDate(selectedDay, week: week, result: result)]
                 .compactMap { $0 }.joined(separator: " · ")
             : weekRange(result)
+        // 图上是静态的课表：不标今天和现在、不按已上完变灰（`ScheduleShareImage` 打开
+        // `scheduleStaticRendering`），卡片高度也固定，不跟系统字号走。
         let content = ScheduleShareImage(
             layout: layout,
             title: semesterTitle(result),
@@ -1581,12 +1646,16 @@ struct NativeScheduleView: View {
             week: week
         ) {
             if isDayView {
-                dayTimeline(result: result, week: week, day: selectedDay, live: false)
-                    .frame(height: NativeScheduleDayTimeline.height(
-                        blocks: blocks(for: selectedDay, week: week, result: result),
-                        cardHeight: dayTimelineCardHeight
+                dayTimeline(result: result, week: week, day: selectedDay, live: false,
+                            cardHeight: layout.timelineCardHeight)
+                    .frame(height: ScheduleStyledDayView.height(
+                        style: style, blocks: blocks(for: selectedDay, week: week, result: result),
+                        clocks: periodSlots(on: rawDayDate(selectedDay, week: week, result: result)),
+                        slotCount: slotCount(week: week, result: result), cardHeight: layout.timelineCardHeight,
+                        hasNote: adjustment(day: selectedDay, week: week, result: result) != nil
                     ))
             } else {
+                // 和屏幕上一样，整周套在一块面板里。
                 scheduleRows(
                     result: result,
                     week: week,
@@ -1594,16 +1663,19 @@ struct NativeScheduleView: View {
                     columnWidth: layout.columnWidth(
                         dayCount: exportDays.count,
                         axisWidth: Self.slotAxisWidth,
-                        gap: Self.columnGap
+                        gap: styleColumnGap
                     ),
                     compactCards: false,
                     rowHeight: layout.rowHeight,
                     showsDateHeader: true,
                     showsNowLine: false
                 )
+                .padding(layout.panelPadding)
+                .background { ScheduleSurface(cornerRadius: 20, isPanel: true) }
             }
         }
         .environment(\.colorScheme, colorScheme)
+        .environment(\.scheduleStyle, style)
         .environment(\.appThemeBrand, NativeThemeSettings.shared.brandRGB)
         .environment(\.appThemeBackgroundEnabled, NativeThemeSettings.shared.themeBackgroundEnabled)
 
@@ -1675,17 +1747,18 @@ struct NativeScheduleView: View {
                   let image = BackgroundCropEditor.decode(data) else { return }
             debugCropOpacity = .init(light: preferences.backgroundOpacity, dark: preferences.backgroundOpacityDark)
             debugCropImage = DebugCropImage(image: image, placement: preferences.backgroundPlacement(dark: colorScheme == .dark))
-        case "detail":
+        case "detail", "quickLook":
+            // quickLook 是轻点周视图卡片弹出的课程速览。
             guard let result = store.result else { return }
             for cell in result.cells {
                 guard let course = cell.courses.first else { continue }
-                selectedCourse = SelectedCourse(
-                    course: course,
-                    day: cell.day,
-                    bigSlot: cell.bigSlot,
+                let block = NativeScheduleCourseBlock(
+                    id: course.id, course: course, bigSlot: cell.bigSlot,
                     startSlot: course.startSlot ?? cell.bigSlot * 2 - 1,
                     endSlot: course.endSlot ?? cell.bigSlot * 2
                 )
+                selectedCourse = courseSelection(block, day: cell.day, editDay: cell.day,
+                                                     clocks: ScheduleSlot.all, quickLook: raw == "quickLook")
                 return
             }
         default:
@@ -1889,6 +1962,13 @@ struct NativeScheduleView: View {
         return item.days[day - 1]
     }
 
+    /// 这一天的作息（季节作息表已经换算过）；不知道日期时用当前显示的作息。
+    private func periodSlots(on date: String?) -> [ScheduleSlot] {
+        date.map { date in
+            store.periods(on: date).map { ScheduleSlot(number: $0.number, start: $0.startTime, end: $0.endTime) }
+        } ?? ScheduleSlot.all
+    }
+
     private func weekNumber(_ value: String) -> Int? {
         Int(value.trimmingCharacters(in: .whitespaces))
     }
@@ -2018,9 +2098,9 @@ struct NativeScheduleView: View {
     /// Horizontal page margin of the scrolling content.
     private static let contentInset: CGFloat = 16
     private static let slotAxisWidth: CGFloat = 42
-    private static let columnGap: CGFloat = 5
-    /// 周视图面板内边距：面板和第一行、最后一列之间留的那一点白。
-    private static let panelPadding: CGFloat = 6
+    private var styleColumnGap: CGFloat { style == .minimal || style == .grid ? 5 : 0 }
+    /// 周视图面板内边距：面板和第一行、最后一列之间留的那一点白。分享图也用它。
+    static let panelPadding: CGFloat = 6
     /// 周次 / 月份那一行的高度，三种视图共用，切换时顶栏不跳。
     private static let navigatorHeight: CGFloat = 36
     /// 周次 / 月份标题比页边再往里缩一点：下面的面板是圆角，贴着页边的字会显得比面板靠外。
@@ -2077,6 +2157,10 @@ struct SelectedCourse: Identifiable {
     let bigSlot: Int
     let startSlot: Int
     let endSlot: Int
+    /// 「周一 · 第 1–2 节 · 08:00–09:40」，课程速览的第二行。自由时间课程为 nil。
+    var schedule: String? = nil
+    /// 轻点卡片打开：先给速览，不直接进编辑。
+    var quickLook = false
 }
 
 private struct AddCourseContext: Identifiable {
@@ -2107,7 +2191,7 @@ private struct StateCard: View {
             } else {
                 Image(systemName: systemImage)
                     .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(Color.cpuBrand)
+                    .foregroundStyle(.themeText)
             }
 
             Text(title)
@@ -2167,12 +2251,12 @@ private struct ScheduleNowBadge: View {
     var body: some View {
         Text(String(format: "%d:%02d", minutes / 60, minutes % 60))
             .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-            .foregroundStyle(.white)
+            .foregroundStyle(.themeOnFill)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .padding(.horizontal, 4)
             .frame(height: Self.height)
-            .background(Color.cpuBrand, in: Capsule())
+            .background(.themeFill, in: Capsule())
     }
 }
 
@@ -2183,10 +2267,10 @@ private struct ScheduleNowLine: View {
     var body: some View {
         ZStack(alignment: .leading) {
             Rectangle()
-                .fill(Color.cpuBrand)
+                .fill(.themeText)
                 .frame(width: width, height: 1.5)
             Circle()
-                .fill(Color.cpuBrand)
+                .fill(.themeFill)
                 .frame(width: 7, height: 7)
                 .offset(x: -3.5)
         }

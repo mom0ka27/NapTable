@@ -59,9 +59,12 @@ nonisolated struct AppAnnouncement: Codable, Identifiable, Equatable {
 enum AnnouncementPolicy {
     private static let historyKey = "naptable.announcements.seen"
     private static let spacingKey = "naptable.automaticReminder.lastPresented"
-    static func canPresent(now: Date = .now, defaults: UserDefaults = .standard) -> Bool {
+    static func canPresent(kind: AppAnnouncement.Kind? = nil, now: Date = .now, defaults: UserDefaults = .standard) -> Bool {
         guard let last = defaults.object(forKey: spacingKey) as? Double else { return true }
-        return now.timeIntervalSince1970 - last >= 24 * 60 * 60
+        // A new publication must not wait a day because another message or
+        // trial reminder appeared earlier. Only trial reminders retain 24h.
+        let spacing: TimeInterval = kind == nil ? 24 * 60 * 60 : 5 * 60
+        return now.timeIntervalSince1970 - last >= spacing
     }
     static func pending(_ messages: [AppAnnouncement], currentVersion: String, platform: String, source: String,
                         now: Date = .now, defaults: UserDefaults = .standard) -> AppAnnouncement? {

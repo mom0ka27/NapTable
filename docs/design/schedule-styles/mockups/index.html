@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+@font-face{font-family:SFR;src:url("file:///System/Library/Fonts/SFNSRounded.ttf")}
+@font-face{font-family:SFMono;src:url("file:///System/Library/Fonts/SFNSMono.ttf")}
+@font-face{font-family:NY;src:url("file:///System/Library/Fonts/NewYork.ttf")}
+:root{--sans:-apple-system,"PingFang SC",sans-serif;--serif:NY,"Songti SC",serif;--song:"Songti SC",serif;--mono:SFMono,Menlo,monospace;--round:SFR,-apple-system,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#E2E2E7;font-family:var(--sans);-webkit-font-smoothing:antialiased;color:#1d1d1f}
+.board{display:flex;gap:34px;padding:34px 34px 40px;align-items:flex-start;width:max-content}
+.col{display:flex;flex-direction:column;gap:14px;width:393px}
+.cap{height:96px}
+.cap b{display:block;font:600 19px/1.3 var(--sans)}
+.cap span{display:block;font:13px/1.55 var(--sans);color:#66666d;margin-top:4px}
+.title{font:700 26px var(--sans);padding:34px 34px 0;color:#1d1d1f}
+.title small{font:400 14px var(--sans);color:#66666d;margin-left:12px}
+.phone{position:relative;width:393px;height:852px;border-radius:54px;overflow:hidden;background:var(--canvas);color:var(--ink);box-shadow:0 0 0 1px rgba(0,0,0,.10),0 18px 40px -14px rgba(0,0,0,.28)}
+.a{position:absolute}
+.clamp{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+svg{display:block}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ---------- demo data (示意数据) ----------
+const PERIODS=[["08:00","08:45"],["08:55","09:40"],["10:00","10:45"],["10:55","11:40"],["14:00","14:45"],["14:55","15:40"],["16:00","16:45"],["16:55","17:40"],["19:00","19:45"],["19:55","20:40"],["20:50","21:35"]];
+const CN=["一","二","三","四","五","六","七","八","九","十","十一"];
+const DAYS=[{d:5,w:"周一",adj:"休",holiday:"清明"},{d:6,w:"周二"},{d:7,w:"周三",today:true},{d:8,w:"周四"},{d:9,w:"周五"},{d:10,w:"周六"},{d:11,w:"周日",adj:"班"}];
+const C={math:{n:"高等数学A(二)",s:"高数",r:"教1-201",t:"王老师",h:255},la:{n:"线性代数",s:"线代",r:"教2-110",t:"李老师",h:205},en:{n:"大学英语(二)",s:"英语",r:"外语楼305",t:"Smith",h:25},prog:{n:"程序设计基础",s:"程设",r:"实验楼B402",t:"陈老师",h:145},hist:{n:"中国近现代史纲要",s:"近代史",r:"教3-101",t:"刘老师",h:62},phy:{n:"大学物理",s:"物理",r:"教4-203",t:"赵老师",h:295},pol:{n:"形势与政策",s:"形策",r:"报告厅",t:"孙老师",h:345},ds:{n:"数据结构",s:"数据结构",r:"教1-305",t:"周老师",h:180},lab:{n:"大学物理实验",s:"物理实验",r:"物理楼210",t:"吴老师",h:320},eth:{n:"思想道德与法治",s:"思修",r:"教3-202",t:"郑老师",h:92},pe:{n:"体育(羽毛球)",s:"体育",r:"体育馆",t:"钱老师",h:118}};
+const SCHED=[[1,1,2,"la"],[1,3,2,"en"],[1,7,2,"prog"],[2,1,2,"math"],[2,3,2,"hist"],[2,5,2,"phy"],[2,9,2,"pol"],[3,1,2,"ds"],[3,3,2,"en"],[3,6,2,"lab"],[4,1,2,"la"],[4,3,2,"prog"],[4,5,2,"eth"],[6,1,2,"math"],[6,3,2,"pe"]];
+const NOW={day:2,period:3,frac:10/45,label:"11:05"};
+const TODAY=[{k:"math",p:[1,2],st:"done"},{k:"hist",p:[3,4],st:"now",left:"还剩 35 分"},{k:"phy",p:[5,6],st:"next",left:"2 小时 55 分后"},{k:"pol",p:[9,10],st:"later"}];
+
+// ---------- styles ----------
+const STY={
+ modern:{name:"简约 · 卡片",desc:"现有风格的整理版：一块面板、空节次只画细线、淡彩卡片。只改了对比度：主题色分出文字档，节次时间、教室不再用淡灰。",
+  geo:{x:8,y:150,w:377,head:46,row:56,axis:30,pad:4,inset:2,gap:0},
+  light:{canvas:"#FBF6F5",panel:"rgba(255,255,255,.97)",pline:"rgba(36,46,72,.11)",rule:"rgba(36,46,72,.10)",ink:"#1d1d1f",ink2:"#6E6E73",ink3:"#A1A1A6",acc:"#BC4D43",accF:"#C35349",on:"#fff",today:"rgba(226,111,99,.07)",ctl:"rgba(118,118,128,.12)",sel:"#fff",glass:"rgba(255,255,255,.62)",gline:"rgba(255,255,255,.8)"},
+  dark:{canvas:"#1A1615",panel:"rgba(255,255,255,.065)",pline:"rgba(255,255,255,.09)",rule:"rgba(255,255,255,.08)",ink:"#F2F2F7",ink2:"#A1A1A6",ink3:"#6C6C70",acc:"#ED796D",accF:"#C35349",on:"#fff",today:"rgba(237,121,109,.11)",ctl:"rgba(118,118,128,.24)",sel:"rgba(255,255,255,.2)",glass:"rgba(58,54,54,.55)",gline:"rgba(255,255,255,.14)"},
+  course:(h,d)=>d?{fill:`oklch(0.34 0.055 ${h})`,text:`oklch(0.91 0.06 ${h})`,sub:`oklch(0.83 0.05 ${h})`,line:`oklch(0.5 0.07 ${h} / .5)`}:{fill:`oklch(0.952 0.034 ${h})`,text:`oklch(0.40 0.11 ${h})`,sub:`oklch(0.46 0.09 ${h})`,line:`oklch(0.86 0.05 ${h})`}},
+ grid:{name:"格子 · 方块",desc:"按旧版来：每节一个圆角白格子，课程是带同色细边的淡彩方块，文字居中。比旧版多三处：上午、下午、晚上之间留宽缝；今天整列淡底；放假那列用虚线格子。",
+  light:{canvas:"#F3F4F8",tile:"#FFFFFF",tline:"#E2E5EB",ink:"#16181D",ink2:"#626977",ink3:"#A3A8B2",acc:"#B5463C",accF:"#C35349",on:"#fff",todayTile:"#FDF4F3",todayLine:"#F1D3CF",ctl:"rgba(118,118,128,.12)",sel:"#fff",glass:"rgba(255,255,255,.62)",gline:"rgba(255,255,255,.8)"},
+  dark:{canvas:"#111214",tile:"rgba(255,255,255,.055)",tline:"rgba(255,255,255,.085)",ink:"#EDEEF0",ink2:"#9CA3AF",ink3:"#5F646D",acc:"#ED796D",accF:"#C35349",on:"#fff",todayTile:"rgba(237,121,109,.09)",todayLine:"rgba(237,121,109,.24)",ctl:"rgba(118,118,128,.24)",sel:"rgba(255,255,255,.2)",glass:"rgba(50,52,56,.55)",gline:"rgba(255,255,255,.14)"},
+  course:(h,d)=>d?{fill:`oklch(0.33 0.06 ${h})`,line:`oklch(0.56 0.09 ${h})`,text:`oklch(0.93 0.05 ${h})`,sub:`oklch(0.84 0.05 ${h})`,bar:`oklch(0.72 0.13 ${h})`}:{fill:`oklch(0.945 0.045 ${h})`,line:`oklch(0.80 0.085 ${h})`,text:`oklch(0.38 0.12 ${h})`,sub:`oklch(0.47 0.10 ${h})`,bar:`oklch(0.60 0.14 ${h})`}},
+ table:{name:"表格 · 线框",desc:"（先留着，后续再说）像纸质课表和教务系统的表格：每节都有格子，课程填满格子并用左侧色条标色；节次轴写全起止时间，周末和停课日用底纹区分。",
+  geo:{x:8,y:150,w:377,head:44,row:56,axis:34,pad:0,inset:0,gap:0},
+  light:{canvas:"#F1F2F4",panel:"#FFFFFF",pline:"#C9CDD4",rule:"#E1E4E9",ink:"#14161A",ink2:"#5D6470",ink3:"#9AA0AA",acc:"#BC4D43",accF:"#C35349",on:"#fff",today:"rgba(226,111,99,.05)",head:"#F6F7F9",wkend:"#FAFAFB",ctl:"rgba(118,118,128,.12)",sel:"#fff",glass:"rgba(255,255,255,.62)",gline:"rgba(255,255,255,.8)"},
+  dark:{canvas:"#0E0F11",panel:"#17181B",pline:"#3A3E45",rule:"#2A2D33",ink:"#EDEEF0",ink2:"#9AA0AA",ink3:"#5F646D",acc:"#ED796D",accF:"#C35349",on:"#fff",today:"rgba(237,121,109,.07)",head:"#1D1F23",wkend:"#1A1B1E",ctl:"rgba(118,118,128,.24)",sel:"rgba(255,255,255,.2)",glass:"rgba(50,52,56,.55)",gline:"rgba(255,255,255,.14)"},
+  course:(h,d)=>d?{fill:`oklch(0.31 0.06 ${h})`,bar:`oklch(0.72 0.13 ${h})`,text:`oklch(0.93 0.04 ${h})`,sub:`oklch(0.83 0.04 ${h})`}:{fill:`oklch(0.93 0.048 ${h})`,bar:`oklch(0.60 0.14 ${h})`,text:`oklch(0.33 0.09 ${h})`,sub:`oklch(0.42 0.07 ${h})`}},
+ paper:{name:"素笺 · 书卷",desc:"参考 Claude 那种温润的书卷气：米色纸底、墨色字、朱砂点睛。宋体课名、衬线数字、文武线外框、印章式「休/班」，课程只用一道墨色细条标色。",
+  geo:{x:10,y:150,w:373,head:52,row:55,axis:30,pad:5,inset:2,gap:0},
+  light:{canvas:"#F1ECE2",panel:"#FAF7F0",pline:"#3B342B",rule:"#E2D9C8",rule2:"#BFB39E",ink:"#2A251F",ink2:"#6C6254",ink3:"#A3988A",acc:"#A63F29",accF:"#A63F29",on:"#FBF6EC",today:"rgba(166,63,41,.045)",ctl:"transparent",sel:"transparent",glass:"rgba(250,247,240,.7)",gline:"rgba(59,52,43,.18)"},
+  dark:{canvas:"#1B1916",panel:"#23201C",pline:"#A39A8A",rule:"#38332B",rule2:"#5A5246",ink:"#EDE6D9",ink2:"#ABA191",ink3:"#7A7266",acc:"#E28B6E",accF:"#B04A30",on:"#FBF6EC",today:"rgba(226,139,110,.07)",ctl:"transparent",sel:"transparent",glass:"rgba(42,38,33,.7)",gline:"rgba(237,230,217,.14)"},
+  course:(h,d)=>d?{fill:`oklch(0.27 0.016 ${h})`,bar:`oklch(0.74 0.075 ${h})`,text:"#EDE6D9",sub:"#ABA191"}:{fill:`oklch(0.962 0.015 ${h})`,bar:`oklch(0.55 0.085 ${h})`,text:"#2A251F",sub:"#6C6254"}},
+ board:{name:"站牌 · 时刻表",desc:"新想法：像车站时刻表，以时间为主角。没有卡片，靠粗细线把一天分成上午、下午、晚上；正在上的那节反白，「现在」是一根贯穿整周的黑线。",
+  geo:{x:0,y:150,w:393,head:44,row:52,axis:36,pad:6,inset:0,gap:18},
+  light:{canvas:"#FFFFFF",panel:"#FFFFFF",pline:"#111",rule:"#E7E7EA",ink:"#0B0B0C",ink2:"#5C5C62",ink3:"#A1A1A6",acc:"#BC4D43",accF:"#C35349",on:"#fff",today:"transparent",ctl:"transparent",sel:"transparent",glass:"rgba(255,255,255,.7)",gline:"rgba(0,0,0,.08)"},
+  dark:{canvas:"#000000",panel:"#000",pline:"#F2F2F2",rule:"#242426",ink:"#F5F5F7",ink2:"#A1A1A6",ink3:"#5C5C62",acc:"#ED796D",accF:"#C35349",on:"#fff",today:"transparent",ctl:"transparent",sel:"transparent",glass:"rgba(40,40,42,.6)",gline:"rgba(255,255,255,.12)"},
+  course:(h,d)=>({dot:d?`oklch(0.74 0.14 ${h})`:`oklch(0.62 0.15 ${h})`})}
+};
+
+// ---------- helpers ----------
+const E=(tag,css,html,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(css)e.style.cssText=css;if(html!=null)e.innerHTML=html;return e};
+const A=(parent,css,html)=>{const e=E("div","position:absolute;"+css,html);parent.appendChild(e);return e};
+const ic={
+ plus:c=>`<svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="${c}" stroke-width="2" stroke-linecap="round" fill="none"/></svg>`,
+ share:c=>`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11M8 7.5l4-4 4 4"/><path d="M7 10.5H6a1.5 1.5 0 0 0-1.5 1.5v7A1.5 1.5 0 0 0 6 20.5h12a1.5 1.5 0 0 0 1.5-1.5v-7a1.5 1.5 0 0 0-1.5-1.5h-1"/></svg>`,
+ more:c=>`<svg width="18" height="18" viewBox="0 0 24 24" fill="${c}"><circle cx="5.5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="18.5" cy="12" r="1.9"/></svg>`,
+ chev:(c,dir,s=14,w=2)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"><path d="${dir=='l'?'M15 5l-7 7 7 7':dir=='r'?'M9 5l7 7-7 7':'M6 9l6 6 6-6'}"/></svg>`,
+ cal:c=>`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/><g fill="${c}" stroke="none"><circle cx="8" cy="13.5" r="1.1"/><circle cx="12" cy="13.5" r="1.1"/><circle cx="16" cy="13.5" r="1.1"/><circle cx="8" cy="17" r="1.1"/><circle cx="12" cy="17" r="1.1"/></g></svg>`,
+ gear:c=>`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M5.5 18.5l2.1-2.1M16.4 7.6l2.1-2.1"/></svg>`,
+ check:c=>`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
+};
+function statusBar(p,t,dark){
+ A(p,`left:44px;top:17px;font:600 17px var(--sans);color:${t.ink}`,"9:41");
+ const c=t.ink;
+ A(p,`right:34px;top:20px`,`<svg width="78" height="14" viewBox="0 0 78 14"><g fill="${c}"><rect x="0" y="9" width="3.2" height="4" rx="1"/><rect x="4.8" y="6.5" width="3.2" height="6.5" rx="1"/><rect x="9.6" y="4" width="3.2" height="9" rx="1"/><rect x="14.4" y="1.5" width="3.2" height="11.5" rx="1"/></g><path d="M31 4.5a11 11 0 0 1 15 0M33.6 7.4a7 7 0 0 1 9.8 0M36.3 10.3a3 3 0 0 1 4.4 0" stroke="${c}" stroke-width="1.8" fill="none" stroke-linecap="round"/><rect x="51.5" y="1.5" width="22" height="11" rx="3.3" stroke="${c}" stroke-opacity=".4" fill="none"/><rect x="53.5" y="3.5" width="16" height="7" rx="1.8" fill="${c}"/><rect x="75" y="5" width="1.8" height="4" rx=".9" fill="${c}" fill-opacity=".4"/></svg>`);
+}
+function topBar(p,id,t,dark,mode){
+ const y=60;
+ const titleFont={modern:"600 19px var(--sans)",grid:"600 19px var(--sans)",table:"600 19px var(--sans)",paper:"700 20px var(--song)",board:"800 20px var(--sans)"}[id];
+ A(p,`left:20px;top:${y+4}px;display:flex;align-items:center;gap:5px;font:${titleFont};color:${t.ink}`,`我的课表<span style="opacity:.55">${ic.chev(t.ink,'d',13,2.4)}</span>`);
+ const segs=["日","周","月"],sel={day:0,week:1,month:2}[mode];
+ const sx=150,sw=108;
+ if(id=="modern"||id=="grid"||id=="table"){
+  const r=16;
+  const s=A(p,`left:${sx}px;top:${y}px;width:${sw}px;height:34px;border-radius:${r}px;background:${t.ctl}`);
+  A(s,`left:${2+sel*(sw-4)/3}px;top:2px;width:${(sw-4)/3}px;height:30px;border-radius:${r-2}px;background:${t.sel};box-shadow:0 1px 3px rgba(0,0,0,${dark?0:.13})`);
+  segs.forEach((g,i)=>A(s,`left:${2+i*(sw-4)/3}px;top:0;width:${(sw-4)/3}px;height:34px;display:flex;align-items:center;justify-content:center;font:${i==sel?600:500} 14px var(--sans);color:${t.ink}`,g));
+  const r2=18;
+  const g=A(p,`left:270px;top:${y-1}px;width:106px;height:36px;border-radius:${r2}px;background:${t.glass};backdrop-filter:blur(18px);border:.5px solid ${t.gline};box-shadow:0 2px 10px rgba(0,0,0,${dark?.3:.07});display:flex;align-items:center;justify-content:space-around;padding:0 6px`);
+  g.innerHTML=ic.plus(t.ink)+ic.share(t.ink)+ic.more(t.ink);
+ } else if(id=="paper"){
+  segs.forEach((g,i)=>A(p,`left:${sx+i*34}px;top:${y}px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font:${i==sel?700:400} 16px var(--song);color:${i==sel?t.ink:t.ink2}`,g+(i==sel?`<div style="position:absolute;left:11px;right:11px;bottom:3px;height:1.5px;background:${t.acc}"></div>`:"")));
+  [ic.plus,ic.share,ic.more].forEach((f,i)=>A(p,`left:${268+i*38}px;top:${y}px;width:32px;height:32px;border-radius:50%;border:.8px solid ${t.gline};display:flex;align-items:center;justify-content:center`,f(t.ink)));
+ } else {
+  segs.forEach((g,i)=>A(p,`left:${sx+i*34}px;top:${y}px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font:${i==sel?700:500} 16px var(--sans);color:${i==sel?t.ink:t.ink3}`,g+(i==sel?`<div style="position:absolute;left:9px;right:9px;bottom:2px;height:2.5px;background:${t.ink}"></div>`:"")));
+  [ic.plus,ic.share,ic.more].forEach((f,i)=>A(p,`left:${276+i*36}px;top:${y+1}px;width:32px;height:32px;display:flex;align-items:center;justify-content:center`,f(t.ink)));
+ }
+}
+function weekRow(p,id,t){
+ const y=110;
+ const f={modern:["600 17px var(--sans)","400 15px var(--sans)","第 7 周","4.5 – 4.11"],grid:["600 17px var(--sans)","400 15px var(--sans)","第 7 周","4.5 – 4.11"],table:["600 17px var(--sans)","400 15px var(--sans)","第 7 周","4.5 – 4.11"],paper:["700 18px var(--song)","400 15px var(--serif)","第七周","4.5 — 4.11"],board:["700 17px var(--sans)","500 13.5px var(--mono)","第 7 周","04.05–04.11"]}[id];
+ A(p,`left:20px;top:${y}px;display:flex;align-items:baseline;gap:10px;white-space:nowrap`,`<span style="font:${f[0]};color:${t.acc}">${f[2]}</span><span style="font:${f[1]};color:${t.ink2}">${f[3]}</span>`);
+ A(p,`right:22px;top:${y+2}px;display:flex;gap:22px`,ic.chev(t.ink2,'l',17,2.2)+ic.chev(t.ink2,'r',17,2.2));
+}
+function tabBar(p,id,t,dark){
+ const tint={paper:dark?"rgba(44,40,35,.72)":"rgba(251,248,241,.78)"}[id]||(dark?"rgba(44,44,48,.7)":"rgba(255,255,255,.72)");
+ const b=A(p,`left:96px;top:766px;width:201px;height:60px;border-radius:30px;background:${tint};backdrop-filter:blur(20px) saturate(1.6);border:.5px solid ${t.gline};box-shadow:0 8px 26px rgba(0,0,0,${dark?.45:.12})`);
+ A(b,`left:5px;top:5px;width:98px;height:50px;border-radius:25px;background:${dark?"rgba(255,255,255,.1)":"rgba(0,0,0,.055)"}`);
+ A(b,`left:5px;top:6px;width:98px;display:flex;flex-direction:column;align-items:center;gap:1px;font:600 10px var(--sans);color:${t.acc}`,ic.cal(t.acc)+"课表");
+ A(b,`left:99px;top:6px;width:98px;display:flex;flex-direction:column;align-items:center;gap:1px;font:500 10px var(--sans);color:${t.ink}`,ic.gear(t.ink)+"设置");
+}
+function homeBar(p,t){A(p,`left:130px;bottom:8px;width:134px;height:5px;border-radius:3px;background:${t.ink};opacity:.85`)}
+
+// ---------- week view ----------
+function weekPhone(id,dark){
+ const S=STY[id],t=dark?S.dark:S.light,g=S.geo;
+ const p=E("div",`--canvas:${t.canvas};--ink:${t.ink}`,null,"phone");
+ statusBar(p,t,dark);topBar(p,id,t,dark,"week");weekRow(p,id,t);
+ if(id=="grid"){weekTiles(p,t,dark);tabBar(p,id,t,dark);homeBar(p,t);return p}
+ const colW=(g.w-g.axis-2*g.pad)/7;
+ const rowY=i=>i*g.row+(i>=4?g.gap:0)+(i>=8?g.gap:0);
+ const H=g.head+rowY(11)+6;
+ const colX=i=>g.axis+g.pad+i*colW;
+ // panel
+ let panelCss=`left:${g.x}px;top:${g.y}px;width:${g.w}px;height:${H}px;`;
+ if(id=="modern")panelCss+=`border-radius:20px;background:${t.panel};border:1px solid ${t.pline};`;
+ if(id=="table")panelCss+=`border-radius:10px;background:${t.panel};border:1px solid ${t.pline};overflow:hidden;`;
+ if(id=="paper")panelCss+=`background:${t.panel};border:1.6px solid ${t.pline};`;
+ if(id=="board")panelCss+=`background:${t.panel};`;
+ const P=A(p,panelCss);
+ if(id=="paper")A(P,`left:2.5px;top:2.5px;right:2.5px;bottom:2.5px;border:.6px solid ${t.pline};opacity:.55`);
+ // weekend / holiday fills (grid)
+ if(id=="table"){
+  [5,6].forEach(i=>A(P,`left:${colX(i)}px;top:${g.head}px;width:${colW}px;height:${H-g.head}px;background:${t.wkend}`));
+  A(P,`left:${colX(0)}px;top:${g.head}px;width:${colW}px;height:${H-g.head}px;background:repeating-linear-gradient(135deg,transparent 0 6px,${dark?"rgba(255,255,255,.05)":"rgba(20,22,26,.045)"} 6px 7px)`);
+  A(P,`left:0;top:0;width:${g.w}px;height:${g.head}px;background:${t.head}`);
+  A(P,`left:0;top:${g.head}px;width:${g.axis}px;height:${H-g.head}px;background:${t.head}`);
+ }
+ // today column
+ if(t.today!="transparent")A(P,`left:${colX(2)}px;top:${id=="table"?g.head:0}px;width:${colW}px;height:${id=="table"?H-g.head:H}px;background:${t.today};${id=="modern"?"border-radius:12px;":""}`);
+ // rules
+ for(let i=0;i<=11;i++){
+  const y=g.head+rowY(i);
+  if(id=="modern"&&i>0&&i<11)A(P,`left:${g.axis}px;top:${y}px;width:${g.w-g.axis-g.pad}px;height:0;border-top:.5px solid ${t.rule}`);
+  if(id=="table"&&i<11)A(P,`left:0;top:${y}px;width:${g.w}px;height:0;border-top:${i==0?1:.5}px solid ${i==0?t.pline:t.rule}`);
+  if(id=="paper"&&i>0&&i<11)A(P,`left:${g.axis}px;top:${y}px;width:${g.w-g.axis-g.pad}px;height:0;border-top:${(i==4||i==8)?".8px solid "+t.rule2:".6px dotted "+t.rule2}`);
+  if(id=="board"&&i<11&&!(i==4||i==8))A(P,`left:${g.axis}px;top:${y}px;width:${g.w-g.axis}px;height:0;border-top:.5px solid ${t.rule}`);
+ }
+ if(id=="paper")A(P,`left:6px;top:${g.head}px;width:${g.w-12}px;height:0;border-top:.8px solid ${t.rule2}`);
+ if(id=="board"){
+  [[0,"上午"],[4,"下午"],[8,"晚上"]].forEach(([i,l])=>{
+   const y=g.head+rowY(i);
+   if(i>0)A(P,`left:10px;top:${y-g.gap+3}px;font:700 10px var(--sans);color:${t.ink2};letter-spacing:1px`,l);
+   A(P,`left:0;top:${y}px;width:${g.w}px;height:0;border-top:1.6px solid ${t.pline}`);
+  });
+ }
+ if(id=="table"){
+  A(P,`left:${g.axis}px;top:0;width:0;height:${H}px;border-left:1px solid ${t.pline}`);
+  for(let i=1;i<7;i++)A(P,`left:${colX(i)}px;top:0;width:0;height:${H}px;border-left:.5px solid ${t.rule}`);
+ }
+ // header
+ const monthLbl={modern:"4月",grid:"4月",table:"4月",paper:"四月",board:"4月"}[id];
+ A(P,`left:0;top:0;width:${g.axis}px;height:${g.head}px;display:flex;align-items:center;justify-content:center;font:${id=="paper"?"600 12px var(--song)":"600 11px var(--sans)"};color:${t.ink2}`,monthLbl);
+ DAYS.forEach((d,i)=>{
+  const x=colX(i),isT=d.today;
+  const cell=A(P,`left:${x}px;top:0;width:${colW}px;height:${g.head}px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${id=="paper"?2:1}px`);
+  if(id=="modern"){
+   cell.innerHTML=`<div style="font:600 15px var(--round);color:${isT?t.acc:(d.holiday?t.ink3:t.ink)}">${d.d}</div><div style="font:500 11px var(--sans);color:${isT?t.acc:t.ink2}">${isT?"今天":d.w}</div>`;
+  } else if(id=="table"){
+   if(isT){cell.style.background=t.accF;}
+   const adjc=d.adj=="休"?(dark?"#FF6B81":"#D61F45"):(dark?"#FF9A5C":"#C2410C");
+   cell.innerHTML=`<div style="font:600 12px var(--sans);color:${isT?t.on:t.ink}">${isT?"今天":d.w}</div><div style="font:500 10px var(--mono);color:${isT?t.on:t.ink2};opacity:${isT?.9:1}">4/${d.d}${d.adj?`<b style="font:700 10px var(--sans);color:${adjc};margin-left:2px">${d.adj}</b>`:""}</div>`;
+  } else if(id=="paper"){
+   const num=`<div style="font:400 17px var(--serif);color:${isT?t.acc:(d.holiday?t.ink3:t.ink)};width:27px;height:27px;display:flex;align-items:center;justify-content:center;border-radius:50%;${isT?`border:1.2px solid ${t.acc};`:""}">${d.d}</div>`;
+   cell.innerHTML=num+`<div style="font:400 11px var(--song);color:${isT?t.acc:t.ink2}">${isT?"今日":d.w}</div>`;
+  } else {
+   cell.innerHTML=`<div style="font:700 12.5px var(--sans);color:${t.ink}">${isT?"今天":d.w}</div><div style="font:500 10.5px var(--mono);color:${t.ink2};display:flex;align-items:center;gap:2px">${String(d.d).padStart(2,"0")}${d.adj?`<span style="font:700 8.5px var(--sans);padding:0 2px;line-height:12px;${d.adj=="休"?`background:${t.ink};color:${t.canvas}`:`border:1px solid ${t.ink};color:${t.ink};line-height:10px`}">${d.adj}</span>`:""}</div>`+(isT?`<div style="position:absolute;left:4px;right:4px;bottom:0;height:3px;background:${t.acc}"></div>`:"");
+  }
+  if(d.adj&&(id=="modern"||id=="paper")){
+   const off=d.adj=="休";let css,txt=d.adj;
+   if(id=="modern")css=`width:14px;height:14px;border-radius:4px;background:${off?"#E11D48":"#C2410C"};color:#fff;font:600 9px var(--sans);top:3px;right:2px`;
+   if(id=="table")css=`width:14px;height:14px;background:${off?"#E11D48":"#C2410C"};color:#fff;font:600 9px var(--sans);top:0;right:0`;
+   if(id=="paper")css=off?`width:14px;height:14px;border-radius:2px;background:${t.accF};color:${t.on};font:700 9.5px var(--song);top:4px;right:3px`:`width:14px;height:14px;border-radius:2px;border:1px solid ${t.ink2};color:${t.ink2};font:700 9.5px var(--song);top:4px;right:3px`;
+   if(id=="board")css=off?`width:15px;height:15px;background:${t.ink};color:${t.canvas};font:700 9.5px var(--sans);top:3px;right:2px`:`width:15px;height:15px;border:1.2px solid ${t.ink};color:${t.ink};font:700 9.5px var(--sans);top:3px;right:2px`;
+   A(P,`left:${x+colW-16}px;display:flex;align-items:center;justify-content:center;${css};left:auto;right:${g.w-(x+colW)+(id=="table"?0:2)}px`,txt);
+  }
+ });
+ // axis
+ PERIODS.forEach((pp,i)=>{
+  const y=g.head+rowY(i);
+  let html;
+  if(id=="modern")html=`<div style="font:700 14px var(--round);color:${t.ink}">${i+1}</div><div style="font:600 9.5px var(--sans);color:${t.ink2};letter-spacing:-.2px">${pp[0]}</div>`;
+  if(id=="table")html=`<div style="font:700 12.5px var(--sans);color:${t.ink}">${i+1}</div><div style="font:500 8.5px/1.25 var(--mono);color:${t.ink2};letter-spacing:-.3px;text-align:center">${pp[0]}<br>${pp[1]}</div>`;
+  if(id=="paper")html=`<div style="font:400 13px var(--song);color:${t.ink}">${CN[i]}</div><div style="font:400 9.5px var(--serif);color:${t.ink2}">${pp[0]}</div>`;
+  if(id=="board")html=`<div style="font:700 13px var(--mono);color:${t.ink}">${String(i+1).padStart(2,"0")}</div><div style="font:500 9px var(--mono);color:${t.ink2}">${pp[0]}</div>`;
+  A(P,`left:0;top:${y}px;width:${g.axis}px;height:${g.row}px;display:flex;flex-direction:column;align-items:center;justify-content:${id=="board"?"flex-start":"center"};padding-top:${id=="board"?7:0}px;gap:2px`,html);
+ });
+ // holiday label
+ const hl={modern:`font:500 12px var(--sans);color:${t.ink3};letter-spacing:6px`,table:`font:600 12px var(--sans);color:${t.ink3};letter-spacing:6px`,paper:`font:400 15px var(--song);color:${t.acc};opacity:.55;letter-spacing:10px`,board:`font:700 12px var(--sans);color:${t.ink3};letter-spacing:5px`}[id];
+ A(P,`left:${colX(0)}px;top:${g.head+rowY(3)}px;width:${colW}px;display:flex;justify-content:center;writing-mode:vertical-rl;${hl}`,id=="board"?"清明·停课":"清明假期");
+ // now line (under the courses for paper/board)
+ const ny=g.head+rowY(NOW.period)+NOW.frac*g.row;
+ if(id=="paper")A(P,`left:${g.axis}px;top:${ny-.5}px;width:${g.w-g.axis-g.pad}px;height:0;border-top:1px dashed ${t.acc};opacity:.45`);
+ if(id=="board")A(P,`left:${g.axis}px;top:${ny-1}px;width:${g.w-g.axis}px;height:2px;background:${t.ink}`);
+ // courses
+ SCHED.forEach(([day,st,span,k])=>{
+  const c=C[k],col=S.course(c.h,dark);
+  const x=colX(day)+g.inset,y=g.head+rowY(st-1)+g.inset,w=colW-2*g.inset,h=rowY(st-1+span)-rowY(st-1)-2*g.inset;
+  const isNow=day==NOW.day&&st<=NOW.period+1&&NOW.period+1<st+span;
+  if(id=="modern"){
+   A(P,`left:${x}px;top:${y}px;width:${w}px;height:${h}px;border-radius:9px;background:${col.fill};padding:6px 5px 5px 6px`,`<div class="clamp" style="-webkit-line-clamp:3;font:600 12px/1.22 var(--sans);color:${col.text}">${c.n}</div><div class="clamp" style="-webkit-line-clamp:2;margin-top:3px;font:500 10px/1.2 var(--sans);color:${col.sub}">@${c.r}</div>`);
+  } else if(id=="table"){
+   A(P,`left:${x+.5}px;top:${y+.5}px;width:${w-.5}px;height:${h-.5}px;background:${col.fill};border-left:3px solid ${col.bar};padding:5px 3px 4px 4px`,`<div class="clamp" style="-webkit-line-clamp:3;font:600 11.5px/1.2 var(--sans);color:${col.text}">${c.n}</div><div class="clamp" style="-webkit-line-clamp:2;margin-top:3px;font:500 9.5px/1.2 var(--sans);color:${col.sub}">${c.r}</div>`);
+  } else if(id=="paper"){
+   A(P,`left:${x}px;top:${y}px;width:${w}px;height:${h}px;border-radius:2px;background:${col.fill};border-left:2px solid ${col.bar};padding:6px 3px 4px 5px`,`<div class="clamp" style="-webkit-line-clamp:3;font:700 12px/1.25 var(--song);color:${col.text}">${c.n}</div><div class="clamp" style="-webkit-line-clamp:2;margin-top:4px;font:400 9.5px/1.2 var(--sans);color:${col.sub}">${c.r}</div>`);
+  } else {
+   const inv=isNow;
+   A(P,`left:${x+1}px;top:${y+1}px;width:${w-2}px;height:${h-1}px;${inv?`background:${t.accF};`:""}padding:6px 3px 4px 4px`,`<div class="clamp" style="-webkit-line-clamp:3;font:700 11.5px/1.2 var(--sans);color:${inv?t.on:t.ink}"><span style="display:inline-block;width:7px;height:7px;margin-right:3px;vertical-align:1px;background:${inv?t.on:col.dot}"></span>${c.n}</div><div class="clamp" style="-webkit-line-clamp:2;margin-top:3px;font:500 9px/1.2 var(--mono);color:${inv?t.on:t.ink2};opacity:${inv?.9:1}">${c.r}</div>`);
+  }
+ });
+ // now markers
+ if(id=="modern"){
+  A(P,`left:${colX(2)-1}px;top:${ny-.75}px;width:${colW+2}px;height:1.5px;background:${t.acc}`);
+  A(P,`left:1px;top:${ny-8}px;width:${g.axis-1}px;height:16px;border-radius:8px;background:${t.accF};color:${t.on};font:600 9px var(--sans);display:flex;align-items:center;justify-content:center;letter-spacing:-.3px`,NOW.label);
+ }
+ if(id=="table"){
+  A(P,`left:${colX(2)}px;top:${ny-1}px;width:${colW}px;height:2px;background:${t.acc}`);
+  A(P,`left:0;top:${ny-8}px;width:${g.axis}px;height:16px;background:${t.accF};color:${t.on};font:600 9px var(--mono);display:flex;align-items:center;justify-content:center`,NOW.label);
+ }
+ if(id=="paper"){
+  A(P,`left:${colX(2)}px;top:${ny-.6}px;width:${colW}px;height:1.2px;background:${t.acc}`);
+  A(P,`left:-2px;top:${ny-8}px;width:${g.axis+2}px;height:16px;background:${t.accF};color:${t.on};font:400 9.5px var(--serif);display:flex;align-items:center;justify-content:center;clip-path:polygon(0 0,100% 0,88% 50%,100% 100%,0 100%)`,NOW.label);
+ }
+ if(id=="board"){
+  A(P,`left:3px;top:${ny-8}px;width:${g.axis-5}px;height:16px;background:${t.ink};color:${t.canvas};font:600 9px var(--mono);display:flex;align-items:center;justify-content:center;clip-path:polygon(0 0,82% 0,100% 50%,82% 100%,0 100%)`,NOW.label);
+ }
+ tabBar(p,id,t,dark);homeBar(p,t);
+ return p;
+}
+
+// ---------- boards ----------
+function caption(id,extra){const S=STY[id];return E("div","",`<b>${S.name}${extra||""}</b><span>${S.desc}</span>`,"cap")}
+function board(title,sub,cols){
+ const root=document.getElementById("root");
+ root.appendChild(E("div","",`${title}<small>${sub}</small>`,"title"));
+ const b=E("div","",null,"board");cols.forEach(c=>b.appendChild(c));root.appendChild(b);
+}
+function col(nodes){const c=E("div","",null,"col");nodes.forEach(n=>c.appendChild(n));return c}
+const mode=location.hash.slice(1)||"week-light";
+const ids=["modern","grid","table","paper","board"];
+window.addEventListener("DOMContentLoaded",()=>{
+if(mode=="week-light")board("周视图 · 浅色","示意数据：第 7 周，周一清明放假，周日调休上班，现在是周三 11:05",ids.map(id=>col([caption(id),weekPhone(id,false)])));
+if(mode=="week-dark")board("周视图 · 深色","同一组数据，深色外观",ids.map(id=>col([caption(id,"（深色）"),weekPhone(id,true)])));
+});
+</script>
+<script src="dayMonth.js"></script>
+</body>
+</html>

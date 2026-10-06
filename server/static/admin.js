@@ -7,7 +7,6 @@
   const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
   const escapeAttr = escapeHTML;
   const today = new Date();
-  $("consoleDate").textContent = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(today);
   $("calendarAcademicYear").value = today.getFullYear() - (today.getMonth() < 8 ? 1 : 0);
   let noticeTimer;
 
@@ -52,8 +51,6 @@
   };
   const updateConnectionUI = connected => {
     $("authView").hidden = connected;
-    $("connectionStatus").classList.toggle("connected", connected);
-    $("connectionStatus").innerHTML = `<span></span>${connected ? "已连接" : "未连接"}`;
     $("sessionIndicator").classList.toggle("connected", connected);
     $("sidebarSessionText").textContent = connected ? (state.admin ? `${state.admin} · 已连接` : "已安全连接") : "尚未连接";
     $("disconnectButton").hidden = !connected;
@@ -62,21 +59,25 @@
     else {
       setNavigation(false);
       document.querySelectorAll(".content-view").forEach(view => { view.hidden = true; });
-      $("pageTitle").textContent = "管理工作区";
-      $("breadcrumbCurrent").textContent = "登录";
-      $("pageSubtitle").textContent = "一处管理，让校园时间保持同步。";
+      $("pageTitle").textContent = "NapTable 管理台";
     }
   };
-  const viewCopy = {
-    announcements: ["更新与通知", "发布新版本与重要消息，按 App 版本、平台和时间精准展示。"],
-    schools: ["学校配置", "维护学校节次与当前学期的第一周配置。"],
-    calendar: ["统一调休", "维护对所有学校生效的调休安排。"],
-    stats: ["使用统计", "查看今日打开、近 7/30 天活跃设备，以及各学校、系统版本、设备型号和 App 版本分布。"],
-    shares: ["分享课表", "查找用户分享到服务端的课表，删除不该公开的分享。"],
-    entitlements: ["实时活动权益", "设置实时活动是否需要试用或买断权益，查看授权设备数。"],
-    apns: ["APNs 推送", "配置实况通知的推送凭据。"],
-    imageImport: ["图片导入", "配置 AI 课表识别、设备验证和使用额度，查看调用结果与 token 用量。"],
-    audit: ["操作记录", "谁在什么时候改了什么。"]
+  const viewTitles = {
+    announcements: "更新与通知", schools: "学校配置", calendar: "统一调休", stats: "使用统计", shares: "分享课表",
+    entitlements: "实时活动权益", apns: "APNs 推送", imageImport: "图片导入", audit: "操作记录"
+  };
+  const viewPaths = {
+    schools: "/admin/schools", calendar: "/admin/calendar", announcements: "/admin/announcements",
+    apns: "/admin/apns", imageImport: "/admin/image-import", shares: "/admin/shares",
+    entitlements: "/admin/entitlements", stats: "/admin/stats", audit: "/admin/audit"
+  };
+  const readViewFromURL = () => {
+    const path = window.location.pathname.replace(/\/$/, "");
+    state.view = Object.keys(viewPaths).find(view => viewPaths[view] === path) || "schools";
+    // Keep the old entry point and trailing-slash links usable without adding a history entry.
+    if (window.location.pathname !== viewPaths[state.view]) {
+      window.history.replaceState(null, "", viewPaths[state.view] + window.location.search + window.location.hash);
+    }
   };
   const mobileNavigation = window.matchMedia("(max-width: 760px)");
   const setNavigation = open => {
@@ -86,8 +87,9 @@
     document.querySelector(".main-content").inert = mobileNavigation.matches && open;
   };
   mobileNavigation.addEventListener("change", () => setNavigation(false));
-  const showView = view => {
-    if (!viewCopy[view]) return;
+  const showView = (view, navigate = false) => {
+    if (!viewTitles[view]) return;
+    if (navigate && view !== state.view) window.history.pushState(null, "", viewPaths[view]);
     state.view = view;
     document.querySelectorAll(".nav-item").forEach(item => {
       item.classList.toggle("active", item.dataset.view === view);
@@ -97,9 +99,8 @@
     document.querySelectorAll(".content-view").forEach(element => {
       element.hidden = !state.authenticated || element.id !== `${view}View`;
     });
-    $("pageTitle").textContent = viewCopy[view][0];
-    $("breadcrumbCurrent").textContent = viewCopy[view][0];
-    $("pageSubtitle").textContent = viewCopy[view][1];
+    $("pageTitle").textContent = viewTitles[view];
+    document.title = `${viewTitles[view]} · NapTable 管理台`;
     if (view === "audit" && state.authenticated) loadAudit().catch(error => notice(error.message, "error"));
     const wasOpen = document.body.classList.contains("nav-open");
     setNavigation(false);
@@ -865,12 +866,24 @@
     } catch (error) { notice(error.message, "error"); }
     finally { setLoading(button, false); }
   };
-  const imageImportFields = ["enabled", "endpoint", "model", "apiKey", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit", "timeoutSeconds", "maxOutputTokens"];
+  const imageImportFields = ["enabled", "endpoint", "model", "reasoningEffort", "apiKey", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit", "timeoutSeconds", "maxOutputTokens", "prompt"];
+  let imageDefaultPrompt = "";
   const imageField = key => $("imageImport" + key[0].toUpperCase() + key.slice(1));
   const formImageImport = () => Object.fromEntries(imageImportFields.map(key => {
     const element = imageField(key);
+    if (key === "prompt") return [key, element.value.trim() === imageDefaultPrompt.trim() ? "" : element.value.trim()];
     return [key, element.type === "checkbox" ? element.checked : element.type === "number" ? Number(element.value) : element.value.trim()];
   }));
+  const updateImagePromptStatus = () => {
+    const custom = Boolean(formImageImport().prompt);
+    $("imageImportPromptStatus").textContent = `${custom ? "自定义提示词" : "内置默认提示词"} · 修改后需点击保存配置`;
+  };
+  imageField("prompt").oninput = updateImagePromptStatus;
+  $("resetImageImportPrompt").onclick = () => {
+    imageField("prompt").value = imageDefaultPrompt;
+    updateImagePromptStatus();
+    notice("已恢复默认提示词，点击「保存配置」后生效");
+  };
   const imageAttemptOutcomes = new Set(["pending", "success", "empty", "upstreamError", "invalidResult"]);
   const imageOutcomeLabels = { success: "成功", empty: "空结果", failed: "失败", blocked: "拦截" };
   const imageOutcomeClasses = { success: "image-success", empty: "image-empty", failed: "image-failed", blocked: "image-blocked" };
@@ -912,24 +925,34 @@
     const max = Math.max(1, ...data.map(item => item.success + item.empty + item.failed + item.blocked));
     $("imageTrendMax").textContent = imageFormatCount(max);
     const chart = $("imageDailyTrend"); chart.replaceChildren();
-    const tooltip = $("imageTrendTooltip"); const panel = $("imageDailyTrend").closest(".image-trend-panel");
-    for (const item of data) {
+    const tooltip = $("imageTrendTooltip"); tooltip.hidden = true;
+    const show = (bar, item) => {
+      tooltip.innerHTML = `<span>${item.day}</span>${["success", "empty", "failed", "blocked"].map(key => `<div><i class="${imageOutcomeClasses[key]}"></i>${imageOutcomeLabels[key]} <strong>${imageFormatCount(item[key])}</strong><em>次</em></div>`).join("")}`;
+      tooltip.hidden = false;
+      const box = chart.getBoundingClientRect(), mark = bar.getBoundingClientRect();
+      const left = mark.left - box.left + mark.width / 2 + chart.offsetLeft;
+      tooltip.style.left = `${Math.min(Math.max(left, tooltip.offsetWidth / 2), chart.offsetLeft + box.width - tooltip.offsetWidth / 2)}px`;
+    };
+    // Same layout as the usage chart: the stack gets the day's share of the axis, segments split it with flex-grow.
+    data.forEach((item, index) => {
       const total = item.success + item.empty + item.failed + item.blocked;
       const bar = document.createElement("button"); bar.type = "button"; bar.className = `trend-bar${item.day === today ? " is-today" : ""}`;
-      bar.setAttribute("aria-label", `${item.day}，${total} 次`); bar.title = `${item.day} · ${total} 次`;
-      const stack = document.createElement("span"); stack.className = "trend-stack";
+      bar.setAttribute("aria-label", `${item.day}，${total} 次`);
+      const stack = document.createElement("span"); stack.className = "trend-stack"; stack.style.height = `${total / max * 100}%`;
       for (const key of ["blocked", "failed", "empty", "success"]) {
-        const segment = document.createElement("i"); segment.className = imageOutcomeClasses[key];
-        segment.style.height = `${item[key] / max * 100}%`; if (!item[key]) segment.hidden = true; stack.append(segment);
+        if (!item[key]) continue;
+        const segment = document.createElement("i"); segment.className = imageOutcomeClasses[key]; segment.style.flexGrow = item[key]; stack.append(segment);
       }
-      bar.append(stack); const label = document.createElement("small"); label.textContent = item.day.slice(5); bar.append(label); chart.append(bar);
-      bar.addEventListener("mouseenter", () => {
-        tooltip.hidden = false; tooltip.innerHTML = `<span>${item.day}</span>${["success", "empty", "failed", "blocked"].map(key => `<div><i class="${imageOutcomeClasses[key]}"></i>${imageOutcomeLabels[key]} <strong>${imageFormatCount(item[key])}</strong><em>次</em></div>`).join("")}`;
-        const panelRect = panel.getBoundingClientRect(); const barRect = bar.getBoundingClientRect();
-        tooltip.style.left = `${barRect.left - panelRect.left + barRect.width / 2}px`;
-      });
-      bar.addEventListener("mouseleave", () => { tooltip.hidden = true; });
-    }
+      bar.append(stack);
+      if (index % 7 === (data.length - 1) % 7) {
+        const tick = document.createElement("small"); tick.textContent = index === data.length - 1 ? "今天" : item.day.slice(5).replace("-", "/"); bar.append(tick);
+      }
+      bar.addEventListener("pointerenter", () => show(bar, item));
+      bar.addEventListener("focus", () => show(bar, item));
+      bar.addEventListener("pointerleave", () => { tooltip.hidden = true; });
+      bar.addEventListener("blur", () => { tooltip.hidden = true; });
+      chart.append(bar);
+    });
   };
   const renderImageBreakdown = summary => {
     const rows = ["success", "empty", "failed", "blocked"].map(key => ({ key, count: Number(summary[key] || 0) }));
@@ -937,11 +960,18 @@
     $("imageOutcomeBreakdown").innerHTML = rows.map(row => `<div class="image-outcome-row"><div><span><i class="${imageOutcomeClasses[row.key]}"></i>${imageOutcomeLabels[row.key]}</span><strong>${imageFormatCount(row.count)}</strong></div><div class="image-outcome-track"><i class="${imageOutcomeClasses[row.key]}" style="width:${row.count / total * 100}%"></i></div><small>${(row.count / total * 100).toFixed(1)}%</small></div>`).join("");
   };
   const showImageImport = data => {
+    imageDefaultPrompt = data.config.defaultPrompt || "";
     imageImportFields.forEach(key => {
       const element = imageField(key);
       if (element.type === "checkbox") element.checked = data.config[key];
+      else if (key === "prompt") element.value = data.config.prompt || imageDefaultPrompt;
+      else if (key === "reasoningEffort") element.value = data.config.reasoningEffort || "";
       else element.value = data.config[key];
     });
+    imageField("prompt").maxLength = data.config.promptMaxLength || 12000;
+    imageField("prompt").disabled = false;
+    $("resetImageImportPrompt").disabled = false;
+    updateImagePromptStatus();
     $("imageImportStatus").textContent = `${data.config.enabled ? "已开放" : "已关闭"} · ${data.config.configured ? "模型与密钥已配置" : "请设置模型和 API 密钥"}`;
     $("saveImageImportButton").disabled = false;
     const rows = data.stats.daily || [];
@@ -963,6 +993,12 @@
     $("imageImportSummary").textContent = `共 ${imageFormatCount(summary.events)} 条事件 · 统计保留 ${data.stats.retentionDays} 天 · 最多同时识别 ${data.stats.maxConcurrent} 张图片`;
     renderImageTrend(rows, data.stats.today); renderImageBreakdown(summary);
     const outcomes = { success: "成功", empty: "未识别到课程", upstreamError: "接口失败", invalidResult: "结果无效", pending: "处理中或被中断", attestRequired: "需要设备验证", invalidImage: "图片无效", busy: "并发已满", quotaRejected: "超过额度" };
+    const errors = data.stats.recentErrors || [];
+    $("imageImportErrors").innerHTML = errors.length ? errors.map((error, index) => {
+      const status = error.upstreamStatus ? `上游 HTTP ${error.upstreamStatus}` : `HTTP ${error.status}`;
+      const stamp = new Date(error.created * 1000).toLocaleString("zh-CN", { hour12: false });
+      return `<details class="image-error-card"${index === 0 ? " open" : ""}><summary><strong>#${escapeHTML(error.id)} · ${escapeHTML(status)}</strong><span>${escapeHTML(stamp)} · ${escapeHTML(error.model)} · ${escapeHTML(outcomes[error.outcome] || error.outcome)}</span></summary><pre>${escapeHTML(error.message)}</pre></details>`;
+    }).join("") : '<p class="inline-empty">暂无错误记录</p>';
     $("imageImportStats").innerHTML = rows.length ? rows.map(row => `<tr><td>${escapeHTML(row.day)}</td><td>${escapeHTML(outcomes[row.outcome] || row.outcome)}</td><td>${row.requests}</td><td>${row.inputTokens}</td><td>${row.outputTokens}</td><td>${row.courses}</td><td>${(row.durationMs / row.requests / 1000).toFixed(1)} 秒</td></tr>`).join("") : '<tr><td colspan="7">暂无识别记录</td></tr>';
     markClean("imageImport");
   };
@@ -1041,18 +1077,18 @@
     card.innerHTML = `<summary><span data-status></span><b data-title></b></summary><div class="form-grid">
       <label><span>消息类型</span><select data-field="kind"><option value="notice">重要通知</option><option value="update">版本更新</option></select></label>
       <label><span>适用平台</span><select data-field="platform"><option value="all">全部平台</option><option value="ios">iOS / iPadOS</option><option value="macos">macOS</option><option value="visionos">visionOS</option></select></label>
-      <label class="toggle-field wide"><input data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}><span><strong>启用发布</strong><small>保存后按生效时间向客户端开放；取消勾选可下线。</small></span></label>
+      <label class="toggle-field wide"><input data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}><span><strong>启用发布</strong></span></label>
       ${input("title", "标题", "例如：更轻盈的课表体验", "text", 80)}
       ${input("subtitle", "副标题（可选）", "用一句话说明这次消息")}
       ${input("version", "更新目标版本（更新必填）", "例如 1.3.0", "text", 30)}
       ${input("actionTitle", "按钮文字（可选）", "前往更新 / 查看详情", "text", 30)}
       ${input("minVersion", "最低适用 App 版本（含）", "留空不限", "text", 30)}
       ${input("maxVersion", "最高适用 App 版本（含）", "留空不限", "text", 30)}
-      <label class="wide"><span>正文 · Markdown</span><textarea data-field="body" maxlength="12000" placeholder="## 这次有什么新变化&#10;- **全新体验**：描述亮点&#10;- 修复与优化">${escapeHTML(item.body)}</textarea><small>支持 # 标题、- 列表、**粗体**、\`代码\`、&gt; 引用、[链接](https://…)。不执行 HTML；复杂图文请填写详情链接。</small></label>
+      <label class="wide"><span>正文 · Markdown</span><textarea data-field="body" maxlength="12000" placeholder="## 这次有什么新变化&#10;- **全新体验**：描述亮点&#10;- 修复与优化">${escapeHTML(item.body)}</textarea><small>不支持 HTML</small></label>
       <label class="wide"><span>HTTPS 跳转链接（更新必填）</span><input data-field="actionURL" type="url" maxlength="2048" value="${escapeAttr(item.actionURL)}" placeholder="App Store、TestFlight 或详情页面地址"></label>
       ${input("startsAt", "开始时间（本地时区，留空立即）", "", "datetime-local")}
       ${input("endsAt", "结束时间（本地时区，留空长期）", "", "datetime-local")}
-      <small class="wide">消息 ID：${escapeHTML(item.id)} · 保存同一条消息不会再次打扰已看过的用户。</small>
+      <small class="wide">消息 ID：${escapeHTML(item.id)}</small>
       </div><button class="button publication-remove" type="button">删除此消息</button>`;
     card.querySelector('[data-field="kind"]').value = item.kind;
     card.querySelector('[data-field="platform"]').value = item.platform;
@@ -1130,13 +1166,14 @@
     section(loadImageImport, () => {});
     section(loadAnnouncements, () => {});
     section(loadShares, () => {});
-    if (state.view === "audit") section(loadAudit, () => {});
   };
   const signedOut = () => {
     state.authenticated = false; state.admin = null; state.schools = []; state.school = null; state.term = null;
     Object.keys(savedForms).forEach(key => delete savedForms[key]);
     $("saveApnsButton").disabled = true; $("saveCalendarButton").disabled = true;
     $("saveImageImportButton").disabled = true;
+    $("resetImageImportPrompt").disabled = true;
+    imageField("prompt").disabled = true;
     $("saveAnnouncements").disabled = true; $("addAnnouncement").disabled = true;
     updateConnectionUI(false);
   };
@@ -1176,7 +1213,11 @@
     signedOut(); notice("管理会话已断开", "success"); $("adminToken").focus();
   };
 
-  document.querySelectorAll(".nav-item").forEach(item => { item.onclick = () => showView(item.dataset.view); });
+  document.querySelectorAll(".nav-item").forEach(item => { item.onclick = () => showView(item.dataset.view, true); });
+  window.addEventListener("popstate", () => {
+    readViewFromURL();
+    updateConnectionUI(state.authenticated);
+  });
   $("authForm").onsubmit = connect;
   $("disconnectButton").onclick = disconnect;
   $("newSchoolButton").onclick = openNewSchool;
@@ -1254,6 +1295,7 @@
   document.addEventListener("keydown", event => { if (event.key === "Escape") closeNavigation(); });
   setNavigation(false);
   $("newSchoolDialog").addEventListener("click", event => { if (event.target === $("newSchoolDialog")) $("newSchoolDialog").close(); });
+  readViewFromURL();
   updateConnectionUI(false);
   restore();
 })();

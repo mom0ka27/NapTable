@@ -46,7 +46,7 @@ struct ScheduleEditingView: View {
                                         Spacer()
                                         if family.contains(where: { ($0.displayPriority ?? 0) > 0 })
                                             && app.hasCourseOverlap(in: [CourseScheduleDraft(courses: family)], selectedIndex: 0, tableID: tableID) {
-                                            Text("优先显示").font(.caption).foregroundStyle(Color.cpuBrand)
+                                            Text("优先显示").font(.caption).foregroundStyle(.tint)
                                         }
                                         Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                                     }

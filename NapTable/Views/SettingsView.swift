@@ -1,8 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 按使用场景组织设置：课表、显示与外观、桌面与锁屏、数据与隐私、帮助与关于。
+/// 按使用场景组织设置：课表、显示与外观、桌面与锁屏、同步与数据、帮助与关于。
 /// 当前课表提供直达入口；学期、周次和节次时间仍由各张课表分别保存。
+/// 分组图标一律用主题色，同一屏只留一种强调色。
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @ObservedObject private var themeSettings = NativeThemeSettings.shared
@@ -204,7 +205,7 @@ struct SettingsView: View {
                 title: "iCloud 同步",
                 detail: cloudSync.statusText,
                 systemImage: "icloud",
-                tint: .blue
+                tint: themeSettings.brandColor
             ) {
                 ICloudSyncSettingsView()
             }
@@ -212,7 +213,7 @@ struct SettingsView: View {
                 title: "数据与备份",
                 detail: "导出备份、恢复与清除数据",
                 systemImage: "externaldrive",
-                tint: .blue
+                tint: themeSettings.brandColor
             ) {
                 Form { dataSection }
                     .appListBackground()
@@ -224,12 +225,12 @@ struct SettingsView: View {
                 title: "隐私与数据",
                 detail: privacyConsent.liveAccepted ? "已允许上传实时通知信息" : "仅上传基础统计",
                 systemImage: "hand.raised",
-                tint: .blue
+                tint: themeSettings.brandColor
             ) {
                 PrivacySettingsView()
             }
         } header: {
-            Text("数据与隐私")
+            Text("同步与数据")
         }
     }
 
@@ -300,7 +301,7 @@ struct SettingsView: View {
                         if table.id == store.selectedTableId {
                             Text("使用中")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(.tint)
                         }
                     }
                 }

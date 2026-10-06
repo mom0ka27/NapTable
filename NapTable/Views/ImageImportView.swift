@@ -13,18 +13,17 @@ struct ImageImportView: View {
     @State private var uploadConsent = false
     @State private var busy = false
     @State private var error: String?
-    @State private var result: ImageImportResult?
     @State private var draft: ManualScheduleDraft?
 
     var body: some View {
         Group {
-            if let draft, let result {
+            if let draft {
                 ManualScheduleWizard(school: nil, requiresCourses: true, onCreated: onCreated,
-                    initialDraft: draft, recognitionWarnings: result.reviewWarnings)
+                    initialDraft: draft)
             } else {
                 Form {
                     Section {
-                        Text("选择一张清晰、完整的课表截图，识别后核对学期、节次和课程，再创建课表。")
+                        Text("选择一张包含星期和节次标注的清晰课表截图。图片中的每天节数、上下课时间也会一并读取；识别后核对学期、节次和课程，再创建课表。")
                         if configuration?.enabled == false {
                             Label("图片导入暂未开放，可以使用手动导入。", systemImage: "info.circle")
                         }
@@ -55,7 +54,7 @@ struct ImageImportView: View {
                         }
                         .disabled(busy || image == nil || !uploadConsent || configuration?.enabled != true)
                     } footer: {
-                        Text("图片会发送至你以为课表服务端，再交由服务端配置的 AI 服务（OpenAI 或兼容服务）处理。请先裁掉姓名、学号等无关信息。你以为课表服务端不保存图片及识别课程，只保留匿名调用统计 90 天；AI 服务的数据保留规则由服务提供方决定。")
+                        Text("图片会发送至你以为课表服务端，再交由服务端配置的 AI 服务（OpenAI 或兼容服务）处理。请先裁掉姓名、学号等无关信息。你以为课表服务端不保存图片及识别课程，数据库只保留匿名调用统计与脱敏错误摘要 90 天；AI 服务的数据保留规则由服务提供方决定。")
                     }
                     .disabled(busy)
                 }
@@ -113,7 +112,7 @@ struct ImageImportView: View {
             let result = try await ImageImportService.recognize(image)
             var draft = try result.draft()
             draft.name = store.uniqueTableName(draft.name)
-            self.result = result; self.draft = draft
+            self.draft = draft
         } catch { self.error = error.localizedDescription }
     }
 }

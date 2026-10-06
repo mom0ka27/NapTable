@@ -5,26 +5,42 @@ struct AnnouncementView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appThemeBrand) private var themeBrand
     @State private var linkFailed = false
-    private var accent: Color { item.kind == .update ? Color(red: 0.34, green: 0.40, blue: 0.85) : Color(red: 0.16, green: 0.55, blue: 0.49) }
+    private var palette: ThemePalette { ThemePalette.of(themeBrand) }
+    private var accent: Color { palette.text(dark: colorScheme == .dark) }
+    private var fill: Color { palette.fill(dark: colorScheme == .dark) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                hero
-                AnnouncementMarkdown(text: item.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
-                    .background(.background, in: RoundedRectangle(cornerRadius: 24))
-                    .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(accent.opacity(0.10)) }
-                Label("NapTable · 让校园时间井然有序", systemImage: "leaf")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    hero
+                    AnnouncementMarkdown(text: item.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(20)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 22))
+                        .overlay { RoundedRectangle(cornerRadius: 22).strokeBorder(accent.opacity(0.10)) }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 24)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
             }
-            .padding(24)
-            .frame(maxWidth: 640)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            // The footer owns its height instead of overlaying the scroll view.
+            // Long content scrolls above it without compressing either region.
+            actions
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity)
+                .background(.regularMaterial)
+                .overlay(alignment: .top) { Divider().opacity(0.5) }
         }
         .background(accent.opacity(colorScheme == .dark ? 0.06 : 0.035))
         .background(.background)
@@ -37,96 +53,106 @@ struct AnnouncementView: View {
                 Button("关闭", systemImage: "xmark") { dismiss() }
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 12) {
-                if let url = item.actionLink {
-                    Button {
-                        openURL(url) { accepted in linkFailed = !accepted }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Text(item.buttonTitle)
-                            Image(systemName: "arrow.up.right")
-                        }
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-                    .controlSize(.large)
-                    Button("稍后再说") { dismiss() }
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                } else {
-                    Button { dismiss() } label: {
-                        Text("知道了")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(accent)
-                    .controlSize(.large)
-                }
-            }
-            .padding(.horizontal, 24).padding(.vertical, 16)
-            .frame(maxWidth: 640)
-            .frame(maxWidth: .infinity)
-            .background(.regularMaterial)
-        }
         .alert("暂时无法打开链接", isPresented: $linkFailed) {
             Button("知道了", role: .cancel) { }
         } message: { Text("请稍后重试，或从设置中的“更新与通知”再次查看。") }
     }
 
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack {
-                Image(systemName: item.icon)
-                    .font(.system(size: 29, weight: .medium))
-                    .foregroundStyle(accent)
-                    .frame(width: 64, height: 64)
-                    .background(.background.opacity(0.8), in: RoundedRectangle(cornerRadius: 20))
-                Spacer()
-                Text(item.kind == .update ? "WHAT’S NEW" : "A NOTE FOR YOU")
-                    .font(.system(.caption2, design: .monospaced, weight: .medium))
-                    .tracking(1.7).foregroundStyle(accent)
+    private var actions: some View {
+        VStack(spacing: 4) {
+            Button {
+                if let url = item.actionLink {
+                    openURL(url) { accepted in linkFailed = !accepted }
+                } else {
+                    dismiss()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(item.actionLink == nil ? "知道了" : item.buttonTitle)
+                    if item.actionLink != nil { Image(systemName: "arrow.up.right") }
+                }
+                .font(.headline)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .foregroundStyle(palette.onFill(dark: colorScheme == .dark))
+                .background(fill, in: RoundedRectangle(cornerRadius: 16))
+                .contentShape(RoundedRectangle(cornerRadius: 16))
             }
-            VStack(alignment: .leading, spacing: 12) {
+            .buttonStyle(.plain)
+
+            if item.actionLink != nil {
+                Button { dismiss() } label: {
+                    Text("稍后再说")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: item.icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(accent)
+                    .frame(width: 44, height: 44)
+                    .background(.background.opacity(0.8), in: RoundedRectangle(cornerRadius: 14))
+                if item.kind == .update {
+                    ViewThatFits(in: .horizontal) {
+                        versionLabel
+                        Text("新版本 v\(item.version)")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundStyle(accent)
+                    .accessibilityElement(children: .combine)
+                } else {
+                    Text("来自 NapTable 的消息")
+                        .font(.subheadline)
+                        .foregroundStyle(accent)
+                }
+            }
+            VStack(alignment: .leading, spacing: 10) {
                 Text(item.title)
-                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .font(.system(.title2, design: .rounded, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
                 if !item.subtitle.isEmpty {
-                    Text(item.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                    Text(item.subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if item.kind == .update {
-                HStack(spacing: 10) {
-                    Text("v\(AnnouncementStore.currentVersion)").foregroundStyle(.secondary)
-                    Image(systemName: "arrow.right").foregroundStyle(accent)
-                    Text("v\(item.version)").fontWeight(.semibold).foregroundStyle(accent)
-                }
-                .font(.system(.caption, design: .rounded))
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(.background.opacity(0.75), in: Capsule())
-                .accessibilityElement(children: .combine)
-            }
         }
-        .padding(26)
+        .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             ZStack(alignment: .topTrailing) {
-                LinearGradient(colors: [accent.opacity(0.18), accent.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                Circle().stroke(accent.opacity(0.08), lineWidth: 28)
-                    .frame(width: 190, height: 190).offset(x: 65, y: -75)
-                Circle().stroke(accent.opacity(0.10), lineWidth: 1)
-                    .frame(width: 255, height: 255).offset(x: 95, y: -110)
+                LinearGradient(colors: [accent.opacity(0.16), accent.opacity(0.04)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Circle().stroke(accent.opacity(0.07), lineWidth: 20)
+                    .frame(width: 150, height: 150).offset(x: 55, y: -65)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 28))
+            .clipShape(RoundedRectangle(cornerRadius: 22))
             .accessibilityHidden(true)
         }
     }
+
+    private var versionLabel: some View {
+        HStack(spacing: 8) {
+            Text("v\(AnnouncementStore.currentVersion)").foregroundStyle(.secondary)
+            Image(systemName: "arrow.right")
+            Text("v\(item.version)").fontWeight(.semibold)
+        }
+        .fixedSize()
+    }
+
 }
 
 /// A deliberately small Markdown vocabulary shared with the publication editor.
@@ -160,9 +186,8 @@ private struct AnnouncementMarkdown: View {
             }
         }
         .font(.body).lineSpacing(5)
-        .textSelection(.enabled)
     }
-    private func inline(_ text: String) -> Text {
+    private func inline(_ text: String) -> some View {
         var attributed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
         for run in attributed.runs {
             if let url = run.link, AppAnnouncement.safeLink(url.absoluteString) == nil {
@@ -170,6 +195,7 @@ private struct AnnouncementMarkdown: View {
             }
         }
         return Text(attributed)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

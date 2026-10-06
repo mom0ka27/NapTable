@@ -54,6 +54,11 @@ struct AnnouncementChecks {
         precondition(!AnnouncementPolicy.hasSeen(upgraded, source: "server", defaults: defaults))
         precondition(AnnouncementPolicy.canPresent(now: now, defaults: defaults))
         AnnouncementPolicy.markAutomatic(now: now, defaults: defaults)
+        for kind in [AppAnnouncement.Kind.notice, .update] {
+            precondition(!AnnouncementPolicy.canPresent(kind: kind, now: now.addingTimeInterval(299), defaults: defaults))
+            precondition(AnnouncementPolicy.canPresent(kind: kind, now: now.addingTimeInterval(300), defaults: defaults),
+                         "An earlier automatic reminder must not suppress either kind of new publication for a day")
+        }
         precondition(!AnnouncementPolicy.canPresent(now: now.addingTimeInterval(86399), defaults: defaults))
         precondition(AnnouncementPolicy.canPresent(now: now.addingTimeInterval(86400), defaults: defaults))
         print("PASS: numeric version bounds, platform, publication window, safe links, priority, latest-only updates, persistent history and shared cooldown")

@@ -37,7 +37,7 @@ struct ImportView: View {
                     List {
                         Section {
                             Label("课表已添加", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(.tint)
                             LabeledContent("课表", value: imported.name)
                             // 包括完整保留的重叠课程。
                             LabeledContent("课程", value: "\(Set(imported.courses.filter { !$0.isHidden }.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }).count) 门")
@@ -90,19 +90,26 @@ struct ImportView: View {
             .modifier(ImportSearchToolbar(hideSearch: imported != nil))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(imported == nil ? "取消" : "完成") {
+                    Button {
                         if let imported, imported.termID == nil {
                             store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: semesterStart)))
                         }
                         if imported != nil { onFinish?() }
                         dismiss()
+                    } label: {
+                        if imported == nil {
+                            Image(systemName: "xmark")
+                        } else {
+                            Text("完成")
+                        }
                     }
+                    .accessibilityLabel(imported == nil ? "取消" : "完成")
                 }
             }
             .alert("未能完成首次导入", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
                 Button("知道了", role: .cancel) { importError = nil }
             } message: { Text(importError ?? "") }
-            .sheet(item: $webSchool) { school in
+            .appImportPresentation(item: $webSchool) { school in
                 WebImporterView(school: school, initialMode: .newTable, requiresCourses: requiresImport) { schedule, mode in
                     guard !requiresImport || !schedule.courses.isEmpty else {
                         importError = "没有读取到课程，请确认学期和导入入口后重试。"
@@ -188,8 +195,8 @@ extension SchoolConfig {
 }
 
 /// The parse summary plus the destination picker. It is embedded inside whatever
-/// sheet performed the import, so a successful login never has to stack a second
-/// sheet on top of one that is still dismissing.
+/// page performed the import, so a successful login never has to stack a second
+/// presentation on top of one that is still dismissing.
 struct ImportedScheduleForm: View {
     let schedule: ImportedSchedule
     @Binding var mode: AppStore.ImportMode
@@ -229,7 +236,7 @@ struct ImportedScheduleForm: View {
         List {
             Section("解析结果") {
                 Label("解析成功", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.tint)
                 // 覆盖和追加都沿用当前课表的名字，只有新建课表才能起名。
                 if mode == .newTable {
                     LabeledContent("课表名称") {
@@ -274,7 +281,7 @@ struct ImportedScheduleForm: View {
                                 Text(item.title).foregroundStyle(.primary)
                                 Spacer()
                                 if mode == item {
-                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                                    Image(systemName: "checkmark").foregroundStyle(.tint)
                                 }
                             }
                             // With `.buttonStyle(.plain)` the label's `Spacer()` is
@@ -324,14 +331,14 @@ struct ImportedScheduleForm: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: picked ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(picked ? Color.accentColor : .secondary)
+                    .foregroundStyle(picked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(member.course.name)
                         .foregroundStyle(.primary)
                     if mode == .appendToCurrent && member.course.id > 0 {
                         Text("当前课表已有").font(.caption).foregroundStyle(.secondary)
                     }
-                    if picked { Text("优先显示").font(.caption).foregroundStyle(Color.accentColor) }
+                    if picked { Text("优先显示").font(.caption).foregroundStyle(.tint) }
                     let subtitle = member.subtitle
                     if !subtitle.isEmpty {
                         Text(subtitle).font(.caption).foregroundStyle(.secondary)

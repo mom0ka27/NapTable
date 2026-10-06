@@ -13,6 +13,8 @@ import AppKit
 struct NativeDeviceSettingsContent: View {
     @ObservedObject var scheduleStore: NativeScheduleStore
     @ObservedObject var widgetSettings: NativeWidgetSettings
+    /// 图标跟随主题色，换主题时这两行也要跟着重画。
+    @ObservedObject private var themeSettings = NativeThemeSettings.shared
     #if os(iOS)
     @ObservedObject private var liveActivity = NativeLiveActivityController.shared
     #endif
@@ -24,7 +26,7 @@ struct NativeDeviceSettingsContent: View {
                 title: "桌面小组件",
                 detail: widgetSettings.isConfigured ? "已同步，可添加到桌面" : "暂无可显示的课表",
                 systemImage: "square.grid.2x2",
-                tint: .teal
+                tint: themeSettings.brandColor
             ) {
                 WidgetSettingsScreen(settings: widgetSettings, store: scheduleStore)
             }
@@ -33,7 +35,7 @@ struct NativeDeviceSettingsContent: View {
                 title: "实时活动",
                 detail: liveActivity.isEnabled ? "已开启 · 灵动岛与锁屏提醒" : "已关闭 · 灵动岛与锁屏提醒",
                 systemImage: "rectangle.topthird.inset.filled",
-                tint: .teal
+                tint: themeSettings.brandColor
             ) {
                 LiveActivitySettingsScreen()
             }
@@ -49,19 +51,26 @@ struct SettingsDestinationRow<Destination: View>: View {
     let title: String
     let detail: String
     let systemImage: String
-    var tint: Color = .cpuBrand
+    /// `nil` follows the environment theme. Explicit colors are retained for
+    /// callers that intentionally use a semantic color.
+    var tint: Color? = nil
     @ViewBuilder let destination: () -> Destination
     @ScaledMetric(relativeTo: .body) private var iconSize = 30.0
+    @Environment(\.appThemeBrand) private var themeBrand
+
+    private var resolvedTint: Color {
+        tint ?? Color(red: themeBrand.red, green: themeBrand.green, blue: themeBrand.blue)
+    }
 
     var body: some View {
         NavigationLink(destination: destination) {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
                     .font(.system(size: min(iconSize * 0.56, 22), weight: .medium))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(resolvedTint)
                     // 装饰图标适度放大，把辅助功能字号下的宽度留给文字。
                     .frame(width: min(iconSize, 40), height: min(iconSize, 40))
-                    .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(resolvedTint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title)
@@ -358,6 +367,7 @@ private struct ScheduleBackgroundSection: View {
 struct WidgetSettingsScreen: View {
     @ObservedObject var settings: NativeWidgetSettings
     @ObservedObject var store: NativeScheduleStore
+    @ObservedObject private var themeSettings = NativeThemeSettings.shared
 
     var body: some View {
         Form {
@@ -373,7 +383,7 @@ struct WidgetSettingsScreen: View {
                 if let status = settings.status {
                     Label(status, systemImage: status.contains("失败") ? "exclamationmark.triangle" : "checkmark.circle.fill")
                         .font(.footnote)
-                        .foregroundStyle(status.contains("失败") ? .orange : Color.cpuBrand)
+                        .foregroundStyle(status.contains("失败") ? AnyShapeStyle(.orange) : AnyShapeStyle(themeSettings.brandColor))
                 }
             } header: {
                 Text("状态")
@@ -444,6 +454,20 @@ struct GlobalThemeSettingsSection: View {
     @ObservedObject private var settings = NativeThemeSettings.shared
 
     var body: some View {
+        Section {
+            NavigationLink {
+                ScheduleStylePicker()
+            } label: {
+                HStack {
+                    Text("课表风格")
+                    Spacer()
+                    Text(settings.style.title).foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            Text("风格决定课表的排版，主题色可以单独选择。")
+        }
+
         Section {
             Picker("外观", selection: Binding(
                 get: { store.settings.appearance },
@@ -657,8 +681,12 @@ struct LiveActivitySettingsScreen: View {
                     Label("请在系统设置中允许「实时活动」", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.orange)
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        Link("去设置", destination: url)
+                    }
                 } footer: {
-                    Text("系统关闭实时活动时，课程提醒仍会按通知设置发送。")
+                    // App 没有普通通知，系统里关掉实时活动后就不会再有任何课程提醒。
+                    Text("在系统设置里关闭本 App 的实时活动后，锁屏和灵动岛都不会显示课程。")
                 }
             }
         }
@@ -682,7 +710,7 @@ struct LiveActivitySettingsScreen: View {
         } message: {
             Text(purchases.accessMode == .unavailable || purchases.accessMode == .loading
                  ? "连接失败，请联网后重试。"
-                 : "请返回设置首页，点击顶部的“NapTable 专业版”卡片，开始试用或买断专业版。")
+                 : "请返回设置首页，点击顶部的专业版卡片，开始试用或买断专业版。")
         }
     }
 }

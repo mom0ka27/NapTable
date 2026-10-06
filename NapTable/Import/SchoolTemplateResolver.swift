@@ -87,17 +87,12 @@ enum SchoolTemplateResolver {
     /// 导入课表的默认名，如「2026 秋」。优先按学期第一周的年月算（7 月起算秋季，
     /// 和上面按学年挑学期的口径一致），没有就看页面上的学年学期，再没有就按今天。
     static func semesterName(startMonday: String?, hint: String, now: Date = Date()) -> String {
-        let year: Int, fall: Bool
         if let start = startMonday.flatMap(WeekCalculator.parseDay) {
-            year = WeekCalculator.calendar.component(.year, from: start)
-            fall = WeekCalculator.calendar.component(.month, from: start) >= 7
+            return WeekCalculator.semesterName(for: start)
         } else if let academic = academicTerm(in: hint) {
-            (year, fall) = academic
-        } else {
-            year = WeekCalculator.calendar.component(.year, from: now)
-            fall = WeekCalculator.calendar.component(.month, from: now) >= 7
+            return "\(academic.year) \(academic.fall ? "秋" : "春")"
         }
-        return "\(year) \(fall ? "秋" : "春")"
+        return WeekCalculator.semesterName(for: now)
     }
 
     private static func academicTerm(in name: String) -> (year: Int, fall: Bool)? {

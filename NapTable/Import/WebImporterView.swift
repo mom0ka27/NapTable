@@ -107,9 +107,16 @@ struct WebImporterView: View {
             .appInlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(parsed == nil ? "取消" : "返回") {
+                    Button {
                         if parsed == nil { dismiss() } else { backToPage() }
+                    } label: {
+                        if parsed == nil {
+                            Image(systemName: "xmark")
+                        } else {
+                            Text("返回")
+                        }
                     }
+                    .accessibilityLabel(parsed == nil ? "取消" : "返回")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if let parsed {

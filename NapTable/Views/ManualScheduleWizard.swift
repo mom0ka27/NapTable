@@ -11,13 +11,13 @@ struct ManualScheduleWizard: View {
     var requiresCourses = false
     let onCreated: () -> Void
     var initialDraft: ManualScheduleDraft? = nil
-    var recognitionWarnings: [String] = []
 
     @EnvironmentObject private var store: AppStore
     @State private var step: Step = .semester
     @State private var draft = ManualScheduleDraft(classTimes: ClassTimeGenerator().make())
     @State private var generator = ClassTimeGenerator()
     @State private var editingCourse: ManualCourseDraft?
+    @State private var automaticImageName: String?
 
     enum Step: Int, CaseIterable {
         case semester, periods, courses, review
@@ -71,7 +71,10 @@ struct ManualScheduleWizard: View {
             }
         }
         .onAppear {
-            if let initialDraft, draft.courses.isEmpty, draft.name.isEmpty { draft = initialDraft }
+            if let initialDraft, draft.courses.isEmpty, draft.name.isEmpty {
+                draft = initialDraft
+                automaticImageName = draft.name
+            }
             if draft.name.isEmpty { draft.name = store.uniqueTableName(school.map { "\($0)课表" } ?? "我的课表") }
         }
         .onChange(of: draft.classTimes.count) { _, count in clampMeetings(periodCount: count) }
@@ -84,7 +87,7 @@ struct ManualScheduleWizard: View {
             HStack(spacing: 6) {
                 ForEach(Step.allCases, id: \.rawValue) { item in
                     Capsule()
-                        .fill(item.rawValue <= step.rawValue ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .fill(item.rawValue <= step.rawValue ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary.opacity(0.25)))
                         .frame(height: 3)
                 }
             }
@@ -150,10 +153,7 @@ struct ManualScheduleWizard: View {
     private var semesterStep: some View {
         if initialDraft != nil {
             Section("图片识别结果") {
-                Text("请核对学期、节次和每门课程。图片中没有写明的周次按全学期填写，需要你确认。")
-                ForEach(Array(recognitionWarnings.enumerated()), id: \.offset) { _, warning in
-                    Text(warning).foregroundStyle(.orange)
-                }
+                Text("识别内容都可以修改。未读到的课程字段已标为待填写，学期和作息中的暂填值也请核对；补全后再创建课表。")
             }
         }
         Section {
@@ -179,7 +179,15 @@ struct ManualScheduleWizard: View {
     private var semesterStartBinding: Binding<Date> {
         Binding(
             get: { WeekCalculator.parseDay(draft.semesterStartMonday) ?? WeekCalculator.monday(of: Date()) },
-            set: { draft.semesterStartMonday = WeekCalculator.format(WeekCalculator.monday(of: $0)) }
+            set: { date in
+                let monday = WeekCalculator.monday(of: date)
+                draft.semesterStartMonday = WeekCalculator.format(monday)
+                if let automaticImageName, draft.name == automaticImageName {
+                    let name = store.uniqueTableName(WeekCalculator.semesterName(for: monday))
+                    draft.name = name
+                    self.automaticImageName = name
+                }
+            }
         )
     }
 
@@ -297,7 +305,8 @@ struct ManualScheduleWizard: View {
             for m in draft.courses[c].meetings.indices {
                 draft.courses[c].meetings[m].endPeriod = min(draft.courses[c].meetings[m].endPeriod, periodCount)
                 draft.courses[c].meetings[m].startPeriod = min(
-                    draft.courses[c].meetings[m].startPeriod, draft.courses[c].meetings[m].endPeriod
+                    draft.courses[c].meetings[m].startPeriod,
+                    draft.courses[c].meetings[m].endPeriod > 0 ? draft.courses[c].meetings[m].endPeriod : periodCount
                 )
             }
         }
@@ -366,7 +375,7 @@ struct ManualScheduleWizard: View {
     private func courseRow(_ course: ManualCourseDraft) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(course.trimmedName).font(.body.weight(.medium))
+                Text(course.trimmedName.isEmpty ? "待填写课程名称" : course.trimmedName).font(.body.weight(.medium))
                 if !course.teacher.isEmpty {
                     Text(course.teacher).font(.caption).foregroundStyle(.secondary)
                 }
@@ -463,7 +472,10 @@ private struct ManualCourseEditor: View {
             .appInlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("取消")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
@@ -485,16 +497,21 @@ private struct ManualCourseEditor: View {
         let index = course.meetings.firstIndex { $0.id == meeting.wrappedValue.id } ?? 0
         return Section {
             Picker("星期", selection: meeting.weekday) {
+                if meeting.wrappedValue.weekday == 0 { Text("待填写").tag(0) }
                 ForEach(1...7, id: \.self) { Text(WeekCalculator.weekdayName($0)).tag($0) }
             }
             Picker("开始", selection: meeting.startPeriod) {
+                if meeting.wrappedValue.startPeriod == 0 { Text("待填写").tag(0) }
                 ForEach(1...periodCount, id: \.self) { Text(periodLabel($0, start: true)).tag($0) }
             }
             .onChange(of: meeting.wrappedValue.startPeriod) { _, start in
-                if meeting.wrappedValue.endPeriod < start { meeting.wrappedValue.endPeriod = min(start + 1, periodCount) }
+                if meeting.wrappedValue.endPeriod > 0, meeting.wrappedValue.endPeriod < start {
+                    meeting.wrappedValue.endPeriod = min(start + 1, periodCount)
+                }
             }
             Picker("结束", selection: meeting.endPeriod) {
-                ForEach(meeting.wrappedValue.startPeriod...periodCount, id: \.self) {
+                if meeting.wrappedValue.endPeriod == 0 { Text("待填写").tag(0) }
+                ForEach(max(1, meeting.wrappedValue.startPeriod)...periodCount, id: \.self) {
                     Text(periodLabel($0, start: false)).tag($0)
                 }
             }
@@ -592,14 +609,14 @@ private struct WeekChipGrid: View {
                         Text("\(week)")
                             .font(.caption.weight(.medium).monospacedDigit())
                             .frame(maxWidth: .infinity, minHeight: 32)
-                            .foregroundStyle(on ? Color.cpuBrand : .secondary)
+                            .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                             .background(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(on ? Color.cpuBrand.opacity(0.14) : Color.appSecondaryGroupedBackground)
+                                    .fill(on ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(Color.appSecondaryGroupedBackground))
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .stroke(on ? Color.cpuBrand : Color.appSeparator.opacity(0.45), lineWidth: 1)
+                                    .stroke(on ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSeparator.opacity(0.45)), lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)

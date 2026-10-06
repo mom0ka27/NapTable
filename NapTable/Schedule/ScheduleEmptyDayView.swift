@@ -11,6 +11,7 @@ struct ScheduleEmptyDayView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var subtitle: String {
         if outsideTerm { return "不在当前学期的教学周内" }
@@ -70,17 +71,20 @@ struct ScheduleEmptyDayView: View {
         .frame(maxWidth: 360)
         .background {
             let shape = RoundedRectangle(cornerRadius: 32, style: .continuous)
-            shape
-                .fill(ScheduleCardSurface(hasBackground: hasBackground))
+                shape
+                    .fill(ScheduleCardSurface(hasBackground: hasBackground))
                 .overlay {
-                    shape.fill(Color.cpuBrand.opacity(colorScheme == .dark ? 0.06 : 0.025))
+                    shape.fill(.themeTint(colorScheme == .dark ? 0.06 : 0.025))
                 }
                 .overlay {
-                    shape.strokeBorder(Color.cpuBrand.opacity(colorScheme == .dark ? 0.12 : 0.07), lineWidth: 1)
+                    shape.strokeBorder(.themeText, lineWidth: 1)
+                        .opacity(colorScheme == .dark ? 0.12 : 0.07)
                 }
         }
         .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity)
+        // 大字号优先从可见区域顶部阅读，避免居中的额外留白把文字推到屏幕下方。
+        .frame(maxWidth: .infinity, maxHeight: .infinity,
+               alignment: dynamicTypeSize.isAccessibilitySize ? .top : .center)
     }
 
     @ViewBuilder
@@ -88,7 +92,7 @@ struct ScheduleEmptyDayView: View {
         if holidayGreeting != nil || outsideTerm {
             ZStack {
                 Circle()
-                    .fill(Color.cpuBrand.opacity(colorScheme == .dark ? 0.10 : 0.05))
+                    .fill(.themeTint(colorScheme == .dark ? 0.10 : 0.05))
                     .frame(width: 132, height: 132)
                 illustration
             }
@@ -128,7 +132,8 @@ struct ScheduleEmptyDayView: View {
             } else if outsideTerm {
                 Image(systemName: "calendar")
                     .font(.system(size: compact ? 30 : 44, weight: .ultraLight))
-                    .foregroundStyle(Color.cpuBrand.opacity(0.55))
+                    .foregroundStyle(.themeText)
+                    .opacity(0.55)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityHidden(true)
             } else {
@@ -142,12 +147,14 @@ struct ScheduleEmptyDayView: View {
 /// 一朵打盹的云。用矢量绘制，随主题色和深浅外观适配。
 private struct ScheduleRestIllustration: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appThemeBrand) private var themeBrand
 
     var body: some View {
         Canvas { context, size in
             context.scaleBy(x: size.width / 116, y: size.height / 88)
             let dark = colorScheme == .dark
-            let accent = Color.cpuBrand
+            let palette = ThemePalette.of(themeBrand)
+            let accent = palette.text(dark: dark)
 
             context.fill(Path(ellipseIn: CGRect(x: 15, y: 4, width: 78, height: 78)),
                          with: .color(accent.opacity(dark ? 0.10 : 0.05)))

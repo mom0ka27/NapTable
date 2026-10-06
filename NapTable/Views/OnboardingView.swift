@@ -166,7 +166,7 @@ struct OnboardingView: View {
         } message: {
             Text(purchases.errorMessage ?? "")
         }
-        .sheet(isPresented: $showImport) {
+        .appImportPresentation(isPresented: $showImport) {
             ImportView(requiresImport: true, initialSchool: initialSchool) {
                 store.saveNow()
                 consent.completeOnboarding(hasImportedCourses: !store.courses.isEmpty)
@@ -595,7 +595,7 @@ struct OnboardingView: View {
             }
             .buttonStyle(OnboardingPrimaryButtonStyle())
             .disabled(!basicChecked)
-            Text("基础协议为必选；实时通知在下一步决定")
+            Text("基础协议为必选；实时活动在下一步决定")
                 .font(.caption2).foregroundStyle(colors.secondary)
                 .multilineTextAlignment(.center)
         }

@@ -8,12 +8,13 @@ import SwiftUI
 ///
 /// The timetable itself is the CpuTime `NativeScheduleView` surface (see
 /// `Schedule/ScheduleSurfaceView.swift`), fed by `NativeScheduleStore`.
+///
+/// 主题色由 `MyApp` 在根部统一挂上，这里的页面和挂在外层的 sheet 都从环境继承，不再各自 `.tint`。
 struct ContentView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var scheduleStore = NativeScheduleStore()
     @StateObject private var widgetSettings = NativeWidgetSettings()
-    @StateObject private var themeSettings = NativeThemeSettings.shared
     @ObservedObject private var purchases = PurchaseManager.shared
     @State private var showImport = false
     @State private var showSettings = false
@@ -38,7 +39,7 @@ struct ContentView: View {
         ))
         .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
         .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
-        .sheet(isPresented: $showImport) {
+        .appImportPresentation(isPresented: $showImport) {
             ImportView()
                 .environmentObject(store)
                 .environmentObject(scheduleStore)
@@ -135,7 +136,6 @@ struct ContentView: View {
                 }
             } else {
                 NativeScheduleView(store: scheduleStore, onAddTable: { showImport = true })
-                    .tint(themeSettings.brandColor)
             }
         }
         .onAppear { scheduleStore.connect(store) }
@@ -204,7 +204,6 @@ struct ContentView: View {
                 .frame(minWidth: 520, minHeight: 640)
                 .preferredColorScheme(store.settings.appearance.colorScheme)
         }
-        .tint(themeSettings.brandColor)
     }
     #else
     private var phoneLayout: some View {
@@ -223,7 +222,6 @@ struct ContentView: View {
             .tabItem { Label("设置", systemImage: "gearshape") }
             .tag(1)
         }
-        .tint(themeSettings.brandColor)
     }
     #endif
 }

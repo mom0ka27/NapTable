@@ -326,12 +326,12 @@ struct CourseScheduleEditorSheet: View {
                     Text("\(value)\(unit)")
                         .font(.caption.weight(.medium))
                         .frame(maxWidth: .infinity, minHeight: 34)
-                        .foregroundStyle(selected ? Color.cpuBrand : .secondary)
-                        .background(selected ? Color.cpuBrand.opacity(0.14) : Color.appSecondaryGroupedBackground,
+                        .foregroundStyle(selected ? AnyShapeStyle(.themeText) : AnyShapeStyle(.secondary))
+                        .background(selected ? AnyShapeStyle(.themeTint(0.14)) : AnyShapeStyle(Color.appSecondaryGroupedBackground),
                                     in: RoundedRectangle(cornerRadius: 8))
                         .overlay {
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(selected ? Color.cpuBrand : Color.appSeparator.opacity(0.4), lineWidth: 1)
+                                .stroke(selected ? AnyShapeStyle(.themeText) : AnyShapeStyle(Color.appSeparator.opacity(0.4)), lineWidth: 1)
                         }
                 }
                 .buttonStyle(.plain)
@@ -388,7 +388,7 @@ struct CourseIdentityFields: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(
-                            focusedField == field ? Color.cpuBrand : Color.appSeparator.opacity(0.55),
+                            focusedField == field ? AnyShapeStyle(.themeText) : AnyShapeStyle(Color.appSeparator.opacity(0.55)),
                             lineWidth: focusedField == field ? 1.5 : 1
                         )
                         .allowsHitTesting(false)

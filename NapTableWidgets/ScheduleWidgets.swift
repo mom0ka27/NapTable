@@ -45,26 +45,40 @@ private struct ScheduleLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: ScheduleLiveActivityAttributes.self) { context in
             ScheduleLiveActivityLockScreenContent(display: Self.display(context))
+                .scheduleWidgetStyle(ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup)))
         } dynamicIsland: { context in
             let display = Self.display(context)
+            let style = ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup))
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading, priority: 1) {
                     ScheduleLiveActivityIslandLeading(display: display)
+                        .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
                 }
                 DynamicIslandExpandedRegion(.trailing, priority: 1) {
                     ScheduleLiveActivityIslandTrailing(display: display)
+                        .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     ScheduleLiveActivityIslandBottom(display: display)
+                        .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
                 }
             } compactLeading: {
                 ScheduleLiveActivityLogo(size: 21)
                     .accessibilityLabel(AppBrand.name)
+                    .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
             } compactTrailing: {
                 ScheduleLiveActivityIslandCompactTrailing(display: display)
+                    .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
             } minimal: {
                 ScheduleLiveActivityLogo(size: 21)
                     .accessibilityLabel(AppBrand.name)
+                    .scheduleWidgetStyle(style)
+                        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
             }
             // 左右和底部交给系统：`contentMargins(_:_:for: .expanded)` 是覆盖而不是
             // 叠加，之前把三边一起写死（18/8/10）比系统默认值窄，左上角的图标和右上角
@@ -72,7 +86,7 @@ private struct ScheduleLiveActivityWidget: Widget {
             // 系统默认的上边距只会把内容白白往下压。
             .contentMargins(.top, 0, for: .expanded)
             .widgetURL(context.attributes.deepLinkURL)
-            .keylineTint(ScheduleLiveActivityPalette.brand)
+            .keylineTint(style == .minimal ? ScheduleLiveActivityPalette.brand : LiveActivityContentPalette(style: style).accent)
         }
     }
 
@@ -114,14 +128,16 @@ private struct ScheduleLiveActivityLockScreenContent: View {
 // it between the logo, camera and a growing timer.
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityIslandLeading: View {
+    @Environment(\.liveActivityPalette) private var palette
+    @Environment(\.scheduleStyle) private var style
     let display: ScheduleLiveActivityDisplay
 
     var body: some View {
         HStack(spacing: 5) {
             ScheduleLiveActivityLogo(size: 24)
             Text(display.islandTitle)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(ScheduleLiveActivityPalette.accent)
+                .font(style.widgetFont(size: 12, weight: .semibold))
+                .foregroundStyle(palette.accent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
@@ -173,6 +189,8 @@ private struct ScheduleLiveActivityIslandBottom: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityIslandCompactTrailing: View {
+    @Environment(\.liveActivityPalette) private var palette
+    @Environment(\.scheduleStyle) private var style
     let display: ScheduleLiveActivityDisplay
 
     var body: some View {
@@ -185,8 +203,8 @@ private struct ScheduleLiveActivityIslandCompactTrailing: View {
                     .minimumScaleFactor(0.8)
             }
         }
-        .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
-        .foregroundStyle(ScheduleLiveActivityPalette.accent)
+        .font(style.widgetFont(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
+        .foregroundStyle(palette.accent)
         .frame(width: 46, alignment: .trailing)
     }
 }
@@ -318,16 +336,17 @@ private struct ScheduleLiveActivityAdaptiveFinished: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityFinishedCard: View {
+    @Environment(\.scheduleStyle) private var style
     let title: String
     var compact = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let palette = LiveActivityContentPalette(colorScheme: compact ? .dark : colorScheme)
+        let palette = LiveActivityContentPalette(colorScheme: compact ? .dark : colorScheme, style: style)
         HStack(spacing: compact ? 8 : 12) {
             ScheduleLiveActivityLogo(size: compact ? 20 : 32)
             Text(title)
-                .font(.system(size: compact ? 14 : 17, weight: .bold))
+                .font(style.widgetFont(size: compact ? 14 : 17, weight: .bold))
                 .foregroundStyle(palette.primaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -337,7 +356,7 @@ private struct ScheduleLiveActivityFinishedCard: View {
         .padding(.horizontal, compact ? 12 : 21)
         .padding(.vertical, compact ? 10 : 16)
         .environment(\.liveActivityPalette, palette)
-        .activityBackgroundTint(compact ? ScheduleLiveActivityPalette.surface : nil)
+        .activityBackgroundTint(style.canvasColor(dark: compact || colorScheme == .dark) ?? (compact ? ScheduleLiveActivityPalette.surface : nil))
         .activitySystemActionForegroundColor(compact ? .white : .primary)
     }
 }
@@ -345,12 +364,14 @@ private struct ScheduleLiveActivityFinishedCard: View {
 /// The expanded island's bottom region once the day is over.
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityFinishedRow: View {
+    @Environment(\.liveActivityPalette) private var palette
+    @Environment(\.scheduleStyle) private var style
     let title: String
 
     var body: some View {
         Text(title)
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ScheduleLiveActivityPalette.primaryText)
+            .font(style.widgetFont(size: 15, weight: .semibold))
+            .foregroundStyle(palette.primaryText)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -378,11 +399,12 @@ private struct ScheduleLiveActivityAdaptiveContent: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityLockScreen: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.colorScheme) private var colorScheme
     let state: ScheduleLiveActivityAttributes.ContentState
 
     private var palette: LiveActivityContentPalette {
-        LiveActivityContentPalette(colorScheme: colorScheme)
+        LiveActivityContentPalette(colorScheme: colorScheme, style: style)
     }
 
     var body: some View {
@@ -390,7 +412,7 @@ private struct ScheduleLiveActivityLockScreen: View {
             if state.companion != nil { merged } else { content }
         }
         .environment(\.liveActivityPalette, palette)
-        .activityBackgroundTint(nil)
+        .activityBackgroundTint(style.canvasColor(dark: colorScheme == .dark))
         .activitySystemActionForegroundColor(.primary)
     }
 
@@ -402,7 +424,7 @@ private struct ScheduleLiveActivityLockScreen: View {
             HStack(spacing: 8) {
                 ScheduleLiveActivityLogo(size: 24)
                 Text(state.islandTitle)
-                    .font(.system(size: 15, weight: .bold))
+                    .font(style.widgetFont(size: 15, weight: .bold))
                     .foregroundStyle(palette.primaryText)
                     .lineLimit(1)
                 Spacer(minLength: 4)
@@ -413,17 +435,23 @@ private struct ScheduleLiveActivityLockScreen: View {
             ScheduleLiveActivityPairRows(state: state, showsProgress: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay { WidgetCourseRule(color: palette.accent).padding(.vertical, -3) }
         .padding(.horizontal, 21)
         .padding(.vertical, 12)
         .background(gradient)
     }
 
+    @ViewBuilder
     private var gradient: some View {
+        if style == .minimal {
         LinearGradient(
             colors: [ScheduleLiveActivityPalette.brand.opacity(colorScheme == .dark ? 0.12 : 0.06), .clear],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
+        } else {
+            style.canvasColor(dark: colorScheme == .dark) ?? Color.clear
+        }
     }
 
     private var content: some View {
@@ -431,14 +459,21 @@ private struct ScheduleLiveActivityLockScreen: View {
             HStack(alignment: .center, spacing: 10) {
                 ScheduleLiveActivityLogo(size: 34)
                 VStack(alignment: .leading, spacing: 4) {
+                    if style == .board {
+                    Text(ScheduleLiveActivityFormatting.timeRange(start: state.startDate, end: state.endDate))
+                        .font(style.widgetFont(size: 14, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(palette.secondaryText)
+                    }
                     Text(state.courseName)
-                        .font(.system(size: 19, weight: .bold))
+                        .font(style.widgetFont(size: 19, weight: .bold))
                         .foregroundStyle(palette.primaryText)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    if style != .board {
                     Text(ScheduleLiveActivityFormatting.timeRange(start: state.startDate, end: state.endDate))
-                        .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                        .font(style.widgetFont(size: 12, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(palette.secondaryText)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 ScheduleLiveActivityCountdown(state: state)
@@ -456,6 +491,7 @@ private struct ScheduleLiveActivityLockScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // ActivityKit supplies the rounded background, not content insets.
         // Keep every baseline clear of its corners, including the next row.
+        .overlay { WidgetCourseRule(color: palette.accent).padding(.vertical, -3) }
         .padding(.horizontal, 21)
         .padding(.vertical, 14)
         .background(gradient)
@@ -464,20 +500,22 @@ private struct ScheduleLiveActivityLockScreen: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityExpandedDetails: View {
+    @Environment(\.liveActivityPalette) private var palette
+    @Environment(\.scheduleStyle) private var style
     let state: ScheduleLiveActivityAttributes.ContentState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(state.courseName)
-                    .font(.system(size: 19, weight: .bold))
-                    .foregroundStyle(ScheduleLiveActivityPalette.primaryText)
+                    .font(style.widgetFont(size: 19, weight: .bold))
+                    .foregroundStyle(palette.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(ScheduleLiveActivityFormatting.timeRange(start: state.startDate, end: state.endDate))
-                    .font(.system(size: 11, weight: .medium, design: .rounded).monospacedDigit())
-                    .foregroundStyle(ScheduleLiveActivityPalette.secondaryText)
+                    .font(style.widgetFont(size: 11, weight: .medium, design: .rounded).monospacedDigit())
+                    .foregroundStyle(palette.secondaryText)
                     .fixedSize()
             }
             ScheduleLiveActivityChips(state: state)
@@ -487,6 +525,7 @@ private struct ScheduleLiveActivityExpandedDetails: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // The bottom region is clipped by Dynamic Island's own capsule. Keep
         // the progress track and the metadata away from its lower corners.
+        .overlay { WidgetCourseRule(color: palette.accent) }
         .padding(.horizontal, 6)
         .padding(.bottom, 8)
     }
@@ -512,22 +551,23 @@ private struct ScheduleLiveActivityChips: View {
 /// 显示的是别人的课表时，标出是谁的。
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivitySourceChip: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let name: String
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "person.fill")
-                .font(.system(size: 9, weight: .semibold))
+                .font(style.widgetFont(size: 9, weight: .semibold))
             Text(name)
-                .font(.system(size: 11, weight: .semibold))
+                .font(style.widgetFont(size: 11, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
         .foregroundStyle(palette.accent)
         .padding(.horizontal, 7)
         .padding(.vertical, 2)
-        .background(palette.accent.opacity(0.16), in: Capsule())
+        .background(palette.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: style == .minimal ? 100 : style.layout.cornerRadius))
         .fixedSize(horizontal: false, vertical: true)
         .layoutPriority(1)
         .accessibilityLabel("\(name)的课表")
@@ -593,6 +633,7 @@ private struct ScheduleLiveActivityPairEntry {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityPairRow: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let entry: ScheduleLiveActivityPairEntry
     var showsProgress = false
@@ -611,13 +652,13 @@ private struct ScheduleLiveActivityPairRow: View {
             VStack(alignment: .leading, spacing: compact ? 1 : 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(entry.courseName)
-                        .font(.system(size: compact ? 13 : 15, weight: .bold))
+                        .font(style.widgetFont(size: compact ? 13 : 15, weight: .bold))
                         .foregroundStyle(palette.primaryText)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     ScheduleLiveActivityTimerText(interval: entry.timer, showsHours: entry.showsHours)
-                        .font(.system(size: compact ? 12 : 15, weight: .semibold, design: .rounded).monospacedDigit())
+                        .font(style.widgetFont(size: compact ? 12 : 15, weight: .semibold, design: .rounded).monospacedDigit())
                         .foregroundStyle(tint)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -626,18 +667,18 @@ private struct ScheduleLiveActivityPairRow: View {
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(entry.tag)
-                        .font(.system(size: compact ? 9 : 10, weight: .bold))
+                        .font(style.widgetFont(size: compact ? 9 : 10, weight: .bold))
                         .foregroundStyle(tint)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(tint.opacity(0.18), in: Capsule())
+                        .background(tint.opacity(0.18), in: RoundedRectangle(cornerRadius: style == .minimal ? 100 : style.layout.cornerRadius))
                         .frame(maxWidth: compact ? 44 : 72, alignment: .leading)
                         .fixedSize(horizontal: true, vertical: false)
                     if !entry.detail.isEmpty {
                         Text(entry.detail)
-                            .font(.system(size: compact ? 10 : 11, weight: .medium))
+                            .font(style.widgetFont(size: compact ? 10 : 11, weight: .medium))
                             .foregroundStyle(palette.secondaryText)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -645,7 +686,7 @@ private struct ScheduleLiveActivityPairRow: View {
                     Spacer(minLength: 4)
                     if !compact {
                         Text(entry.inProgress ? "距下课" : "距上课")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(style.widgetFont(size: 10, weight: .medium))
                             .foregroundStyle(palette.tertiaryText)
                             .fixedSize()
                     }
@@ -658,6 +699,7 @@ private struct ScheduleLiveActivityPairRow: View {
                 }
             }
         }
+        .overlay { WidgetCourseRule(color: tint) }
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(entry.isOwn ? "我" : entry.tag)：\(entry.courseName)，\(entry.inProgress ? "正在上课" : "即将上课")")
@@ -668,27 +710,29 @@ private struct ScheduleLiveActivityPairRow: View {
 /// 看起来不该存在的课。
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityAdjustmentChip: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let note: String
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "calendar.badge.exclamationmark")
-                .font(.system(size: 10, weight: .semibold))
+                .font(style.widgetFont(size: 10, weight: .semibold))
             Text(note)
-                .font(.system(size: 11, weight: .medium))
+                .font(style.widgetFont(size: 11, weight: .medium))
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .foregroundStyle(ScheduleLiveActivityPalette.brand)
+        .foregroundStyle(style == .minimal ? ScheduleLiveActivityPalette.brand : palette.accent)
         .padding(.horizontal, 7)
         .padding(.vertical, 2)
-        .background(ScheduleLiveActivityPalette.brand.opacity(0.12), in: Capsule())
+        .background((style == .minimal ? ScheduleLiveActivityPalette.brand : palette.accent).opacity(0.12), in: RoundedRectangle(cornerRadius: style == .minimal ? 100 : style.layout.cornerRadius))
     }
 }
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityCourseDetails: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let state: ScheduleLiveActivityAttributes.ContentState
 
@@ -696,7 +740,7 @@ private struct ScheduleLiveActivityCourseDetails: View {
         HStack(spacing: 10) {
             if !state.location.isEmpty {
                 Text(state.location)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(style.widgetFont(size: 13, weight: .semibold))
                     .foregroundStyle(palette.primaryText)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -715,7 +759,7 @@ private struct ScheduleLiveActivityCourseDetails: View {
                         .fixedSize()
                 }
             }
-            .font(.system(size: 12, weight: .medium))
+            .font(style.widgetFont(size: 12, weight: .medium))
             .foregroundStyle(palette.secondaryText)
             .frame(maxWidth: .infinity, alignment: state.location.isEmpty ? .leading : .trailing)
         }
@@ -724,6 +768,7 @@ private struct ScheduleLiveActivityCourseDetails: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityCountdown: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let state: ScheduleLiveActivityAttributes.ContentState
     var compact = false
@@ -732,10 +777,10 @@ private struct ScheduleLiveActivityCountdown: View {
     var body: some View {
         VStack(alignment: centered ? .center : .trailing, spacing: compact ? 1 : 3) {
             Text(state.phase == .inProgress ? "距下课" : "距上课")
-                .font(.system(size: compact ? 10 : 11, weight: .medium))
+                .font(style.widgetFont(size: compact ? 10 : 11, weight: .medium))
                 .foregroundStyle(palette.accent)
             ScheduleLiveActivityTimer(state: state, alignment: centered ? .center : .trailing)
-                .font(.system(size: compact ? 19 : 25, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(style.widgetFont(size: compact ? 19 : 25, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(palette.accent)
         }
         // A timer Text intentionally consumes flexible width. Constraining
@@ -750,6 +795,7 @@ private struct ScheduleLiveActivityCountdown: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityNextCourse: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.liveActivityPalette) private var palette
     let state: ScheduleLiveActivityAttributes.ContentState
 
@@ -759,18 +805,18 @@ private struct ScheduleLiveActivityNextCourse: View {
                 .overlay(palette.divider)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("下一节")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(style.widgetFont(size: 10, weight: .medium))
                     .foregroundStyle(palette.tertiaryText)
                     .fixedSize()
                 Text([state.nextCourseName, state.nextCourseContext].compactMap { $0 }.joined(separator: "  "))
-                    .font(.system(size: 11, weight: .medium))
+                    .font(style.widgetFont(size: 11, weight: .medium))
                     .foregroundStyle(palette.secondaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let start = state.nextCourseStart {
                     Text(ScheduleLiveActivityFormatting.timeRange(start: start, end: state.nextCourseEnd))
-                        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                        .font(style.widgetFont(size: 10, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(palette.tertiaryText)
                         .lineLimit(1)
                         .frame(width: 80, alignment: .trailing)
@@ -784,6 +830,8 @@ private struct ScheduleLiveActivityNextCourse: View {
 
 @available(iOS 16.1, *)
 private struct ScheduleLiveActivityWatchCard: View {
+    private var palette: LiveActivityContentPalette { LiveActivityContentPalette(style: style) }
+    @Environment(\.scheduleStyle) private var style
     let state: ScheduleLiveActivityAttributes.ContentState
 
     var body: some View {
@@ -802,7 +850,8 @@ private struct ScheduleLiveActivityWatchCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .activityBackgroundTint(ScheduleLiveActivityPalette.surface)
+        .environment(\.liveActivityPalette, LiveActivityContentPalette(style: style))
+        .activityBackgroundTint(style.canvasColor(dark: true) ?? ScheduleLiveActivityPalette.surface)
         .activitySystemActionForegroundColor(.white)
     }
 
@@ -812,8 +861,8 @@ private struct ScheduleLiveActivityWatchCard: View {
                 HStack(spacing: 5) {
                     ScheduleLiveActivityLogo(size: 16)
                     Text(state.islandTitle)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(ScheduleLiveActivityPalette.accent)
+                        .font(style.widgetFont(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.accent)
                         .lineLimit(1)
                 }
             }
@@ -828,32 +877,32 @@ private struct ScheduleLiveActivityWatchCard: View {
             HStack(spacing: 5) {
                 ScheduleLiveActivityLogo(size: 16)
                 Text(state.courseName)
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(ScheduleLiveActivityPalette.primaryText)
+                    .font(style.widgetFont(size: 14, weight: .bold))
+                    .foregroundStyle(palette.primaryText)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 4) {
                 Text(state.phaseTitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ScheduleLiveActivityPalette.accent)
+                    .font(style.widgetFont(size: 11, weight: .medium))
+                    .foregroundStyle(palette.accent)
                     .lineLimit(1)
                 Spacer(minLength: 2)
                 ScheduleLiveActivityTimer(state: state)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(ScheduleLiveActivityPalette.primaryText)
+                    .font(style.widgetFont(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(palette.primaryText)
                     .frame(width: 46, alignment: .trailing)
             }
             Text([state.normalizedSourceLabel ?? "", state.location.isEmpty ? state.teacher : state.location, state.periodLabel ?? ""]
                 .filter { !$0.isEmpty }.joined(separator: " · "))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(ScheduleLiveActivityPalette.secondaryText)
+                .font(style.widgetFont(size: 11, weight: .medium))
+                .foregroundStyle(palette.secondaryText)
                 .lineLimit(1)
             if showsTimeRange {
                 Text(ScheduleLiveActivityFormatting.timeRange(start: state.startDate, end: state.endDate))
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(ScheduleLiveActivityPalette.secondaryText)
+                    .font(style.widgetFont(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(palette.secondaryText)
                     .lineLimit(1)
             }
             ScheduleLiveActivityProgress(state: state)
@@ -997,13 +1046,26 @@ private struct ScheduleLiveActivityTimerProgress: View {
 /// The Lock Screen supplies its system appearance to all shared content rows.
 private struct LiveActivityContentPalette {
     var colorScheme: ColorScheme = .dark
+    var style: ScheduleStyle = .minimal
 
-    var primaryText: Color { colorScheme == .dark ? ScheduleLiveActivityPalette.primaryText : .primary }
-    var secondaryText: Color { colorScheme == .dark ? ScheduleLiveActivityPalette.secondaryText : .secondary }
-    var tertiaryText: Color { colorScheme == .dark ? ScheduleLiveActivityPalette.tertiaryText : .secondary }
-    var divider: Color { colorScheme == .dark ? ScheduleLiveActivityPalette.divider : Color.primary.opacity(0.12) }
+    var primaryText: Color {
+        style == .minimal ? (colorScheme == .dark ? ScheduleLiveActivityPalette.primaryText : .primary)
+            : (colorScheme == .dark && style.canvasColor(dark: true) == nil ? .white : style.inkColor(dark: colorScheme == .dark))
+    }
+    var secondaryText: Color {
+        style == .minimal ? (colorScheme == .dark ? ScheduleLiveActivityPalette.secondaryText : .secondary)
+            : primaryText.opacity(0.72)
+    }
+    var tertiaryText: Color {
+        style == .minimal ? (colorScheme == .dark ? ScheduleLiveActivityPalette.tertiaryText : .secondary)
+            : primaryText.opacity(0.7)
+    }
+    var divider: Color { style == .minimal ? (colorScheme == .dark ? ScheduleLiveActivityPalette.divider : Color.primary.opacity(0.12)) : primaryText.opacity(0.25) }
     var accent: Color {
-        colorScheme == .dark ? ScheduleLiveActivityPalette.accent : ScheduleLiveActivityPalette.lightAccent
+        style.styleAccent(
+            dark: colorScheme == .dark,
+            fallback: colorScheme == .dark ? ScheduleLiveActivityPalette.accent : ScheduleLiveActivityPalette.lightAccent
+        )
     }
 }
 
@@ -1262,6 +1324,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
 
     var body: some View {
         let theme = NextWidgetConfiguration.scheduleTheme
+        let style = ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup))
         let displayOptions = NextWidgetConfiguration.displayOptions
         return Group {
             switch entry.state {
@@ -1282,7 +1345,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
                     .overlay(alignment: .topLeading) {
                         if let source = payload.sourceLabel, !source.isEmpty {
                             Text("关注：\(source)")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(style.widgetFont(size: 9, weight: .semibold))
                                 .lineLimit(1)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
@@ -1305,6 +1368,7 @@ private struct ScheduleWidgetRoot<Content: View>: View {
             }
         }
         .environment(\.scheduleWidgetTheme, theme)
+        .scheduleWidgetStyle(style)
         .environment(\.scheduleWidgetColorfulCourses, !NextWidgetConfiguration.solidCourseColors)
         .environment(\.scheduleWidgetDisplayOptions, displayOptions)
         .environment(\.scheduleWidgetConfiguration, entry.configuration)
@@ -1332,7 +1396,8 @@ private struct ScheduleWidgetImageBackground: View {
         let dark = colorScheme == .dark
         GeometryReader { geometry in
             ZStack {
-                WidgetPalette.background(for: colorScheme)
+                let style = ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup))
+                style.canvasColor(dark: dark) ?? WidgetPalette.background(for: colorScheme)
                 if let url = store.visibleImageURL(dark: dark), let image = backgroundImage(url) {
                     image.resizable()
                         .scaledToFill()
@@ -1363,6 +1428,8 @@ private extension WidgetFamily {
 }
 
 private struct WidgetMessageView: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let symbol: String
     let title: String
     let detail: String
@@ -1378,19 +1445,19 @@ private struct WidgetMessageView: View {
             ZStack {
                 AccessoryWidgetBackground()
                 Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(style.widgetFont(size: 20, weight: .semibold))
                     .widgetAccentable()
             }
         case .accessoryRectangular:
             HStack(spacing: 8) {
                 Image(systemName: symbol)
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(style.widgetFont(size: 19, weight: .semibold))
                     .widgetAccentable()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(style.widgetFont(size: 13, weight: .bold))
                     Text(detail)
-                        .font(.system(size: 10))
+                        .font(style.widgetFont(size: 10))
                         .lineLimit(2)
                 }
             }
@@ -1398,14 +1465,14 @@ private struct WidgetMessageView: View {
         default:
             VStack(alignment: .leading, spacing: 8) {
                 Image(systemName: symbol)
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(WidgetPalette.accent(for: theme))
+                    .font(style.widgetFont(size: 24, weight: .semibold))
+                    .foregroundStyle(widgetColors.accent(for: theme))
                 Text(title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(WidgetPalette.primary)
+                    .font(style.widgetFont(size: 15, weight: .bold))
+                    .foregroundStyle(widgetColors.primary)
                 Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(WidgetPalette.secondary)
+                    .font(style.widgetFont(size: 11))
+                    .foregroundStyle(widgetColors.secondary)
                     .lineLimit(3)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -1543,6 +1610,7 @@ private struct UpcomingScheduleView: View {
 }
 
 private struct LockScreenScheduleView: View {
+    @Environment(\.scheduleStyle) private var style
     let day: WidgetDay
     let courses: [WidgetCourse]
     @Environment(\.scheduleWidgetFamily) private var family
@@ -1589,16 +1657,16 @@ private struct LockScreenScheduleView: View {
             if let course = courses.first {
                 VStack(spacing: 0) {
                     Image(systemName: "book.closed.fill")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(style.widgetFont(size: 10, weight: .semibold))
                         .widgetAccentable()
                     if options.showTime {
                         Text(course.startLabel)
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .font(style.widgetFont(size: 12, weight: .bold, design: .rounded))
                             .minimumScaleFactor(0.72)
                     }
                     if let primary = options.primaryValue(for: course), primary != course.timeRange {
                         Text(primary)
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(style.widgetFont(size: 8, weight: .semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.55)
                     }
@@ -1607,10 +1675,10 @@ private struct LockScreenScheduleView: View {
             } else {
                 VStack(spacing: 1) {
                     Image(systemName: emptySymbol)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(style.widgetFont(size: 15, weight: .semibold))
                         .widgetAccentable()
                     Text(notice?.circularText ?? "无课")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(style.widgetFont(size: 9, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 }
@@ -1622,48 +1690,48 @@ private struct LockScreenScheduleView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: courses.isEmpty ? emptySymbol : "book.closed.fill")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(style.widgetFont(size: 10, weight: .semibold))
                     .widgetAccentable()
                 // 换到了别的日子时带上「明天」，锁屏上只有这一行说明是哪天。
                 Text([OtherDay.label(for: day, now: now) ?? "", day.compactDate, day.displayLabel].filter { !$0.isEmpty }.joined(separator: " "))
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(style.widgetFont(size: 10, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 2)
                 if courses.count > 1 {
                     Text("下一节 \(courses[1].startLabel)")
-                        .font(.system(size: 9, weight: .medium))
+                        .font(style.widgetFont(size: 9, weight: .medium))
                         .lineLimit(1)
                 }
             }
             if let course = courses.first {
                 if let primary = options.primaryValue(for: course) {
                     Text(primary)
-                        .font(.system(size: 14, weight: .bold))
+                        .font(style.widgetFont(size: 14, weight: .bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
                 if let metadata = options.metadata(for: course) {
                     Text(metadata)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(style.widgetFont(size: 10, weight: .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
                 if options.showTime {
                     Text(course.timeRange)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(style.widgetFont(size: 10, weight: .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
             } else {
                 let lines = emptyLines
                 Text(lines.primary)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(style.widgetFont(size: 14, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
                 if let secondary = lines.secondary {
                     Text(secondary)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(style.widgetFont(size: 10, weight: .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                 }
@@ -1694,6 +1762,8 @@ private struct LockScreenScheduleView: View {
 }
 
 private struct UpcomingColumn: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     /// 没有就不留标题行（中号标注已经横跨两栏写在上面）。
     let label: String?
     let course: WidgetCourse?
@@ -1708,16 +1778,16 @@ private struct UpcomingColumn: View {
                 OtherDayBanner(day: otherDay)
             } else if let label {
                 Text(label)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(WidgetPalette.secondary)
+                    .font(style.widgetFont(size: 11, weight: .semibold))
+                    .foregroundStyle(widgetColors.secondary)
                     .frame(height: OtherDayBanner.height, alignment: .leading)
             }
             if let course {
                 CourseSummary(course: course, size: size)
             } else {
                 Text("暂无课程")
-                    .font(.system(size: 11))
-                    .foregroundStyle(WidgetPalette.muted)
+                    .font(style.widgetFont(size: 11))
+                    .foregroundStyle(widgetColors.muted)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1725,6 +1795,7 @@ private struct UpcomingColumn: View {
 }
 
 private struct CourseSummary: View {
+    @WidgetStyleColors private var widgetColors
     enum Size {
         /// 小号放两节时的第一节，和中号两栏。
         case regular
@@ -1745,67 +1816,89 @@ private struct CourseSummary: View {
     @Environment(\.scheduleWidgetColorfulCourses) private var colorfulCourses
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleWidgetDisplayOptions) private var options
+    @Environment(\.scheduleStyle) private var style
 
     var body: some View {
+        let appearance = ScheduleWidgetStylePalette(style: style, dark: colorScheme == .dark, theme: ThemePalette.of(NextWidgetConfiguration.globalBrandColor))
         // 色条跟着文字一样高，不拉到底。
         HStack(alignment: .top, spacing: 9) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(WidgetPalette.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
+            RoundedRectangle(cornerRadius: style == .minimal ? 3 : appearance.courseRadius)
+                .fill(widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
                 .frame(width: 5)
                 .frame(maxHeight: .infinity)
-            VStack(alignment: .leading, spacing: lineSpacing) {
+            VStack(alignment: style.layout.centered ? .center : .leading, spacing: lineSpacing) {
+                if options.showTime && style == .board {
+                    Text(course.timeRange)
+                        .font(style.widgetFont(size: size.time, weight: .semibold))
+                        .foregroundStyle(widgetColors.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
                 if let primary = options.primaryValue(for: course) {
                     Text(primary)
-                        .font(.system(size: size.title, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: size.title, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                         .lineLimit(titleLines)
                         .minimumScaleFactor(0.76)
                 }
                 if let metadata = options.metadata(for: course) {
                     Text(metadata)
-                        .font(.system(size: size.metadata))
-                        .foregroundStyle(WidgetPalette.secondary)
+                        .font(style.widgetFont(size: size.metadata))
+                        .foregroundStyle(widgetColors.secondary)
                         .lineLimit(1)
                 }
-                if options.showTime {
+                if options.showTime && style != .board {
                     Text(course.timeRange)
-                        .font(.system(size: size.time, weight: .semibold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: size.time, weight: .semibold))
+                        .foregroundStyle(widgetColors.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 }
             }
+        }
+        .multilineTextAlignment(style.layout.centered ? .center : .leading)
+        .padding(style == .grid ? 4 : 0)
+        .overlay {
+            WidgetCourseRule(color: style == .grid ? widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme) : widgetColors.primary)
         }
         .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 private struct CompactNextCourse: View {
+    @WidgetStyleColors private var widgetColors
     let course: WidgetCourse
     @Environment(\.scheduleWidgetTheme) private var theme
     @Environment(\.scheduleWidgetColorfulCourses) private var colorfulCourses
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleWidgetDisplayOptions) private var options
+    @Environment(\.scheduleStyle) private var style
 
     var body: some View {
+        let appearance = ScheduleWidgetStylePalette(style: style, dark: colorScheme == .dark, theme: ThemePalette.of(NextWidgetConfiguration.globalBrandColor))
         HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(WidgetPalette.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
+            RoundedRectangle(cornerRadius: style == .minimal ? 3 : appearance.courseRadius)
+                .fill(widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
                 .frame(width: 5, height: 27)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: style.layout.centered ? .center : .leading, spacing: 1) {
                 if let primary = options.primaryValue(for: course) {
                     Text(primary)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: 12, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                         .lineLimit(1)
                 }
                 if options.showTime {
                     Text(course.timeRange)
-                        .font(.system(size: 9))
-                        .foregroundStyle(WidgetPalette.secondary)
+                        .font(style.widgetFont(size: 9))
+                        .foregroundStyle(widgetColors.secondary)
                         .lineLimit(1)
                 }
             }
+        }
+        .multilineTextAlignment(style.layout.centered ? .center : .leading)
+        .padding(style == .grid ? 4 : 0)
+        .overlay {
+            WidgetCourseRule(color: style == .grid ? widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme) : widgetColors.primary)
         }
     }
 }
@@ -1969,6 +2062,7 @@ private struct TodayScheduleView: View {
 }
 
 private struct TodayCourseRow: View {
+    @WidgetStyleColors private var widgetColors
     let course: WidgetCourse
     let large: Bool
     let timeOnSeparateLine: Bool
@@ -1980,23 +2074,25 @@ private struct TodayCourseRow: View {
     @Environment(\.scheduleWidgetColorfulCourses) private var colorfulCourses
     @Environment(\.widgetRenderingMode) private var renderingMode
     @Environment(\.scheduleWidgetDisplayOptions) private var options
+    @Environment(\.scheduleStyle) private var style
 
     var body: some View {
+        let appearance = ScheduleWidgetStylePalette(style: style, dark: colorScheme == .dark, theme: ThemePalette.of(NextWidgetConfiguration.globalBrandColor))
         HStack(spacing: large ? 9 : 6) {
-            RoundedRectangle(cornerRadius: 3)
-                .fill(WidgetPalette.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
+            RoundedRectangle(cornerRadius: style == .minimal ? 3 : appearance.courseRadius)
+                .fill(widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme))
                 .frame(width: 5, height: large ? 40 : (timeOnSeparateLine ? 39 : 29))
             VStack(alignment: .leading, spacing: 2) {
                 if let primary = options.primaryValue(for: course) {
                     Text(primary)
-                        .font(.system(size: large ? 14 : 12, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: large ? 14 : 12, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                         .lineLimit(1)
                 }
                 if let metadata = options.metadata(for: course) {
                     Text(metadata)
-                        .font(.system(size: large ? 10 : 9, weight: .medium))
-                        .foregroundStyle(WidgetPalette.secondary)
+                        .font(style.widgetFont(size: large ? 10 : 9, weight: .medium))
+                        .foregroundStyle(widgetColors.secondary)
                         .lineLimit(1)
                 }
                 if timeOnSeparateLine && options.showTime {
@@ -2012,15 +2108,20 @@ private struct TodayCourseRow: View {
         .padding(.horizontal, large ? 9 : 7)
         .padding(.vertical, verticalPadding ?? (large ? 6 : 4))
         .background {
-            RoundedRectangle(cornerRadius: large ? 11 : 8)
+            RoundedRectangle(cornerRadius: style == .minimal ? (large ? 11 : 8) : appearance.courseRadius)
                 .fill(
                     renderingMode == .fullColor
-                        ? WidgetPalette.tint(for: course, colorScheme: colorScheme, theme: theme, colorful: colorfulCourses)
+                        ? (style == .minimal
+                            ? widgetColors.tint(for: course, colorScheme: colorScheme, theme: theme, colorful: colorfulCourses)
+                            : widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme).opacity(appearance.courseFillOpacity))
                         : Color.white
                 )
                 // Clear and tinted Home Screen appearances render widgets in
                 // accented mode and remap opaque colors to solid white.
                 .opacity(renderingMode == .fullColor ? 1 : 0.14)
+        }
+        .overlay {
+            WidgetCourseRule(color: style == .grid ? widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme) : widgetColors.primary)
         }
         .saturation(completed ? 0 : 1)
         .opacity(completed ? 0.56 : 1)
@@ -2028,8 +2129,8 @@ private struct TodayCourseRow: View {
 
     private var timeLabel: some View {
         Text(course.timeRange)
-            .font(.system(size: large ? 10 : 9, weight: .semibold))
-            .foregroundStyle(WidgetPalette.primary)
+            .font(style.widgetFont(size: large ? 10 : 9, weight: .semibold))
+            .foregroundStyle(widgetColors.primary)
             .lineLimit(1)
             .minimumScaleFactor(0.72)
     }
@@ -2210,6 +2311,7 @@ private struct TimelineMetrics {
 }
 
 private struct TimelineCourseRow: View {
+    @WidgetStyleColors private var widgetColors
     let course: WidgetCourse
     let completed: Bool
     let inProgress: Bool
@@ -2219,21 +2321,23 @@ private struct TimelineCourseRow: View {
     @Environment(\.scheduleWidgetColorfulCourses) private var colorfulCourses
     @Environment(\.widgetRenderingMode) private var renderingMode
     @Environment(\.scheduleWidgetDisplayOptions) private var options
+    @Environment(\.scheduleStyle) private var style
 
     var body: some View {
-        let accent = WidgetPalette.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme)
+        let appearance = ScheduleWidgetStylePalette(style: style, dark: colorScheme == .dark, theme: ThemePalette.of(NextWidgetConfiguration.globalBrandColor))
+        let accent = widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme)
         HStack(alignment: .top, spacing: metrics.columnSpacing) {
             if options.showTime {
                 // 开始时间对着卡片顶，结束时间对着卡片底：卡片被拉高时，一眼看得出这门课有多长。
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(course.startLabel)
-                        .font(.system(size: metrics.startFont, weight: .bold))
-                        .foregroundStyle(inProgress ? accent : WidgetPalette.primary)
+                        .font(style.widgetFont(size: metrics.startFont, weight: .bold))
+                        .foregroundStyle(inProgress ? accent : widgetColors.primary)
                     Spacer(minLength: 2)
                     if let end = endLabel {
                         Text(end)
-                            .font(.system(size: metrics.endFont, weight: .medium))
-                            .foregroundStyle(WidgetPalette.secondary)
+                            .font(style.widgetFont(size: metrics.endFont, weight: .medium))
+                            .foregroundStyle(widgetColors.secondary)
                     }
                 }
                 .monospacedDigit()
@@ -2244,7 +2348,7 @@ private struct TimelineCourseRow: View {
                 .frame(maxHeight: .infinity)
             }
             HStack(alignment: .top, spacing: metrics.barSpacing) {
-                RoundedRectangle(cornerRadius: 2.5)
+                RoundedRectangle(cornerRadius: style == .minimal ? 2.5 : appearance.courseRadius)
                     .fill(accent)
                     .frame(width: 5)
                     .frame(maxHeight: .infinity)
@@ -2271,13 +2375,18 @@ private struct TimelineCourseRow: View {
             .padding(.vertical, 5)
             .frame(maxHeight: .infinity, alignment: .top)
             .background {
-                RoundedRectangle(cornerRadius: metrics.cornerRadius)
+                RoundedRectangle(cornerRadius: style == .minimal ? metrics.cornerRadius : appearance.courseRadius)
                     .fill(
                         renderingMode == .fullColor
-                            ? WidgetPalette.tint(for: course, colorScheme: colorScheme, theme: theme, colorful: colorfulCourses)
+                            ? (style == .minimal
+                                ? widgetColors.tint(for: course, colorScheme: colorScheme, theme: theme, colorful: colorfulCourses)
+                                : accent.opacity(appearance.courseFillOpacity))
                             : Color.white
                     )
                     .opacity(renderingMode == .fullColor ? 1 : 0.14)
+            }
+            .overlay {
+                WidgetCourseRule(color: style == .grid ? widgetColors.accent(for: course, theme: theme, colorful: colorfulCourses, colorScheme: colorScheme) : widgetColors.primary)
             }
         }
         .saturation(completed ? 0 : 1)
@@ -2288,15 +2397,15 @@ private struct TimelineCourseRow: View {
     private var titleText: some View {
         if let primary = options.primaryValue(for: course) {
             Text(primary)
-                .font(.system(size: metrics.titleFont, weight: .bold))
-                .foregroundStyle(WidgetPalette.primary)
+                .font(style.widgetFont(size: metrics.titleFont, weight: .bold))
+                .foregroundStyle(widgetColors.primary)
         }
     }
 
     private func metaText(_ value: String) -> some View {
         Text(value)
-            .font(.system(size: metrics.metaFont, weight: .medium))
-            .foregroundStyle(WidgetPalette.secondary)
+            .font(style.widgetFont(size: metrics.metaFont, weight: .medium))
+            .foregroundStyle(widgetColors.secondary)
     }
 
     /// 放在左下角的教室。关了课程名时教室已经顶上去当标题了，不再写一遍。
@@ -2317,6 +2426,8 @@ private struct TimelineCourseRow: View {
 
 /// 两门课之间：一道对着色条的虚线，长的课间在旁边写上歇多久。
 private struct TimelineGap: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let minutes: Int
     let labeled: Bool
     let showsTimeColumn: Bool
@@ -2334,12 +2445,12 @@ private struct TimelineGap: View {
                 HStack(spacing: metrics.barSpacing - 1) {
                     DashedLine()
                         .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [0.1, 4]))
-                        .foregroundStyle(WidgetPalette.muted)
+                        .foregroundStyle(widgetColors.muted)
                         .frame(width: 2)
                         .padding(.leading, metrics.barCenter - 1)
                     Text(isNow ? "休息中 · \(Self.duration(minutes))" : "休息 \(Self.duration(minutes))")
-                        .font(.system(size: metrics.gapFont, weight: .semibold))
-                        .foregroundStyle(isNow ? WidgetPalette.accent(for: theme) : WidgetPalette.muted)
+                        .font(style.widgetFont(size: metrics.gapFont, weight: .semibold))
+                        .foregroundStyle(isNow ? widgetColors.accent(for: theme) : widgetColors.muted)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .padding(.vertical, 5)
@@ -2506,17 +2617,21 @@ private struct DayColumn: View {
 
 /// 「后面还有 N 门课」。没显示的都排在最后一行之后（已经上完的才会被省在前面），所以说「后面」。
 private struct RemainingCoursesText: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let count: Int
 
     var body: some View {
         Text("后面还有 \(count) 门课")
-            .font(.system(size: 9, weight: .medium))
-            .foregroundStyle(WidgetPalette.muted)
+            .font(style.widgetFont(size: 9, weight: .medium))
+            .foregroundStyle(widgetColors.muted)
             .lineLimit(1)
     }
 }
 
 private struct WidgetDateHeader: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let day: WidgetDay
     /// 两日课表的列只有半个组件宽：右侧的节日徽标和第二行的假期倒计时在那里放不下。
     var compact = false
@@ -2609,8 +2724,8 @@ private struct WidgetDateHeader: View {
         HStack(spacing: 6) {
             if let name {
                 Text(name)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(WidgetPalette.muted)
+                    .font(style.widgetFont(size: 9, weight: .semibold))
+                    .foregroundStyle(widgetColors.muted)
                     .lineLimit(1)
                     .fixedSize()
                     .opacity(hidesTableName ? 0 : 1)
@@ -2637,8 +2752,8 @@ private struct WidgetDateHeader: View {
         return HStack(spacing: isCompact ? 4 : (isLarge ? 8 : 6)) {
             // 小号里一行很挤，日期绝不能被压得折行，宁可让右边的周数让位。
             Text(day.dayOfMonthLabel)
-                .font(.system(size: dateFontSize, weight: .bold, design: .rounded))
-                .foregroundStyle(WidgetPalette.primary)
+                .font(style.widgetFont(size: dateFontSize, weight: .bold, design: .rounded))
+                .foregroundStyle(widgetColors.primary)
                 .lineLimit(1)
                 .fixedSize()
 
@@ -2650,7 +2765,7 @@ private struct WidgetDateHeader: View {
                     weight: .bold,
                     color: weekday == "周六" || weekday == "周日"
                         ? Color.pink
-                        : WidgetPalette.accent(for: theme)
+                        : widgetColors.accent(for: theme)
                 )
             }
 
@@ -2705,15 +2820,15 @@ private struct WidgetDateHeader: View {
     /// 不给字号就是这个尺寸的默认字号（大号放大过）。
     private func weekLabel(_ text: String, size: CGFloat? = nil) -> some View {
         Text(text)
-            .font(.system(size: size ?? 10 + min(sizeBoost, 2), weight: .semibold))
-            .foregroundStyle(WidgetPalette.secondary)
+            .font(style.widgetFont(size: size ?? 10 + min(sizeBoost, 2), weight: .semibold))
+            .foregroundStyle(widgetColors.secondary)
             .lineLimit(1)
             .fixedSize()
     }
 
     private var columnDivider: some View {
         Rectangle()
-            .fill(WidgetPalette.muted.opacity(0.45))
+            .fill(widgetColors.muted.opacity(0.45))
             .frame(width: 1, height: columnHeight)
     }
 
@@ -2725,7 +2840,7 @@ private struct WidgetDateHeader: View {
         return VStack(spacing: characters.count > 2 ? -1 : 0) {
             ForEach(Array(characters.enumerated()), id: \.offset) { _, character in
                 Text(String(character))
-                    .font(.system(size: size, weight: weight))
+                    .font(style.widgetFont(size: size, weight: weight))
                     .foregroundStyle(color)
             }
         }
@@ -2763,7 +2878,7 @@ private struct WidgetDateHeader: View {
     }
 
     private var detailColor: Color {
-        return WidgetPalette.secondary
+        return widgetColors.secondary
     }
 
     /// 开了「始终显示最近节假日」时，今天不在假期里就提示最近的一段法定假期（看未来 120 天）。
@@ -2779,6 +2894,8 @@ private struct WidgetDateHeader: View {
 /// 日期栏第二行右边常驻的假期倒计时：「距国庆节还有 5 天」，天数用主题色大一号。
 /// 只报还剩几天，右边缘和上一行的「第 N 周」对齐：多一个色块或日期，两行的右端就对不上了。
 private struct HolidayCountdownChip: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let countdown: ChineseHolidayCountdown
     /// 大号日期栏放大过字，这里跟着放大一点。
     var sizeBoost: CGFloat = 0
@@ -2786,44 +2903,46 @@ private struct HolidayCountdownChip: View {
     @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
-        countdownText(tint: renderingMode == .fullColor ? WidgetPalette.accent(for: theme) : WidgetPalette.primary)
+        countdownText(tint: renderingMode == .fullColor ? widgetColors.accent(for: theme) : widgetColors.primary)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
     }
 
     private func countdownText(tint: Color) -> Text {
         let leading = Text(countdown.leading)
-            .font(.system(size: 10 + sizeBoost, weight: .semibold))
-            .foregroundColor(WidgetPalette.secondary)
+            .font(style.widgetFont(size: 10 + sizeBoost, weight: .semibold))
+            .foregroundColor(widgetColors.secondary)
         guard let amount = countdown.amount else { return leading }
         return leading
             + Text(" ")
             + Text(amount)
-                .font(.system(size: 12 + sizeBoost, weight: .bold, design: .rounded))
+                .font(style.widgetFont(size: 12 + sizeBoost, weight: .bold, design: .rounded))
                 .foregroundColor(tint)
             + Text(" " + countdown.trailing)
-                .font(.system(size: 10 + sizeBoost, weight: .semibold))
-                .foregroundColor(WidgetPalette.secondary)
+                .font(style.widgetFont(size: 10 + sizeBoost, weight: .semibold))
+                .foregroundColor(widgetColors.secondary)
     }
 }
 
 /// 选了「接着显示下一次课」、小组件换到别的日子时，日期栏上的标注：「明天的课」「10/2 的课」。
 private struct OtherDayChip: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let title: String
     @Environment(\.scheduleWidgetTheme) private var theme
     @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
-        let tint = WidgetPalette.accent(for: theme)
+        let tint = widgetColors.accent(for: theme)
         Text(title)
-            .font(.system(size: 9, weight: .bold))
+            .font(style.widgetFont(size: 9, weight: .bold))
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background {
                 Capsule().fill(renderingMode == .fullColor ? tint.opacity(0.16) : Color.white.opacity(0.14))
             }
-            .foregroundStyle(renderingMode == .fullColor ? tint : WidgetPalette.primary)
+            .foregroundStyle(renderingMode == .fullColor ? tint : widgetColors.primary)
     }
 }
 
@@ -2861,6 +2980,8 @@ private enum OtherDay {
 /// 课程换成了别的日子（「接着显示下一次课」）时，挂在课程正上方的标注：实心的「明天」加上
 /// 那天的日期和星期。日期栏上的小胶囊不够显眼，紧贴着课放才看得出下面不是今天的课。
 private struct OtherDayBanner: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     /// 胶囊的高度。临近课程的纯文字标题也占这么高，换不换日子课的位置都不跳。
     static let height: CGFloat = 16
 
@@ -2870,7 +2991,7 @@ private struct OtherDayBanner: View {
     @Environment(\.scheduleWidgetNow) private var now
 
     var body: some View {
-        let tint = WidgetPalette.accent(for: theme)
+        let tint = widgetColors.accent(for: theme)
         let fullColor = renderingMode == .fullColor
         // 醒目只交给胶囊一处，后面的星期用灰字：再用强调色写一遍日期，就和上面日期栏的
         // 今天叠成两行日期，分不清哪个是课的日子。明天、后天不写日期，胶囊已经说了。
@@ -2880,17 +3001,17 @@ private struct OtherDayBanner: View {
             .joined(separator: " ")
         HStack(spacing: 5) {
             Text(OtherDay.label(for: day, now: now) ?? "")
-                .font(.system(size: 10, weight: .heavy))
+                .font(style.widgetFont(size: 10, weight: .heavy))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background {
                     Capsule().fill(fullColor ? tint : Color.white.opacity(0.28))
                 }
-                .foregroundStyle(fullColor ? Color.white : WidgetPalette.primary)
+                .foregroundStyle(fullColor ? Color.white : widgetColors.primary)
                 .widgetAccentable()
             Text(detail)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(WidgetPalette.secondary)
+                .font(style.widgetFont(size: 11, weight: .semibold))
+                .foregroundStyle(widgetColors.secondary)
         }
         .lineLimit(1)
         .fixedSize()
@@ -2900,6 +3021,8 @@ private struct OtherDayBanner: View {
 
 /// 日期栏下面那行调休提示：「上 10.9 周四的课」「国庆节放假」。
 private struct AdjustmentNoteChip: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let note: String
     @Environment(\.scheduleWidgetTheme) private var theme
     @Environment(\.widgetRenderingMode) private var renderingMode
@@ -2907,34 +3030,36 @@ private struct AdjustmentNoteChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 8, weight: .bold))
+                .font(style.widgetFont(size: 8, weight: .bold))
             Text(note)
-                .font(.system(size: 9, weight: .semibold))
+                .font(style.widgetFont(size: 9, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
-        .foregroundStyle(renderingMode == .fullColor ? WidgetPalette.accent(for: theme) : WidgetPalette.primary)
+        .foregroundStyle(renderingMode == .fullColor ? widgetColors.accent(for: theme) : widgetColors.primary)
     }
 }
 
 /// 节日/法定假期徽标。法定假期用粉色，普通节日和节气跟随主题色。
 private struct HolidayBadge: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let title: String
     let highlighted: Bool
     @Environment(\.scheduleWidgetTheme) private var theme
     @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
-        let tint = highlighted ? Color.pink : WidgetPalette.accent(for: theme)
+        let tint = highlighted ? Color.pink : widgetColors.accent(for: theme)
         Text(title)
-            .font(.system(size: 9, weight: .bold))
+            .font(style.widgetFont(size: 9, weight: .bold))
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background {
                 Capsule().fill(renderingMode == .fullColor ? tint.opacity(0.16) : Color.white.opacity(0.14))
             }
-            .foregroundStyle(renderingMode == .fullColor ? tint : WidgetPalette.primary)
+            .foregroundStyle(renderingMode == .fullColor ? tint : widgetColors.primary)
     }
 }
 
@@ -2980,12 +3105,14 @@ private enum RestState {
 }
 
 private struct EmptyCoursesView: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let message: String
 
     var body: some View {
         Text(message)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(WidgetPalette.muted)
+            .font(style.widgetFont(size: 12, weight: .semibold))
+            .foregroundStyle(widgetColors.muted)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
@@ -2993,6 +3120,8 @@ private struct EmptyCoursesView: View {
 /// 两日课表放假当天今天那一列：图标、祝福，下面是这段假期的日期和进度（一天一个点，过去的和今天实心）。
 /// 半个组件宽、一整列高，只写一行「国庆快乐」太空。关掉节假日提示时只留图标和祝福。
 private struct HolidayGreetingView: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let greeting: String
     @Environment(\.scheduleWidgetDisplayOptions) private var options
     @Environment(\.scheduleWidgetCelebrating) private var celebrating
@@ -3007,12 +3136,12 @@ private struct HolidayGreetingView: View {
                 icon
                 VStack(spacing: 4) {
                     Text(greeting)
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: 17, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                     if let countdown {
                         Text(Self.dateText(for: countdown, now: now))
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(WidgetPalette.secondary)
+                            .font(style.widgetFont(size: 10, weight: .medium))
+                            .foregroundStyle(widgetColors.secondary)
                     }
                 }
                 .lineLimit(1)
@@ -3022,14 +3151,14 @@ private struct HolidayGreetingView: View {
                         HStack(spacing: 4) {
                             ForEach(1...progress.total, id: \.self) { index in
                                 Circle()
-                                    .fill(index <= progress.day ? Color.pink : WidgetPalette.muted.opacity(0.3))
+                                    .fill(index <= progress.day ? Color.pink : widgetColors.muted.opacity(0.3))
                                     .frame(width: 6, height: 6)
                                     .widgetAccentable(index <= progress.day)
                             }
                         }
                         Text(progress.day == progress.total ? "假期最后一天" : "第 \(progress.day) 天 · 还剩 \(progress.total - progress.day) 天")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(WidgetPalette.muted)
+                            .font(style.widgetFont(size: 9, weight: .semibold))
+                            .foregroundStyle(widgetColors.muted)
                             .lineLimit(1)
                     }
                     .padding(.top, 2)
@@ -3048,7 +3177,7 @@ private struct HolidayGreetingView: View {
     @ViewBuilder
     private var icon: some View {
         let image = Image(systemName: isSolemn ? "leaf.fill" : "party.popper.fill")
-            .font(.system(size: 30, weight: .semibold))
+            .font(style.widgetFont(size: 30, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(Color.pink)
             .widgetAccentable()
@@ -3101,6 +3230,8 @@ private struct FireworksOriginKey: PreferenceKey {
 /// 最近的一段假期和「临近课程」里的一节课一个排法（小标签、标题、一行说明），贴着底边。
 /// 放假当天不写上面那行，「放假中 / 国庆快乐」已经说明了。没有假期可说时只居中说今天。
 private struct RestStateView: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     /// 今天排过课（已经上完）还是本来就没课。
     let hadCourses: Bool
     @Environment(\.scheduleWidgetDisplayOptions) private var options
@@ -3133,8 +3264,8 @@ private struct RestStateView: View {
             Image(systemName: hadCourses ? "checkmark.circle.fill" : "moon.zzz.fill")
         }
         .labelStyle(StatusLabelStyle())
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(WidgetPalette.muted)
+        .font(style.widgetFont(size: 11, weight: .semibold))
+        .foregroundStyle(widgetColors.muted)
         .lineLimit(1)
         .minimumScaleFactor(0.8)
     }
@@ -3142,17 +3273,17 @@ private struct RestStateView: View {
     private func holidayBlock(_ holiday: (caption: String, title: String, detail: String)) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(holiday.caption)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(WidgetPalette.secondary)
+                .font(style.widgetFont(size: 11, weight: .semibold))
+                .foregroundStyle(widgetColors.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(holiday.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(WidgetPalette.primary)
+                    .font(style.widgetFont(size: 15, weight: .bold))
+                    .foregroundStyle(widgetColors.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.76)
                 Text(holiday.detail)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(WidgetPalette.secondary)
+                    .font(style.widgetFont(size: 10, weight: .medium))
+                    .foregroundStyle(widgetColors.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -3235,6 +3366,8 @@ private extension WidgetScheduleNotice {
 
 /// 小号、中号的放假 / 过期状态：和假期倒计时一样贴着底边，图标、大字标题、一行说明。
 private struct ScheduleNoticeBlock: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let notice: WidgetScheduleNotice
     @Environment(\.scheduleWidgetNow) private var now
 
@@ -3243,20 +3376,20 @@ private struct ScheduleNoticeBlock: View {
             Spacer(minLength: 6)
             VStack(alignment: .leading, spacing: 6) {
                 Image(systemName: notice.symbol)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(style.widgetFont(size: 20, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(notice.tint)
                     .widgetAccentable()
                 VStack(alignment: .leading, spacing: 2) {
                     Text(notice.title)
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: 17, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     if let detail = notice.detail(now: now) {
                         Text(detail)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(WidgetPalette.secondary)
+                            .font(style.widgetFont(size: 10, weight: .medium))
+                            .foregroundStyle(widgetColors.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.8)
                     }
@@ -3269,6 +3402,8 @@ private struct ScheduleNoticeBlock: View {
 
 /// 大号（今日课表、两日课表）的放假 / 过期状态：和放假祝福一样把图标、标题摆在中间。
 private struct ScheduleNoticeGreetingView: View {
+    @Environment(\.scheduleStyle) private var style
+    @WidgetStyleColors private var widgetColors
     let notice: WidgetScheduleNotice
     @Environment(\.scheduleWidgetNow) private var now
 
@@ -3277,18 +3412,18 @@ private struct ScheduleNoticeGreetingView: View {
             Spacer(minLength: 0)
             VStack(spacing: 10) {
                 Image(systemName: notice.symbol)
-                    .font(.system(size: 34, weight: .semibold))
+                    .font(style.widgetFont(size: 34, weight: .semibold))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(notice.tint)
                     .widgetAccentable()
                 VStack(spacing: 4) {
                     Text(notice.title)
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(WidgetPalette.primary)
+                        .font(style.widgetFont(size: 20, weight: .bold))
+                        .foregroundStyle(widgetColors.primary)
                     if let detail = notice.detail(now: now) {
                         Text(detail)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(WidgetPalette.secondary)
+                            .font(style.widgetFont(size: 11, weight: .medium))
+                            .foregroundStyle(widgetColors.secondary)
                     }
                 }
                 .lineLimit(1)
@@ -3304,16 +3439,17 @@ private struct ScheduleNoticeGreetingView: View {
 
 /// 图标和字挨近一点，默认的 Label 间距在小组件里显得散。
 private struct StatusLabelStyle: LabelStyle {
+    @Environment(\.scheduleStyle) private var style
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 4) {
             configuration.icon
-                .font(.system(size: 10, weight: .semibold))
+                .font(style.widgetFont(size: 10, weight: .semibold))
             configuration.title
         }
     }
 }
 
-private enum WidgetPalette {
+enum WidgetPalette {
     static let primary = Color.primary
     static let secondary = Color.secondary
     static let muted = Color.secondary.opacity(0.72)
@@ -3531,7 +3667,7 @@ enum WidgetGalleryViews {
     }
 
     static func widgetBackground(for colorScheme: ColorScheme) -> Color {
-        WidgetPalette.background(for: colorScheme)
+        ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup)).canvasColor(dark: colorScheme == .dark) ?? WidgetPalette.background(for: colorScheme)
     }
 
     static func liveActivity(
@@ -3540,27 +3676,28 @@ enum WidgetGalleryViews {
         attributes: ScheduleLiveActivityAttributes,
         isStale: Bool
     ) -> AnyView {
+        let style = ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup))
         let display = ScheduleLiveActivityDisplay(state: state, isStale: isStale, attributes: attributes)
         switch part {
         case .lockScreen:
-            return AnyView(ScheduleLiveActivityLockScreenContent(display: display).environment(\.activityFamily, .medium))
+            return AnyView(ScheduleLiveActivityLockScreenContent(display: display).environment(\.activityFamily, .medium).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .watch:
-            return AnyView(ScheduleLiveActivityLockScreenContent(display: display).environment(\.activityFamily, .small))
+            return AnyView(ScheduleLiveActivityLockScreenContent(display: display).environment(\.activityFamily, .small).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .islandLeading:
-            return AnyView(ScheduleLiveActivityIslandLeading(display: display))
+            return AnyView(ScheduleLiveActivityIslandLeading(display: display).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .islandTrailing:
-            return AnyView(ScheduleLiveActivityIslandTrailing(display: display))
+            return AnyView(ScheduleLiveActivityIslandTrailing(display: display).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .islandBottom:
-            return AnyView(ScheduleLiveActivityIslandBottom(display: display))
+            return AnyView(ScheduleLiveActivityIslandBottom(display: display).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .compactLeading, .minimal:
-            return AnyView(ScheduleLiveActivityLogo(size: 21))
+            return AnyView(ScheduleLiveActivityLogo(size: 21).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         case .compactTrailing:
-            return AnyView(ScheduleLiveActivityIslandCompactTrailing(display: display))
+            return AnyView(ScheduleLiveActivityIslandCompactTrailing(display: display).scheduleWidgetStyle(style).environment(\.liveActivityPalette, LiveActivityContentPalette(style: style)))
         }
     }
 
     /// 手表智能叠放和收尾卡片用的深色底（`activityBackgroundTint`）。
-    static var activitySurface: Color { ScheduleLiveActivityPalette.surface }
+    static var activitySurface: Color { ScheduleStyle.load(from: UserDefaults(suiteName: NextWidgetConfiguration.appGroup)).canvasColor(dark: true) ?? ScheduleLiveActivityPalette.surface }
 }
 #endif
 

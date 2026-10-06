@@ -129,6 +129,34 @@ class ServerTests(unittest.TestCase):
         self.assertIn('NapTable 管理台', self.req_text('GET','/admin/'))
         self.assertIn('text/css', self.req_headers('GET','/static/admin.css')['Content-Type'])
         self.assertIn('application/javascript', self.req_headers('GET','/static/admin.js')['Content-Type'])
+    def test_admin_deep_links_support_direct_load_and_head(self):
+        pages = ('schools', 'calendar', 'announcements', 'apns', 'image-import',
+                 'shares', 'entitlements', 'stats', 'audit')
+        connection = http.client.HTTPConnection('127.0.0.1', self.http.server_port, timeout=5)
+        try:
+            for page in pages:
+                for suffix in ('', '/'):
+                    for method in ('GET', 'HEAD'):
+                        with self.subTest(page=page, suffix=suffix, method=method):
+                            connection.request(method, f'/admin/{page}{suffix}')
+                            response = connection.getresponse()
+                            body = response.read().decode()
+                            self.assertEqual(response.status, 200)
+                            self.assertIn('text/html', response.getheader('Content-Type'))
+                            self.assertEqual(response.getheader('Cache-Control'), 'no-store')
+                            if method == 'GET':
+                                self.assertIn('NapTable 管理台', body)
+                                self.assertNotIn('__ADMIN_', body)
+                            else:
+                                self.assertEqual(body, '')
+            for path in ('/admin/missing', '/admin/stats/extra'):
+                connection.request('GET', path)
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 404)
+        finally:
+            connection.close()
+
     def test_public_website_is_served(self):
         self.assertIn('/privacy', self.req_text('GET','/'))
         self.assertIn('隐私政策', self.req_text('GET','/privacy'))

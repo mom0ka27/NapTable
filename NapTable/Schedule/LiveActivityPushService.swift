@@ -286,7 +286,7 @@ final class LiveActivityPushService: ObservableObject {
             defaults.set((status["timetableRevision"] as? Int ?? 0) + 1, forKey: Self.revisionKey)
             (code, response) = try await send("/devices/\(device)/timetable", method: "PUT", body: timetable.merging(["revision": defaults.integer(forKey: Self.revisionKey)]) { _, new in new })
         }
-        if code == 404, timetable["follow"] != nil { throw ScheduleServiceError.server("关注的共享课表已失效，请重新关注。") }
+        if code == 404, timetable["follow"] != nil { throw ScheduleServiceError.server("设为关心的共享课表已失效，请向对方要新的分享码后重新导入。") }
         guard (200..<300).contains(code) else { throw ScheduleServiceError.server(response["error"] as? String ?? "HTTP \(code)") }
         uploadedDigest = digest
         acceptChannels(response)
