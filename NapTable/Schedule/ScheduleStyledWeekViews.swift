@@ -176,29 +176,32 @@ struct ScheduleStyledCourseTile: View {
         case .card, .departure: 0
         }
     }
-    /// The board has no fill and no bar, so a small course-color mark leads the name.
-    private var courseName: Text {
-        guard style.layout.course == .departure else { return Text(course.name) }
-        // The inverted tile swaps light and dark, so its mark takes the course color of the other scheme.
-        let mark = inverse ? swatch.accent(scheme: dark ? .light : .dark) : accent
-        return Text("■ ").font(.system(size: 7)).baselineOffset(1.5).foregroundColor(mark) + Text(course.name)
-    }
+    /// The board has no fill and no bar, so a small course-color mark sits beside the start time.
+    /// It stays off the name's own line: in a narrow column a mark there leaves room for only two
+    /// characters before the name wraps. The inverted tile swaps light and dark, so its mark takes
+    /// the course color of the other scheme.
+    private var mark: Color { inverse ? swatch.accent(scheme: dark ? .light : .dark) : accent }
 
     var body: some View {
         GeometryReader { geometry in
             let short = geometry.size.height < 64
             let small = compact || short
             VStack(alignment: style.layout.centered ? .center : .leading, spacing: small ? 2 : 4) {
-                if style == .board, let start {
-                    Text(start).font(.system(size: small ? 10 : 14, weight: .heavy, design: .monospaced))
-                        .lineLimit(1).minimumScaleFactor(0.7)
+                if style.layout.course == .departure {
+                    HStack(spacing: 3) {
+                        RoundedRectangle(cornerRadius: 1).fill(mark)
+                            .frame(width: small ? 5 : 7, height: small ? 5 : 7)
+                        if let start {
+                            Text(start).font(.system(size: small ? 10 : 14, weight: .heavy, design: .monospaced))
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                    }
                 }
-                courseName
+                Text(course.name)
                     .font(.system(size: small ? 11 : 13, weight: .semibold, design: style.fontDesign))
                     .lineLimit(short ? 2 : (compact ? 4 : 3))
                     .minimumScaleFactor(0.8)
                     .layoutPriority(1)
-                    .accessibilityLabel(course.name)
                 if let location = NativeScheduleCourseCard.displayLocation(course.location) {
                     Text("@\(location)")
                         .font(.system(size: small ? 9 : 11, weight: .medium, design: style.fontDesign))
