@@ -219,7 +219,8 @@ struct NativeScheduleDayColumn: View {
                 ScheduleStyledWeekCell(today: marksToday, holiday: adjustment?.kind == .off,
                     startsSession: previous.map { ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(slot.start) } ?? true,
                     covered: covered, joinsBelow: covering.contains { $0.endSlot > slot.number },
-                    joinsAbove: covering.contains { $0.startSlot < slot.number })
+                    joinsAbove: covering.contains { $0.startSlot < slot.number },
+                    closesColumn: slot.number == rows.last?.number)
                     .frame(width: columnWidth, height: rowHeight + (style == .table && slot.number != rows.last?.number ? Self.slotGap : 0))
                     .contentShape(Rectangle())
                     .modifier(ScheduleEmptySlotInteraction(slot: slot.number, isEditable: isEditable && !occupied, onAdd: onEmptySlot))

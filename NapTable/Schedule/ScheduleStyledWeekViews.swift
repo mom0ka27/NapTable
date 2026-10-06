@@ -103,6 +103,9 @@ struct ScheduleStyledWeekCell: View {
     var joinsBelow = false
     /// The course in this period began in an earlier one. The board rules the top of each cell.
     var joinsAbove = false
+    /// The last period of the column. Paper rules the bottom of each cell, and one more rule here
+    /// would sit right above the panel's double frame.
+    var closesColumn = false
 
     var body: some View {
         let dark = scheme == .dark
@@ -136,7 +139,7 @@ struct ScheduleStyledWeekCell: View {
             }
         case .rows:
             Color.clear.overlay(alignment: .bottom) {
-                if !joinsBelow {
+                if !joinsBelow && !closesColumn {
                     Rectangle().fill(style.inkColor(dark: dark).opacity(0.16)).frame(height: 0.5)
                 }
             }
