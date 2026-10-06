@@ -435,7 +435,11 @@ private struct ScheduleLiveActivityLockScreen: View {
             ScheduleLiveActivityPairRows(state: state, showsProgress: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay { WidgetCourseRule(color: palette.accent).padding(.vertical, -3) }
+        // The grid frames each row as a cell of its own; a border around both
+        // would nest one box inside another.
+        .overlay {
+            if style.layout.grid != .cells { WidgetCourseRule(color: palette.accent).padding(.vertical, -3) }
+        }
         .padding(.horizontal, 21)
         .padding(.vertical, 12)
         .background(gradient)
@@ -491,7 +495,9 @@ private struct ScheduleLiveActivityLockScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // ActivityKit supplies the rounded background, not content insets.
         // Keep every baseline clear of its corners, including the next row.
-        .overlay { WidgetCourseRule(color: palette.accent).padding(.vertical, -3) }
+        .overlay {
+            WidgetCourseRule(color: palette.accent, cellOutset: CGSize(width: 9, height: 3)).padding(.vertical, -3)
+        }
         .padding(.horizontal, 21)
         .padding(.vertical, 14)
         .background(gradient)
@@ -525,7 +531,7 @@ private struct ScheduleLiveActivityExpandedDetails: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // The bottom region is clipped by Dynamic Island's own capsule. Keep
         // the progress track and the metadata away from its lower corners.
-        .overlay { WidgetCourseRule(color: palette.accent) }
+        .overlay { WidgetCourseRule(color: palette.accent, cellOutset: CGSize(width: 5, height: 4)) }
         .padding(.horizontal, 6)
         .padding(.bottom, 8)
     }
@@ -699,7 +705,8 @@ private struct ScheduleLiveActivityPairRow: View {
                 }
             }
         }
-        .overlay { WidgetCourseRule(color: tint) }
+        // Rows are 8pt apart (5pt when compact), so the cell borders stay clear of each other.
+        .overlay { WidgetCourseRule(color: tint, cellOutset: CGSize(width: compact ? 4 : 5, height: compact ? 2 : 3)) }
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(entry.isOwn ? "我" : entry.tag)：\(entry.courseName)，\(entry.inProgress ? "正在上课" : "即将上课")")

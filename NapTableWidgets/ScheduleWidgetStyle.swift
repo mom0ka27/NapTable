@@ -78,16 +78,23 @@ struct WidgetStyleColors: DynamicProperty {
     }
 }
 
-/// Decorations stay inside existing row bounds so small widgets and merged
-/// Live Activities keep their content budget. ActivityKit owns the outer shape.
+/// Decorations never take layout space, so small widgets and merged Live
+/// Activities keep their content budget. ActivityKit owns the outer shape.
 struct WidgetCourseRule: View {
     @Environment(\.scheduleStyle) private var style
     let color: Color
+    /// How far the grid's cell border stands off the content, into the padding
+    /// around it. Live Activity rows set their text flush to both edges, and a
+    /// border on those edges runs through the timer and the logo. Only the grid
+    /// draws a border, so the other styles ignore this.
+    var cellOutset: CGSize = .zero
     var body: some View {
         switch style.layout.grid {
         case .cells:
             RoundedRectangle(cornerRadius: style.layout.cornerRadius)
                 .strokeBorder(color.opacity(0.65), lineWidth: style.layout.borderWidth)
+                .padding(.horizontal, -cellOutset.width)
+                .padding(.vertical, -cellOutset.height)
         case .table:
             VStack { Spacer(minLength: 0); Rectangle().fill(color.opacity(0.3)).frame(height: 0.5) }
         case .sessions:
