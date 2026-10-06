@@ -172,7 +172,8 @@ struct NativeScheduleMonthView: View {
         }
     }
 
-    private var styledMinimumRowHeight: CGFloat { style == .table ? 88 : 62 }
+    /// 表格的格子里要写课程简称：日期行 25pt，两门课各 14pt，「+N」13pt，见 `styledDayLabel`。
+    private var styledMinimumRowHeight: CGFloat { style == .table ? 68 : 62 }
 
     private func styledGridOverhead(rows: Int) -> CGFloat {
         switch style {
@@ -495,20 +496,18 @@ struct NativeScheduleMonthView: View {
             }
             .overlay(alignment: .topTrailing) { styledAdjustmentBadge(day.adjustment).padding(2) }
         case .table:
-            let limit = height >= 98 ? 3 : 2
+            // 排得下第三门课和「+N」时才写三门，否则两门。
+            let limit = height >= 80 ? 3 : 2
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 3) {
-                    styledDateNumber(day, isSelected: isSelected, isToday: isToday)
-                    Spacer(minLength: 0)
-                    styledAdjustmentBadge(day.adjustment)
+                // 农历跟在日期后面写在同一行：单独占一行的话，矮格子里排不下两门课。
+                // 窄格子里放不下就先缩小，再不行省掉，日期和休 / 班角标优先。
+                ViewThatFits(in: .horizontal) {
+                    tableDateRow(day, isSelected: isSelected, isToday: isToday, subtitleSize: 9)
+                    tableDateRow(day, isSelected: isSelected, isToday: isToday, subtitleSize: 7)
+                    tableDateRow(day, isSelected: isSelected, isToday: isToday, subtitleSize: nil)
                 }
-                .padding(.horizontal, 4)
+                .padding(.horizontal, 3)
                 .padding(.top, 3)
-                Text(day.subtitle.isEmpty ? " " : day.subtitle)
-                    .font(.system(size: 9))
-                    .foregroundStyle(styledSubtitleColor(day))
-                    .lineLimit(1)
-                    .padding(.horizontal, 4)
                 ForEach(Array(day.courses.prefix(limit))) { block in
                     HStack(spacing: 2) {
                         Rectangle()
@@ -601,6 +600,21 @@ struct NativeScheduleMonthView: View {
         }
     }
 
+    private func tableDateRow(_ day: Day, isSelected: Bool, isToday: Bool, subtitleSize: CGFloat?) -> some View {
+        HStack(spacing: 2) {
+            styledDateNumber(day, isSelected: isSelected, isToday: isToday)
+            styledAdjustmentBadge(day.adjustment)
+            if let subtitleSize, !day.subtitle.isEmpty {
+                Text(day.subtitle)
+                    .font(.system(size: subtitleSize))
+                    .foregroundStyle(styledSubtitleColor(day))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
     @ViewBuilder
     private func styledDateNumber(_ day: Day, isSelected: Bool, isToday: Bool) -> some View {
         Text("\(day.number)")
@@ -610,7 +624,7 @@ struct NativeScheduleMonthView: View {
             .monospacedDigit()
             .foregroundStyle(styledNumberColor(day, isSelected: isSelected, isToday: isToday))
             .frame(width: style == .table ? nil : 32, height: style == .table ? 22 : 30)
-            .padding(.horizontal, style == .table ? 3 : 0)
+            .padding(.horizontal, style == .table ? 2 : 0)
             .background {
                 if isSelected && style != .paper && style != .board {
                     RoundedRectangle(cornerRadius: 4, style: .continuous).fill(styleFill)
