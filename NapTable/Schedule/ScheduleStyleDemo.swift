@@ -243,7 +243,7 @@ private struct ScheduleStyleDemoContent: View {
                     }
                 }
             }
-            .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
+            .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style.framesPanel) }
         }
         .frame(height: NativeScheduleDayColumn.dateHeaderHeight
                + CGFloat(ScheduleStyleDemoData.clocks.count) * (NativeScheduleDayColumn.slotHeight + NativeScheduleDayColumn.slotGap) + 3)

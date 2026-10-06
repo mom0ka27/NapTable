@@ -135,7 +135,7 @@ struct ScheduleStyledDayView: View {
             (title: "已结束", courses: orderedBlocks.filter { status.phase($0) == .completed })
         ])
         .padding(.vertical, 8)
-        .background { ScheduleSurface(cornerRadius: 0, isPanel: true) }
+        .background { ScheduleSurface(cornerRadius: 0, isPanel: true, showsBorder: style.framesPanel) }
     }
 
     /// Empty sections are dropped. The last row of the last section closes the list, so it gets no

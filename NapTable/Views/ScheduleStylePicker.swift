@@ -78,8 +78,8 @@ private struct StylePreview: View {
             }
         }
         .padding(Self.padding)
-        // The table draws its own frame; a panel border around it would read as a second box.
-        .background { ScheduleSurface(cornerRadius: 12, isPanel: true, showsBorder: style != .table) }
+        // The table draws its own frame and the board has none; see `ScheduleStyle.framesPanel`.
+        .background { ScheduleSurface(cornerRadius: 12, isPanel: true, showsBorder: style.framesPanel) }
         .environment(\.scheduleStyle, style)
         .environment(\.scheduleStaticRendering, true)
         .environment(\.dynamicTypeSize, .medium)

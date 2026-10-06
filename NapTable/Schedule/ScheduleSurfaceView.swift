@@ -797,7 +797,7 @@ struct NativeScheduleView: View {
                         showsDateHeader: preferences.showDateHeader
                     )
                     .padding(stylePanelPadding)
-                    .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
+                    .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style.framesPanel) }
                     .frame(width: contentWidth, alignment: .leading)
                     .padding(.horizontal, Self.contentInset)
                 }
@@ -1687,7 +1687,7 @@ struct NativeScheduleView: View {
                     showsNowLine: false
                 )
                 .padding(layout.panelPadding)
-                .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
+                .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style.framesPanel) }
             }
         }
         .environment(\.colorScheme, colorScheme)

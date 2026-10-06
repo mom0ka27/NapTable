@@ -192,6 +192,12 @@ struct ScheduleCardSurface: ShapeStyle {
     }
 }
 
+extension ScheduleStyle {
+    /// 周、日视图的整块面板要不要描边。表格的格线自己画外框；站牌不用容器框，只靠粗细线
+    /// 分段，月视图本来也没有框。
+    var framesPanel: Bool { self != .table && self != .board }
+}
+
 /// 课表上的一块内容表面：平涂加一圈细边。格子、表头、周次导航和卡片都用它，
 /// 整页只有这一种描边语言，不再叠渐变、高光和投影。
 struct ScheduleSurface: View {
