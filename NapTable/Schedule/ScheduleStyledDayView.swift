@@ -274,10 +274,11 @@ private struct ScheduleDayTableCourse: View {
             Rectangle().fill(ink).frame(width: 3)
             VStack(alignment: .leading, spacing: 3) {
                 Text(block.course.name).font(.subheadline.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.8)
-                if let label = status.label(block) {
-                    Text(label).font(.caption2).lineLimit(1)
-                } else if continuation {
+                // The status belongs to the course, so it is written once, on its first period.
+                if continuation {
                     Text("续课").font(.caption2)
+                } else if let label = status.label(block) {
+                    Text(label).font(.caption2).lineLimit(1)
                 }
             }
             .padding(.horizontal, 5)
