@@ -180,6 +180,8 @@ struct NativeScheduleMonthView: View {
         case .paper: 78
         // 表格只有 28 高的星期表头，上下不留白，见 `styledMonthGrid`。
         case .table: 28
+        // 站牌的星期表头下面多一条 2pt 粗线。
+        case .board: 46
         default: 44
         }
     }
@@ -203,8 +205,8 @@ struct NativeScheduleMonthView: View {
             if let selected = selectedDay(in: days) {
                 // 表格的外框底边已经把月历和摘要分开，不再叠一条分隔线。
                 if style != .table {
-                    Rectangle().fill(styleRule).frame(height: style == .board ? 2 : 0.7)
-                        .padding(.horizontal, 12)
+                    Rectangle().fill(style == .board ? boardRule : styleRule).frame(height: style == .board ? 2 : 0.7)
+                        .padding(.horizontal, style == .board ? 0 : 12)
                 }
                 styledSelectedDaySummary(selected, previewCount: count, previewHeight: previewHeight)
             }
@@ -342,6 +344,9 @@ struct NativeScheduleMonthView: View {
                     .fill(styleInk.opacity(0.24))
                     .frame(height: 0.8)
                     .padding(.horizontal, 12)
+            } else if style == .board {
+                // 站牌靠粗线分段：星期表头下面一条，月历和摘要之间一条。
+                Rectangle().fill(boardRule).frame(height: 2)
             }
             VStack(spacing: style == .grid ? 5 : 0) {
                 ForEach(rows, id: \.first?.date) { row in
@@ -351,7 +356,8 @@ struct NativeScheduleMonthView: View {
                         }
                     }
                     .overlay(alignment: .bottom) {
-                        if style == .board {
+                        // 最后一周下面紧跟着摘要上方的粗线，不再多画一条细线。
+                        if style == .board && row.first?.date != rows.last?.first?.date {
                             Rectangle()
                                 .fill(styleInk.opacity(colorScheme == .dark ? 0.24 : 0.16))
                                 .frame(height: 0.6)
@@ -633,6 +639,9 @@ struct NativeScheduleMonthView: View {
     }
 
     private var styleRule: Color { styleInk.opacity(contrast == .increased ? 0.6 : 0.24) }
+
+    /// 站牌分段用的粗线，和周视图上午 / 下午 / 晚上之间那条同一个深浅。
+    private var boardRule: Color { styleInk.opacity(0.65) }
 
     private func styledNumberColor(_ day: Day, isSelected: Bool = false, isToday: Bool = false) -> Color {
         if isSelected && style != .paper && style != .board { return styleOnAccent }
