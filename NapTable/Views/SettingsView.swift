@@ -222,7 +222,7 @@ struct SettingsView: View {
             }
             SettingsDestinationRow(
                 title: "隐私与数据",
-                detail: privacyConsent.liveAccepted ? "已允许上传实时通知信息" : "仅上传基础统计",
+                detail: privacyConsent.liveAccepted ? "已允许上传实时活动信息" : "仅上传基础统计",
                 systemImage: "hand.raised",
                 tint: .blue
             ) {

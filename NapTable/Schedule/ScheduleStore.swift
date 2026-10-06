@@ -42,7 +42,7 @@ final class NativeScheduleStore: ObservableObject {
     private var sharedWeek: Int?
     var localSelectedWeek: Int? { app?.displayWeek }
     var isReadOnly: Bool { viewedShareCode != nil }
-    /// 当前正在查看的共享课表，与用于实时通知的「关心」对象分别选择。
+    /// 当前正在查看的共享课表，与用于实时活动的「关心」对象分别选择。
     var viewedSharedSchedule: FollowedSchedule? {
         guard let viewedShareCode else { return nil }
         return ScheduleSharingService.shared.sharedSchedules.first { $0.meta.code == viewedShareCode }

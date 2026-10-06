@@ -48,7 +48,7 @@ struct PrivacyDocumentView: View {
             .frame(maxWidth: .infinity)
         }
         .background(colors.background.ignoresSafeArea())
-        .navigationTitle(liveActivities ? "实时通知许可" : "隐私协议")
+        .navigationTitle(liveActivities ? "实时活动许可" : "隐私协议")
         .appInlineNavigationTitle()
         .appSoftTopScrollEdge()
         #if os(iOS)
@@ -67,7 +67,7 @@ struct LiveActivityConsentView: View {
             PrivacyDocumentView(liveActivities: true)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 4) {
-                        Button("同意并开启实时通知") {
+                        Button("同意并开启实时活动") {
                             PrivacyConsent.shared.setLiveConsent(true)
                             onAccept()
                             dismiss()
@@ -98,11 +98,11 @@ struct PrivacySettingsView: View {
                 NavigationLink(PrivacyPolicy.basicTitle) { PrivacyDocumentView(liveActivities: false) }
                 LabeledContent("基础统计许可", value: consent.basicAccepted ? "已同意" : "未同意")
             } footer: {
-                Text("使用 App 需同意基础统计。统计仅包含学校、系统版本、设备型号等信息，不包含课程内容。")
+                Text("使用 App 需同意基础统计。统计包含学校、系统版本、设备型号和 App 版本等信息，不包含课程内容。")
             }
             Section {
                 NavigationLink(PrivacyPolicy.liveTitle) { PrivacyDocumentView(liveActivities: true) }
-                Toggle("允许上传实时通知信息", isOn: Binding(
+                Toggle("允许上传实时活动信息", isOn: Binding(
                     get: { consent.liveAccepted },
                     set: { value in
                         if value { showLiveConsent = true }
@@ -115,7 +115,7 @@ struct PrivacySettingsView: View {
                     }
                 ))
             } footer: {
-                Text("撤回后，实时通知将关闭；服务端数据将随之清除，网络不可用时将在恢复连接后完成。")
+                Text("撤回后，实时活动将关闭；服务端数据将随之清除，网络不可用时将在恢复连接后完成。")
             }
         }
         .appListBackground()

@@ -131,7 +131,7 @@ struct OnboardingConsentNote: View {
     var liveActivities = false
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
-    private var documentTitle: String { liveActivities ? "实时通知许可" : "隐私协议" }
+    private var documentTitle: String { liveActivities ? "实时活动许可" : "隐私协议" }
 
     var body: some View {
         HStack(spacing: 4) {

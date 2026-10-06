@@ -121,7 +121,7 @@ nonisolated struct Course: Codable, Identifiable, Equatable, Hashable {
     /// 用户主动收起或旧版本导入时收起的行，不参与显示、分享和通知。
     /// 可以在编辑页恢复。旧存档没有这个键，所以用可选值。
     var hidden: Bool?
-    /// 决定重叠课程和实时通知的显示顺序，不删除课程或改变实际上课安排。
+    /// 决定重叠课程和实时活动的显示顺序，不删除课程或改变实际上课安排。
     var displayPriority: Int?
 
     init(
