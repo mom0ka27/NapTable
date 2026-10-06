@@ -1,4 +1,5 @@
 import Foundation
+import StoreKit
 
 @MainActor final class ScheduleSharingService {
     static let shared = ScheduleSharingService()
@@ -37,6 +38,9 @@ import Foundation
                      "Beta must return before loading StoreKit products or entitlements")
         await manager.beginTrial()
         await manager.buyLifetime()
+        let betaRestore = await manager.restore()
+        precondition(betaRestore == nil && !manager.restoring && manager.state == .loading,
+                     "Beta has nothing to restore and must not ask StoreKit")
         precondition(!manager.busy && manager.errorMessage == nil)
         precondition(!manager.trialConsumed && manager.pendingTransactions().isEmpty)
         precondition(defaults.persistentDomain(forName: suite)?.isEmpty ?? true,
@@ -47,6 +51,20 @@ import Foundation
             precondition(manager.accessMode == .unavailable && !manager.allowsLiveActivities,
                          "A failed policy refresh must not reuse a stale Beta grant")
         }
+        let offlineRestore = await manager.restore()
+        precondition(offlineRestore == .failed("连接失败，请联网后重试。") && !manager.restoring,
+                     "Restoring without the server policy must ask to reconnect")
+        // 恢复购买的失败原因：取消不提示，断网和其他原因各一句人话。
+        precondition(PurchaseManager.restoreFailure(StoreKitError.userCancelled) == nil,
+                     "Cancelling the Apple ID prompt is not a failure")
+        let offline = PurchaseManager.restoreFailure(StoreKitError.networkError(URLError(.notConnectedToInternet)))
+        precondition(offline != nil && offline == PurchaseManager.restoreFailure(URLError(.timedOut)))
+        for error in [StoreKitError.unknown, .notEntitled, .systemError(CocoaError(.fileReadUnknown))] {
+            let outcome = PurchaseManager.restoreFailure(error)
+            guard case .failed(let reason)? = outcome, !reason.isEmpty, outcome != offline else {
+                preconditionFailure("Other StoreKit failures need their own sentence")
+            }
+        }
         mode = 0
         await manager.load()
         precondition(manager.isBeta && manager.allowsLiveActivities)
@@ -55,6 +73,6 @@ import Foundation
                 && $0.httpBody == nil && $0.value(forHTTPHeaderField: "X-Device-Secret") == nil
                 && $0.cachePolicy == .reloadIgnoringLocalCacheData
         })
-        print("PASS: Beta policy, StoreKit bypass, no trial consumption, failed policy/retry, paid mode decoding")
+        print("PASS: Beta policy, StoreKit bypass, no trial consumption, failed policy/retry, paid mode decoding, restore outcomes")
     }
 }

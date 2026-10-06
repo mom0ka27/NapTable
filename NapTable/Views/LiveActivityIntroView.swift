@@ -43,8 +43,8 @@ struct LiveActivityIntroContent: View {
                 } else if accessMode == .paid {
                     point("gift", "先免费试用 30 天", "首次确认试用时开始计时，到期不会自动扣款。")
                 }
-                point("creditcard", "Pro 版一次买断", "试用结束后可一次买断；课表、小组件始终免费。")
-                point("calendar", "课表、小组件始终免费", "导入和查看课表、使用桌面小组件不受实时活动权益影响。")
+                point("creditcard", "专业版一次买断", "试用结束后可一次买断；课表和基础小组件始终免费。")
+                point("calendar", "课表和基础小组件始终免费", "导入和查看课表、使用基础桌面小组件不受专业版权益影响。")
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)

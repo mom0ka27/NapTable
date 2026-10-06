@@ -134,6 +134,7 @@ nonisolated struct ManualMeetingDraft: Identifiable, Equatable {
 
     func problem(periodCount: Int, weekCount: Int) -> String? {
         if !(1...7).contains(weekday) { return "请选择星期" }
+        if startPeriod < 1 || endPeriod < 1 { return "请选择起止节次" }
         if startPeriod < 1 || endPeriod > periodCount { return "节次超出了每天的 \(periodCount) 节" }
         if endPeriod < startPeriod { return "结束节次不能早于开始节次" }
         if kind != .custom, firstWeek > resolvedLastWeek(weekCount: weekCount) { return "起始周不能晚于结束周" }
@@ -145,8 +146,12 @@ nonisolated struct ManualMeetingDraft: Identifiable, Equatable {
 
     /// 「周一 第 1-2 节 · 第 1-16 周 单周」。
     func summary(weekCount: Int, classTimes: [ClassTime]) -> String {
-        let day = WeekCalculator.weekdayName(weekday)
-        let periods = startPeriod == endPeriod ? "第 \(startPeriod) 节" : "第 \(startPeriod)-\(endPeriod) 节"
+        let day = weekday == 0 ? "待填写星期" : WeekCalculator.weekdayName(weekday)
+        let periods: String
+        if startPeriod == 0 && endPeriod == 0 { periods = "待填写节次" }
+        else if startPeriod == 0 { periods = "待填开始节次–第 \(endPeriod) 节" }
+        else if endPeriod == 0 { periods = "第 \(startPeriod) 节–待填结束节次" }
+        else { periods = startPeriod == endPeriod ? "第 \(startPeriod) 节" : "第 \(startPeriod)-\(endPeriod) 节" }
         var time = ""
         if classTimes.indices.contains(startPeriod - 1), classTimes.indices.contains(endPeriod - 1) {
             time = " \(classTimes[startPeriod - 1].start)–\(classTimes[endPeriod - 1].end)"
@@ -156,7 +161,7 @@ nonisolated struct ManualMeetingDraft: Identifiable, Equatable {
 
     func weekSummary(weekCount: Int) -> String {
         let list = weeks(weekCount: weekCount)
-        guard !list.isEmpty else { return "没有周次" }
+        guard !list.isEmpty else { return "待填写周次" }
         switch kind {
         case .full, .custom:
             return WeekSeries.summary(list)

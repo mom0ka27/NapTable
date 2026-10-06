@@ -14,6 +14,41 @@ typealias PlatformColor = NSColor
 typealias PlatformImage = NSImage
 #endif
 
+extension View {
+    /// 导入包含登录、识别和多步编辑，使用全屏页面避免下滑误关。
+    @ViewBuilder
+    func appImportPresentation<Content: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        #if os(iOS)
+        fullScreenCover(isPresented: isPresented) {
+            content().interactiveDismissDisabled()
+        }
+        #else
+        sheet(isPresented: isPresented) {
+            content().interactiveDismissDisabled()
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    func appImportPresentation<Item: Identifiable, Content: View>(
+        item: Binding<Item?>,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        #if os(iOS)
+        fullScreenCover(item: item) { value in
+            content(value).interactiveDismissDisabled()
+        }
+        #else
+        sheet(item: item) { value in
+            content(value).interactiveDismissDisabled()
+        }
+        #endif
+    }
+}
+
 extension Image {
     /// `Image(uiImage:)` has no AppKit spelling. The schedule settings page
     /// previews the user's chosen background, which is a `PlatformImage`.

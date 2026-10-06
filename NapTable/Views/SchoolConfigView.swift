@@ -130,8 +130,8 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                                 Button("取消", role: .cancel) { pendingRemoval = nil }
                             } message: {
                                 Text(ICloudSyncService.shared.isEnabled
-                                     ? "从你的列表及已开启 iCloud 同步的设备上移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。"
-                                     : "仅从你的列表移除，不影响对方课表。如已设为关心，也会停止关注和实时通知。")
+                                     ? "从你的列表及已开启 iCloud 同步的设备上移除，不影响对方课表。如已设为关心，也会取消关心并停止实时通知。"
+                                     : "仅从你的列表移除，不影响对方课表。如已设为关心，也会取消关心并停止实时通知。")
                             }
                         }
                         Toggle(isOn: Binding(

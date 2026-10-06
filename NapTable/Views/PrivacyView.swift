@@ -4,11 +4,9 @@ struct PrivacyDocumentView: View {
     let liveActivities: Bool
     @Environment(\.colorScheme) private var scheme
     private var colors: OnboardingColors { OnboardingColors(scheme: scheme) }
-    private var paragraphs: [String] {
-        (liveActivities ? PrivacyPolicy.liveText : PrivacyPolicy.basicText).components(separatedBy: "\n\n")
-    }
-    private var headings: [String] {
-        liveActivities ? ["由你决定是否开启", "需要哪些信息", "不同系统如何处理", "Beta 与试用权益", "如何撤回许可"] : ["我们收集哪些信息", "这些数据用于什么", "主动分享课表", "可选的 iCloud 同步", "请求验证与账号安全", "何时上报与保存多久", "你的选择"]
+    /// 标题和正文由协议成对提供，这里只负责排版。
+    private var clauses: [PrivacyPolicy.Clause] {
+        liveActivities ? PrivacyPolicy.liveClauses : PrivacyPolicy.basicClauses
     }
     private var title: String { liveActivities ? PrivacyPolicy.liveTitle : PrivacyPolicy.basicTitle }
     var body: some View {
@@ -26,20 +24,18 @@ struct PrivacyDocumentView: View {
                     HStack(spacing: 8) {
                         Text(liveActivities ? "可选许可" : "开始使用前需同意")
                             .foregroundStyle(colors.accent)
-                        Text("·  版本 1  ·  2026.09.23").foregroundStyle(colors.secondary)
+                        Text("·  版本 \(PrivacyPolicy.version)  ·  \(PrivacyPolicy.updatedAt)").foregroundStyle(colors.secondary)
                     }
                     .font(.caption2)
                 }
                 VStack(alignment: .leading, spacing: 23) {
-                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { index, paragraph in
+                    ForEach(Array(clauses.enumerated()), id: \.offset) { index, clause in
                         VStack(alignment: .leading, spacing: 10) {
-                            if index < headings.count {
-                                Text(headings[index]).font(.subheadline.weight(.semibold)).foregroundStyle(colors.ink)
-                            }
-                            Text(paragraph).font(.subheadline).foregroundStyle(colors.secondary)
+                            Text(clause.title).font(.subheadline.weight(.semibold)).foregroundStyle(colors.ink)
+                            Text(clause.body).font(.subheadline).foregroundStyle(colors.secondary)
                                 .lineSpacing(6).textSelection(.enabled)
                         }
-                        if index < paragraphs.count - 1 { colors.line.frame(height: 0.5) }
+                        if index < clauses.count - 1 { colors.line.frame(height: 0.5) }
                     }
                 }
                 .padding(22)

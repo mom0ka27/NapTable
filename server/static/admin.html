@@ -17,7 +17,7 @@
       </a>
 
       <nav class="main-nav" aria-label="主导航">
-        <p class="nav-label">CONFIGURE <span>配置</span></p>
+        <p class="nav-label">配置</p>
         <button class="nav-item active" type="button" data-view="schools">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg>
           <span>学校配置</span>
@@ -39,7 +39,7 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m3 17 6-6 4 4 4-4 4 4"/></svg>
           <span>图片导入</span>
         </button>
-        <p class="nav-label">USERS <span>用户</span></p>
+        <p class="nav-label">用户</p>
         <button class="nav-item" type="button" data-view="shares">
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 13h3M8 17h6"/></svg>
           <span>分享课表</span>
@@ -48,7 +48,7 @@
           <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg>
           <span>实时活动权益</span>
         </button>
-        <p class="nav-label">DATA <span>数据</span></p>
+        <p class="nav-label">数据</p>
         <button class="nav-item" type="button" data-view="stats">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16V5"/></svg>
           <span>使用统计</span>
@@ -67,7 +67,6 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
           </button>
         </div>
-        <p class="build-label">NAPTABLE CONSOLE</p>
       </div>
     </aside>
 
@@ -76,29 +75,13 @@
         <button id="menuButton" aria-controls="sidebar" aria-expanded="false" class="icon-button mobile-menu" type="button" aria-label="打开导航" title="打开导航">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
-        <div class="page-heading">
-          <p class="breadcrumb">控制台 <span>/</span> <strong id="breadcrumbCurrent">学校配置</strong></p>
-          <h1 id="pageTitle">学校配置</h1>
-          <p id="pageSubtitle">维护客户端使用的学校、学期与教学时间。</p>
-        </div>
-        <div id="consoleDate" class="console-date"></div>
-        <div id="connectionStatus" class="connection-pill"><span></span>未连接</div>
+        <div class="page-heading"><h1 id="pageTitle">学校配置</h1></div>
       </header>
 
       <div id="notice" class="notice" role="status" aria-live="polite"></div>
 
       <section id="authView" class="auth-view">
-        <div class="auth-copy">
-          <span class="auth-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-          </span>
-          <p class="section-kicker">YOUR CAMPUS, IN SYNC</p>
-          <h2>有条不紊，<br>从这里开始。</h2>
-          <p>学校、教学日历与通知服务，在一个工作区中轻松管理。</p>
-        <div class="auth-features"><span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg>学校配置</span><span><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg>教学日历</span><span><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg>使用洞察</span></div>
-        </div>
         <form id="authForm" class="auth-form">
-          <div class="auth-form-heading"><span class="section-kicker">管理员登录</span><h3>欢迎回来</h3><p>验证身份，进入你的工作区。</p></div>
           <label for="adminToken">管理员令牌</label>
           <div class="password-field">
             <input id="adminToken" type="password" autocomplete="off" placeholder="输入管理员令牌" required>
@@ -107,24 +90,20 @@
               <svg class="eye-closed" aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.7 10.7 0 0 1 12 4c6.5 0 10 8 10 8a18.5 18.5 0 0 1-2 3"/><path d="M6.6 6.6C3.6 8.5 2 12 2 12s3.5 8 10 8a9.8 9.8 0 0 0 4.1-.9"/></svg>
             </button>
           </div>
-          <button id="connectButton" class="button primary full" type="submit">
-            <span>进入管理台</span>
-            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-        <p class="auth-footnote"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg>登录会话有效期 12 小时，可随时断开连接。</p>
+          <button id="connectButton" class="button primary full" type="submit"><span>登录</span></button>
         </form>
       </section>
 
       <section id="schoolsView" class="content-view" hidden>
         <div class="metric-strip" aria-label="配置概览">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>已配置学校</span><strong id="schoolCount">0</strong><small>教学配置的起点</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg></span><span>学期模板</span><strong id="termCount">0</strong><small>统一管理学期安排</small></div>
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>教学节次</span><strong id="periodCount">0</strong><small>学校共用的时间表</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7M5 9v11h14V9M9 20v-6h6v6"/></svg></span><span>已配置学校</span><strong id="schoolCount">0</strong></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M8 3v4M16 3v4M3 11h18M8 15h2M14 15h2"/></svg></span><span>学期模板</span><strong id="termCount">0</strong></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>教学节次</span><strong id="periodCount">0</strong></div>
           <div id="activeTermCard" class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>今天在学期内</span><strong id="activeTermCount">0</strong><small id="activeTermDetail">当前学期覆盖今天的学校</small></div>
         </div>
 
         <div class="section-toolbar">
-          <div><h2>学校与学期</h2><p>让每一所学校，都有准确的时间表。</p></div>
+          <h2>学校与学期</h2>
           <button id="newSchoolButton" class="button primary" type="button">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
             新增学校
@@ -145,8 +124,7 @@
             <div id="editorEmpty" class="empty-state">
               <span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-6h6v6"/></svg></span>
               <h3>选择一所学校</h3>
-              <p>从左侧列表选择学校，或新增学校开始配置。</p>
-            </div>
+                          </div>
 
             <div id="editor" hidden>
               <div class="editor-heading">
@@ -159,7 +137,7 @@
 
               <details class="metadata-section">
                 <summary>
-                  <span><strong>学校信息与节次</strong><small>展开编辑名称、备注和上课时间</small></span>
+                  <span><strong>学校信息与节次</strong></span>
                   <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
                 </summary>
                 <div class="form-grid school-fields">
@@ -169,17 +147,17 @@
                 </div>
                 <div class="school-periods">
                   <div class="editor-section-heading">
-                    <div><strong>学校节次时间</strong><p>所有学期共用，只需配置一次。</p></div>
+                    <div><strong>节次时间</strong><p>所有学期共用</p></div>
                     <button id="addSchoolPeriodButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加节次</button>
                   </div>
                   <div class="table-head period-head"><span>节次</span><span>开始时间</span><span>结束时间</span><span></span></div>
                   <div id="schoolPeriodList" class="period-list"></div>
-                  <label class="toggle-field seasonal-toggle"><input id="schoolSeasonEnabled" type="checkbox" role="switch" aria-controls="schoolSeasonEditor" aria-describedby="schoolSeasonHint"><span><strong>启用分季作息</strong><small id="schoolSeasonHint">关闭时全年使用上方节次时间；保存学校配置后生效。</small></span></label>
-                  <label class="toggle-field"><input id="schoolUnifiedHolidaysEnabled" type="checkbox" role="switch"><span><strong>启用统一放假</strong><small>该校按统一调休表中的放假日期停课。</small></span></label>
-                  <label class="toggle-field"><input id="schoolUnifiedMakeupEnabled" type="checkbox" role="switch"><span><strong>启用统一调休</strong><small>该校按统一调休表中的补班日期上课。</small></span></label>
+                  <label class="toggle-field seasonal-toggle"><input id="schoolSeasonEnabled" type="checkbox" role="switch" aria-controls="schoolSeasonEditor" aria-describedby="schoolSeasonHint"><span><strong>启用分季作息</strong><small id="schoolSeasonHint">关闭时全年使用上方节次时间</small></span></label>
+                  <label class="toggle-field"><input id="schoolUnifiedHolidaysEnabled" type="checkbox" role="switch"><span><strong>启用统一放假</strong></span></label>
+                  <label class="toggle-field"><input id="schoolUnifiedMakeupEnabled" type="checkbox" role="switch"><span><strong>启用统一调休</strong></span></label>
                   <fieldset id="schoolSeasonEditor" class="seasonal-editor" aria-label="分季作息" hidden disabled>
                     <div class="editor-section-heading">
-                      <div><strong>分季作息</strong><p>每年按实际上课日期切换；各套节次数量须相同。</p></div>
+                      <div><strong>分季作息</strong><p>各套节次数量须相同</p></div>
                       <button id="addSeasonButton" class="button text-button" type="button">添加作息</button>
                     </div>
                     <div id="schoolSeasonList"></div>
@@ -204,13 +182,12 @@
                 </div>
 
                 <section class="editor-section first">
-                  <div class="editor-section-title"><span class="step">01</span><div><h4>基础设置</h4><p>定义学期范围与时区。</p></div></div>
                   <div class="form-grid term-fields">
                     <label>学期 ID<input id="termId" maxlength="80" placeholder="例如 2026-fall"></label>
                     <label>时区<select id="termTimezone"><option value="Asia/Shanghai">Asia/Shanghai</option></select></label>
                     <label>第一周周一<input id="termStart" type="date"></label>
                     <label>总周数<input id="termWeeks" type="number" min="1" max="40" step="1"></label>
-                    <label class="toggle-field wide"><input id="termCurrent" type="checkbox"><span><strong>设为当前学期</strong><small>客户端会自动拉取该学期的第一周配置</small></span></label>
+                    <label class="toggle-field wide"><input id="termCurrent" type="checkbox"><span><strong>设为当前学期</strong></span></label>
                     <label class="wide">备注<textarea id="termNote" rows="2" maxlength="240" placeholder="选填，例如校历版本或适用范围"></textarea></label>
                   </div>
                 </section>
@@ -222,12 +199,12 @@
 
       <section id="calendarView" class="content-view" hidden>
         <div class="section-toolbar">
-          <div><div class="title-with-badge"><h2>统一调休配置</h2><span id="calendarVersion" class="badge">v1</span></div><p>集中维护放假和补班日期；每所学校可分别选择是否应用。</p></div>
+          <div><div class="title-with-badge"><h2>统一调休配置</h2><span id="calendarVersion" class="badge">v1</span></div></div>
           <button id="saveCalendarButton" class="button primary" type="button" disabled><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>保存调休</button>
         </div>
         <section class="settings-panel calendar-panel">
-          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3><p>放假或将某一天调整为另一工作日的课程。</p></div><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
-          <div class="calendar-import-toolbar"><label>导入学年（当年 9 月至次年 7 月）<input id="calendarAcademicYear" type="number" min="2000" max="2100" step="1" aria-label="学年起始年份"></label><button id="importCalendarButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入国务院安排</button><p>导入后加入草稿，保留已有日期。调课日需选定课程来源，再保存生效。</p></div>
+          <div class="panel-heading channel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg></span><div><h3>全国统一安排</h3></div><button id="addGlobalAdjustmentButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>添加调休</button></div>
+          <div class="calendar-import-toolbar"><label>导入学年（当年 9 月至次年 7 月）<input id="calendarAcademicYear" type="number" min="2000" max="2100" step="1" aria-label="学年起始年份"></label><button id="importCalendarButton" class="button text-button" type="button"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>导入国务院安排</button><p>导入只追加到草稿，调课日选好上哪天的课后保存生效。</p></div>
           <div id="calendarImportNote" class="inline-empty" hidden></div>
           <div id="globalAdjustmentList" class="adjustment-list"></div>
           <div id="globalAdjustmentEmpty" class="inline-empty">尚未配置统一调休</div>
@@ -236,19 +213,22 @@
 
       <section id="imageImportView" class="content-view" hidden>
         <section class="settings-panel">
-          <div class="panel-heading"><div><h3>图片识别服务</h3><p id="imageImportStatus">正在读取配置</p></div></div>
+          <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m3 17 6-6 4 4 4-4 4 4"/></svg></span><div><h3>图片识别服务</h3><p id="imageImportStatus">正在读取配置</p></div></div>
           <form id="imageImportForm" class="form-grid">
-            <label class="toggle-field"><input id="imageImportEnabled" type="checkbox"><span><strong>开放图片导入</strong><small>保存后立即生效</small></span></label>
-            <label class="toggle-field"><input id="imageImportRequireAttest" type="checkbox"><span><strong>要求 App Attest</strong><small>建议开启设备验证</small></span></label>
+            <label class="toggle-field"><input id="imageImportEnabled" type="checkbox"><span><strong>开放图片导入</strong></span></label>
+            <label class="toggle-field"><input id="imageImportRequireAttest" type="checkbox"><span><strong>要求 App Attest</strong></span></label>
             <label class="wide"><span>Responses 接口完整地址</span><input id="imageImportEndpoint" type="url" required placeholder="https://api.openai.com/v1/responses"></label>
             <label class="field"><span>模型</span><input id="imageImportModel" type="text" maxlength="100" placeholder="支持图片和结构化输出的模型"></label>
+            <label class="field"><span>思考强度</span><select id="imageImportReasoningEffort"><option value="">模型默认</option><option value="none">不思考（none）</option><option value="minimal">极低（minimal）</option><option value="low">低（low）</option><option value="medium">中（medium）</option><option value="high">高（high）</option><option value="xhigh">极高（xhigh）</option><option value="max">最高（max）</option></select><small>想加快识别可先尝试 low；可用档位取决于模型和服务商。保存后下次识别生效。</small></label>
             <label class="wide"><span>API 密钥</span><input id="imageImportApiKey" type="password" maxlength="500" autocomplete="new-password" placeholder="留空表示保持现有密钥"></label>
             <label class="field"><span>每设备每日调用上限</span><input id="imageImportDeviceDailyLimit" type="number" min="1" max="100" required></label>
             <label class="field"><span>未验证设备每 IP 每小时上限</span><input id="imageImportIpHourlyLimit" type="number" min="1" max="1000" required></label>
             <label class="field"><span>全站每日调用上限</span><input id="imageImportGlobalDailyLimit" type="number" min="1" max="10000" required></label>
             <label class="field"><span>接口超时（秒）</span><input id="imageImportTimeoutSeconds" type="number" min="10" max="90" required></label>
-            <label class="field"><span>最大输出 token</span><input id="imageImportMaxOutputTokens" type="number" min="1000" max="20000" required></label>
-            <p class="wide">可直接在此设置 API 密钥；密钥不会返回浏览器。留空会保持现有密钥，旧部署也可继续使用服务器环境变量 NAPTABLE_IMAGE_IMPORT_API_KEY。默认关闭功能并要求设备验证。有效 App Attest 请求按设备和全站额度计算，不与校园统一出口的其他用户共享 IP 额度；未验证请求才使用 IP 限额。每日额度按 UTC+8 重置；失败调用也计入额度。</p>
+            <label class="field"><span>最大输出 token</span><input id="imageImportMaxOutputTokens" type="number" min="1000" max="128000" required></label>
+            <label class="wide"><span>课表识别提示词</span><textarea id="imageImportPrompt" rows="18" maxlength="12000" spellcheck="false" aria-describedby="imageImportPromptHelp imageImportPromptStatus" placeholder="留空使用内置默认提示词" disabled></textarea><small id="imageImportPromptHelp">留空使用内置默认，保存后下一次识别即生效</small></label>
+            <div class="wide image-prompt-actions"><button id="resetImageImportPrompt" class="button secondary" type="button" disabled>恢复默认提示词</button><small id="imageImportPromptStatus" aria-live="polite">正在读取提示词</small></div>
+            <p class="wide form-note">密钥不会回传浏览器。有 App Attest 的请求按设备计额度，未验证的按 IP；额度按 UTC+8 每日重置，失败也计入。</p>
             <button id="saveImageImportButton" class="button primary" type="submit" disabled>保存配置</button>
           </form>
         </section>
@@ -272,6 +252,10 @@
               <div class="image-token-summary"><div><span>输入 token</span><strong id="imageInputTokens">0</strong></div><div><span>输出 token</span><strong id="imageOutputTokens">0</strong></div><div><span>识别课程</span><strong id="imageCourses">0</strong></div></div>
             </section>
           </div>
+          <section class="settings-panel image-detail-panel">
+            <div class="section-toolbar"><div><h3>最近识别错误</h3><p>近 30 天最近 50 条，可按记录编号与客户端报错对应。</p></div></div>
+            <div id="imageImportErrors" class="image-error-list"><p class="inline-empty">暂无错误记录</p></div>
+          </section>
           <section class="settings-panel image-detail-panel">
             <div class="section-toolbar"><div><h3>明细记录</h3><p id="imageImportSummary">只保存匿名调用记录，不保存图片和课程。</p></div></div>
             <details class="trend-table image-detail-table"><summary>查看按日期与结果汇总</summary><div class="table-scroll"><table><thead><tr><th>日期</th><th>结果</th><th>次数</th><th>输入 token</th><th>输出 token</th><th>课程条数</th><th>平均耗时</th></tr></thead><tbody id="imageImportStats"></tbody></table></div></details>
@@ -322,27 +306,26 @@
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span>分享规则</span><strong id="shareRules">—</strong><small id="shareRulesDetail"></small></div>
         </div>
         <section class="settings-panel attest-panel">
-          <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></span><div><h3>App Attest 校验结果（近 7 天）</h3><p id="attestExplanation">拦截模式：伪造的签名（badSignature、replayed、wrongApp、malformed）直接拒绝；未携带签名的请求（模拟器、旧版 App、脚本）照常处理，但按 IP 限速。unknownKey、stale 视同未携带。</p></div></div>
+          <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/></svg></span><div><h3>App Attest 校验结果（近 7 天）</h3></div></div>
           <div class="table-scroll"><table class="account-table"><thead><tr><th>接口</th><th>有效</th><th>未携带</th><th>无效</th><th>无效原因</th></tr></thead><tbody id="attestTable"></tbody></table></div>
         </section>
         <div class="section-toolbar"><div><h2>分享课表</h2><p id="shareListSummary">最近更新的 200 份分享</p></div><label class="filter-label"><span>分享码 / 分享者 / 发布者 ID</span><input id="shareSearch" type="search" maxlength="40" autocomplete="off"></label></div>
         <section class="settings-panel">
           <div class="table-scroll share-scroll"><table class="account-table"><thead><tr><th>分享码</th><th>分享者</th><th>发布者</th><th>学校 · 学期</th><th>课程</th><th>更新时间</th><th></th></tr></thead><tbody id="shareTable"></tbody></table></div>
           <div id="shareDetail" class="account-detail" hidden></div>
-          <p class="stats-explanation">删除后分享码立即失效：已导入的人保留本机副本，但不再收到更新，效果与分享者自己撤销相同，无法恢复。</p>
         </section>
       </section>
 
       <section id="entitlementsView" class="content-view" hidden>
         <div class="metric-strip entitlement-strip" aria-label="实时活动权益概览">
-          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>已授权设备</span><strong id="entitledDevices">0</strong><small>拥有试用或买断权益的实时活动设备</small></div>
+          <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/></svg></span><span>已授权设备</span><strong id="entitledDevices">0</strong><small>试用或买断</small></div>
           <div class="metric-card"><span class="metric-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><span>收费状态</span><strong id="entitlementMode">—</strong><small id="entitlementModeDetail"></small></div>
         </div>
         <div class="account-layout">
           <section class="settings-panel">
-            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>实时活动权益规则</h3><p>关闭时（Beta）所有设备都能免费收到实时活动提醒；打开后只有处于 30 天试用期或已经买断的设备才会收到。</p></div></div>
+            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><div><h3>实时活动权益规则</h3></div></div>
             <div class="form-grid">
-              <label class="toggle-field wide"><input id="requireEntitlement" type="checkbox"><span><strong>实时活动需要试用或买断权益</strong><small>切换后立即生效：关闭会让之前被跳过、仍未开始的提醒重新排队；打开后没有权益的设备不再收到新提醒</small></span></label>
+              <label class="toggle-field wide"><input id="requireEntitlement" type="checkbox"><span><strong>实时活动需要试用或买断权益</strong><small>关闭即 Beta：所有设备免费；关闭时被跳过且未开始的提醒会重新排队</small></span></label>
             </div>
             <div class="dialog-actions"><button id="saveEntitlementSettingsButton" class="button primary" type="button">保存规则</button></div>
           </section>
@@ -351,28 +334,27 @@
 
       <section id="announcementsView" class="content-view" hidden>
         <div class="section-toolbar">
-          <div><h2>每一次更新，都值得被看见</h2><p>配置新版本与重要消息，在用户空闲时轻轻提醒。</p></div>
+          <h2>消息列表</h2>
           <div class="term-actions">
             <button id="refreshAnnouncements" class="button" type="button">重新加载</button>
             <button id="addAnnouncement" class="button" type="button" disabled>新增消息</button>
             <button id="saveAnnouncements" class="button primary" type="button" disabled>保存发布配置</button>
           </div>
         </div>
-        <p class="stats-explanation">勾选「启用发布」并保存后生效。重要通知优先于更新；更新只提醒低于目标版本的用户。与试用提醒合计 24 小时最多自动弹出一次，避开上课和课前 10 分钟。每条消息只自动展示一次，修改正文不会重复提醒；需要重新通知时请新建消息。</p>
+        <p class="stats-explanation">每条消息只自动弹出一次，改正文不会重复提醒，需要再通知请新建。</p>
         <div class="publication-layout">
           <div id="announcementEditors"></div>
           <aside class="publication-preview" aria-label="消息内容预览">
-            <p class="section-kicker">CONTENT PREVIEW · 内容预览</p>
-            <div class="publication-hero"><span id="publicationPreviewKind" class="badge">重要通知</span><h2 id="publicationPreviewTitle">把重要的事，告诉大家</h2><p id="publicationPreviewSubtitle">在左侧编辑，即时预览内容。</p><span id="publicationPreviewVersion"></span></div>
+            <p class="section-kicker">预览</p>
+            <div class="publication-hero"><span id="publicationPreviewKind" class="badge">重要通知</span><h2 id="publicationPreviewTitle">消息标题</h2><p id="publicationPreviewSubtitle"></p><span id="publicationPreviewVersion"></span></div>
             <div id="publicationPreviewBody" class="publication-body"></div>
             <div id="publicationPreviewAction" class="publication-action">知道了</div>
-            <p class="stats-explanation">App 使用原生卡片，自动适配深色模式与字体大小。此处为内容预览。</p>
           </aside>
         </div>
       </section>
 
       <section id="auditView" class="content-view" hidden>
-        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条管理操作，保留一年。</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="entitlement">实时活动权益</option><option value="apns">APNs</option><option value="announcement">更新与通知</option><option value="session">登录</option></select></label></div>
+        <div class="section-toolbar"><div><h2>操作记录</h2><p>最近 200 条，保留一年</p></div><label class="filter-label"><span>筛选</span><select id="auditFilter"><option value="">全部操作</option><option value="school">学校</option><option value="term">学期</option><option value="calendar">调休</option><option value="share">分享课表</option><option value="entitlement">实时活动权益</option><option value="apns">APNs</option><option value="announcement">更新与通知</option><option value="session">登录</option></select></label></div>
         <section class="settings-panel">
           <div class="table-scroll share-scroll"><table class="account-table audit-table"><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody id="auditTable"></tbody></table></div>
         </section>
@@ -380,7 +362,7 @@
 
       <section id="apnsView" class="content-view" hidden>
         <div class="section-toolbar apns-toolbar">
-          <div><div class="title-with-badge"><h2>APNs 推送配置</h2><span id="apnsStatus" class="badge">未配置</span></div><p>管理 Live Activity 使用的 Apple Push Notification 凭据。</p></div>
+          <div><div class="title-with-badge"><h2>APNs 推送配置</h2><span id="apnsStatus" class="badge">未配置</span></div></div>
           <button id="saveApnsButton" class="button primary" type="button" disabled>
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
             保存配置
@@ -389,7 +371,7 @@
 
         <div class="apns-layout">
           <section class="settings-panel">
-            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7.1 7.1 5 5 0 0 1 7.1-7.1ZM12 12l3-3m0 0 2 2 3-3-2-2m-3 3-2-2"/></svg></span><div><h3>服务凭据</h3><p>四项凭据全部留空可关闭推送。</p></div></div>
+            <div class="panel-heading"><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.6 7.6a5 5 0 1 1-7.1 7.1 5 5 0 0 1 7.1-7.1ZM12 12l3-3m0 0 2 2 3-3-2-2m-3 3-2-2"/></svg></span><div><h3>服务凭据</h3><p>.p8 文件需放在服务器上；四项全部留空即关闭推送</p></div></div>
             <div class="form-grid">
               <label class="wide">密钥文件路径<input id="apnsKeyPath" type="text" autocomplete="off" placeholder="/path/to/AuthKey_XXXX.p8"></label>
               <label>Key ID<input id="apnsKeyID" type="text" autocomplete="off" placeholder="10 位标识"></label>
@@ -398,12 +380,6 @@
               <label>调度间隔<input id="apnsTickSeconds" type="number" min="0.5" max="3600" step="0.5"><span class="input-suffix">秒</span></label>
             </div>
           </section>
-          <aside class="apns-guide">
-            <span class="section-kicker">配置指南</span><h3>让提醒，准时抵达。</h3>
-            <p>连接 Apple 推送服务，为支持远程提醒的设备安排实时通知。</p>
-            <ol><li><strong>准备推送密钥</strong><span>将 .p8 密钥文件放在服务器可读取的位置。</span></li><li><strong>核对应用信息</strong><span>Key ID、Team ID 与 Bundle ID 需对应同一个应用。</span></li><li><strong>保存后生效</strong><span>关闭推送时，将四项凭据全部清空并保存。</span></li></ol>
-            <div class="guide-note">密钥文件保留在服务器，管理台只保存文件路径。</div>
-          </aside>
         </div>
       </section>
     </main>
@@ -414,12 +390,11 @@
   <dialog id="newSchoolDialog" class="dialog">
     <form id="newSchoolForm" method="dialog">
       <div class="dialog-header">
-        <div><p class="section-kicker">新增配置</p><h2>新增学校</h2></div>
+        <h2>新增学校</h2>
         <button id="closeSchoolDialog" class="icon-button subtle" type="button" aria-label="关闭" title="关闭">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
         </button>
       </div>
-      <p class="dialog-copy">请使用稳定、简短的英文标识。创建后也可以在学校信息中修改 ID。</p>
       <div class="dialog-fields">
         <label>学校 ID<input id="newSchoolId" maxlength="80" placeholder="例如 nju" pattern="[a-zA-Z0-9][a-zA-Z0-9._\-]{1,79}" required><small>2–80 位字母、数字、点、下划线或短横线</small></label>
         <label>学校名称<input id="newSchoolName" maxlength="80" placeholder="例如 南京大学" required></label>

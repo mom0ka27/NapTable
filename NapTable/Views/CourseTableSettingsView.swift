@@ -146,11 +146,6 @@ struct CourseTableSettingsView: View {
                     ),
                     in: 1...40
                 )
-                if !table.semesterStartMonday.isEmpty {
-                    Button("清除开学日期", role: .destructive) {
-                        store.updateSemesterStart("", tableId: tableId)
-                    }
-                }
             }
         } header: {
             Text("学期与周次")

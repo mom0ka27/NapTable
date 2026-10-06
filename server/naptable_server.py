@@ -1281,7 +1281,11 @@ def site_asset(x):
     if name not in SITE_ASSETS: return x.send_json(404, {"error": "not found"})
     x.send_file(SITE_ROOT / name, SITE_ASSETS[name], "public, max-age=86400")
 
-@route("GET HEAD", "/admin", "/admin/")
+ADMIN_PAGES = ("schools", "calendar", "announcements", "apns", "image-import",
+               "shares", "entitlements", "stats", "audit")
+
+@route("GET HEAD", "/admin", "/admin/",
+       *(f"/admin/{page}{suffix}" for page in ADMIN_PAGES for suffix in ("", "/")))
 def admin_page(x):
     try:
         page = (STATIC_ROOT / "admin.html").read_text(encoding="utf-8")
@@ -1372,7 +1376,7 @@ def admin_image_import(x):
 def save_image_import(x):
     if admin_only(x): return
     config = x.image_import.save_config(x.body())
-    x.audit("imageImport.save", "", {key: config[key] for key in ("enabled", "model", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit")})
+    x.audit("imageImport.save", "", {key: config[key] for key in ("enabled", "model", "reasoningEffort", "requireAttest", "deviceDailyLimit", "ipHourlyLimit", "globalDailyLimit")} | {"customPrompt": bool(config["prompt"])})
     x.send_json(200, {"config": config, "stats": x.image_import.stats()})
 
 @route("POST", "/v1/import/image")
@@ -1390,7 +1394,7 @@ def import_image(x):
         x.send_json(200, x.image_import.recognize(x.body(), key, x.client_address()))
     except image_import.ImportError as error:
         headers = [("Retry-After", str(error.retry_after))] if error.retry_after else []
-        x.send_json(error.status, {"error": str(error)}, headers)
+        x.send_json(error.status, {"error": str(error), "errorID": error.event_id}, headers)
 
 @route("GET HEAD", "/v1/shares/{rest:path}")
 def share(x):

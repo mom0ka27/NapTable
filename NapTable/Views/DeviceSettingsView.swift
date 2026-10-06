@@ -657,8 +657,12 @@ struct LiveActivitySettingsScreen: View {
                     Label("请在系统设置中允许「实时活动」", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.orange)
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        Link("去设置", destination: url)
+                    }
                 } footer: {
-                    Text("系统关闭实时活动时，课程提醒仍会按通知设置发送。")
+                    // App 没有普通通知，系统里关掉实时活动后就不会再有任何课程提醒。
+                    Text("在系统设置里关闭本 App 的实时活动后，锁屏和灵动岛都不会显示课程。")
                 }
             }
         }
@@ -682,7 +686,7 @@ struct LiveActivitySettingsScreen: View {
         } message: {
             Text(purchases.accessMode == .unavailable || purchases.accessMode == .loading
                  ? "连接失败，请联网后重试。"
-                 : "请返回设置首页，点击顶部的“NapTable 专业版”卡片，开始试用或买断专业版。")
+                 : "请返回设置首页，点击顶部的专业版卡片，开始试用或买断专业版。")
         }
     }
 }

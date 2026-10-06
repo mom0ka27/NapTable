@@ -93,8 +93,7 @@ struct AutomaticReminderHost: ViewModifier {
         let now = Date()
         purchases.expireTrialIfNeeded(now: now)
         guard scenePhase == .active, reminder == nil, !isBlocked,
-              AnnouncementPolicy.canPresent(now: now),
-              !cloudSync.isReviewPresented, !purchases.busy, purchases.errorMessage == nil,
+              !cloudSync.isReviewPresented, !purchases.busy,
               anchor.canPresent,
               let own = scheduleStore.snapshot(useSharedNotifications: false),
               TrialReminderPolicy.isSafeToPresent(in: own, now: now) else { return }
@@ -102,8 +101,11 @@ struct AutomaticReminderHost: ViewModifier {
         if let followed = scheduleStore.snapshot(), followed.sourceLabel != nil,
            !TrialReminderPolicy.isSafeToPresent(in: followed, now: now) { return }
         if let candidate = announcements.pending {
+            guard AnnouncementPolicy.canPresent(kind: candidate.kind, now: now) else { return }
             reminder = .announcement(candidate, source: announcements.source)
-        } else if !announcements.isLoading, let candidate = TrialReminderPolicy.pending(
+        } else if !announcements.isLoading, purchases.errorMessage == nil,
+                  AnnouncementPolicy.canPresent(now: now),
+                  let candidate = TrialReminderPolicy.pending(
             accessMode: purchases.accessMode, state: purchases.state,
             expiresAt: purchases.trialExpiresAt, now: now
         ) {

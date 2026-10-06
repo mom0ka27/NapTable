@@ -38,7 +38,7 @@ struct ContentView: View {
         ))
         .onChange(of: purchases.accessMode, initial: true) { _, _ in updateWidgetBackgroundAccess() }
         .onChange(of: purchases.state) { _, _ in updateWidgetBackgroundAccess() }
-        .sheet(isPresented: $showImport) {
+        .appImportPresentation(isPresented: $showImport) {
             ImportView()
                 .environmentObject(store)
                 .environmentObject(scheduleStore)

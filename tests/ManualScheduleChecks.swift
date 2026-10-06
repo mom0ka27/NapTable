@@ -76,15 +76,126 @@ struct ManualScheduleChecks {
         precondition(resetTimes[5].start == "16:00")
         precondition(resetTimes[9].start == "20:40")
 
-        let recognition = ImageImportResult(name: "图片课表", classTimes: [], courses: [
+        let recognition = ImageImportResult(classTimes: [], courses: [
             .init(name: "数学", teacher: "李老师", classroom: "A101", weekday: 1, startPeriod: 1, endPeriod: 2, weeks: [1, 3, 5]),
             .init(name: "数学", teacher: "李老师", classroom: "A102", weekday: 3, startPeriod: 3, endPeriod: 4, weeks: []),
         ], warnings: [])
         let imageDraft = try! recognition.draft()
         precondition(imageDraft.courses.count == 1 && imageDraft.courses[0].meetings.count == 2)
         precondition(imageDraft.courses[0].meetings[0].weeks(weekCount: imageDraft.weekCount) == [1, 3, 5])
-        precondition(imageDraft.courses[0].meetings[1].weeks(weekCount: imageDraft.weekCount) == Array(1...imageDraft.weekCount))
+        precondition(imageDraft.courses[0].meetings[1].weeks(weekCount: imageDraft.weekCount).isEmpty)
+        precondition(imageDraft.courses[0].problem(periodCount: imageDraft.classTimes.count, weekCount: imageDraft.weekCount) != nil)
         precondition(recognition.reviewWarnings.count == 4)
+
+        // Partial times retain their period numbers; the count includes empty rows.
+        let partialJSON = """
+        {"name":"图片课表","semesterStartMonday":"2026-09-07","weekCount":16,"periodCount":8,
+         "classTimes":[],"periodTimes":[{"period":5,"start":"13:30","end":"14:15"},
+         {"period":6,"start":"14:25","end":null}],"warnings":[],
+         "courses":[{"name":"数学","teacher":"","classroom":"A101","weekday":1,"startPeriod":5,"endPeriod":6,"weeks":[1,3,5]}]}
+        """
+        let partial = try! JSONDecoder().decode(ImageImportResult.self, from: Data(partialJSON.utf8))
+        let partialDraft = try! partial.draft()
+        precondition(partialDraft.name == "2026 秋")
+        precondition(partialDraft.classTimes.count == 8)
+        precondition(partialDraft.classTimes[4] == ClassTime(start: "13:30", end: "14:15"))
+        precondition(partialDraft.classTimes[5].start == "14:25")
+        precondition(partialDraft.courses[0].meetings[0].startPeriod == 5)
+        precondition(partial.periodReviewWarnings.contains { $0.contains("第 6 节未读到下课") })
+        precondition(partial.periodReviewWarnings.contains { $0.contains("第 1、2、3、4、7、8 节") })
+
+        var countOnly = recognition
+        countOnly.periodCount = 12
+        precondition(try! countOnly.draft().classTimes.count == 12)
+        precondition(countOnly.periodReviewWarnings.contains { $0.contains("12 节默认作息") })
+        countOnly.periodCount = 4
+        precondition(try! countOnly.draft().classTimes.count == 4)
+
+        var complete = partial
+        complete.periodCount = 2
+        complete.periodTimes = nil
+        complete.classTimes = [.init(start: "08:15", end: "09:00"), .init(start: "09:10", end: "09:55")]
+        complete.courses[0].startPeriod = 1
+        complete.courses[0].endPeriod = 2
+        precondition(try! complete.draft().classTimes == [ClassTime(start: "08:15", end: "09:00"), ClassTime(start: "09:10", end: "09:55")])
+        precondition(complete.periodReviewWarnings.isEmpty)
+
+        // Old server JSON still decodes without either of the new fields.
+        let legacyJSON = """
+        {"name":"旧格式课表","classTimes":[],"warnings":[],
+         "courses":[{"name":"数学","teacher":"","classroom":"","weekday":1,"startPeriod":1,"endPeriod":2,"weeks":[]}]}
+        """
+        let legacy = try! JSONDecoder().decode(ImageImportResult.self, from: Data(legacyJSON.utf8))
+        precondition(legacy.periodCount == nil && legacy.periodTimes == nil)
+        precondition(try! legacy.draft().courses.count == 1)
+        let fallDate = WeekCalculator.parseDay("2026-10-05")!
+        precondition(try! legacy.draft(now: fallDate).name == "2026 秋")
+        var spring = partial
+        spring.semesterStartMonday = "2027-02-22"
+        precondition(try! spring.draft(now: fallDate).name == "2027 春")
+        precondition(try! legacy.draft(now: WeekCalculator.parseDay("2026-06-30")!).name == "2026 春")
+        precondition(try! legacy.draft(now: WeekCalculator.parseDay("2026-07-01")!).name == "2026 秋")
+
+        // A recognized time that conflicts with defaults is kept for editing.
+        var needsReview = partial
+        needsReview.periodTimes = [.init(period: 5, start: "15:30", end: "16:15")]
+        let needsReviewDraft = try! needsReview.draft()
+        precondition(needsReviewDraft.classTimes[4].start == "15:30")
+        precondition(needsReviewDraft.courses.count == 1)
+        precondition(needsReviewDraft.classTimesProblem != nil)
+        precondition(needsReview.periodReviewWarnings.contains { $0.contains("暂填作息与已识别时间") })
+
+        func expectRecognitionError(_ value: ImageImportResult, containing text: String) {
+            do { _ = try value.draft(); preconditionFailure("Expected recognition error") }
+            catch { precondition(error.localizedDescription.contains(text), error.localizedDescription) }
+        }
+        var noCourses = recognition
+        noCourses.courses = []
+        noCourses.warnings = ["截图未包含星期表头，无法确定课程安排。"]
+        precondition(try! noCourses.draft().courses.isEmpty)
+        precondition(noCourses.reviewWarnings.contains { $0.contains("截图未包含星期表头") })
+        precondition(noCourses.reviewWarnings.contains { $0.contains("手动添加") })
+
+        let optionalJSON = """
+        {"name":null,"weekCount":null,"classTimes":null,"courses":[{"name":"数学"},
+        {"name":null,"teacher":"李老师","classroom":"A101","endPeriod":6},
+        {"teacher":"李老师","startPeriod":12,"weeks":null}],"warnings":null}
+        """
+        let optional = try! JSONDecoder().decode(ImageImportResult.self, from: Data(optionalJSON.utf8))
+        var editable = try! optional.draft(now: fallDate)
+        precondition(editable.name == "2026 秋")
+        precondition(editable.courses.count == 3) // Unnamed courses must not be merged.
+        precondition(editable.classTimes.count == 12)
+        let unknownMeeting = editable.courses[0].meetings[0]
+        precondition(unknownMeeting.weekday == 0 && unknownMeeting.startPeriod == 0 && unknownMeeting.endPeriod == 0)
+        precondition(unknownMeeting.weeks(weekCount: editable.weekCount).isEmpty)
+        precondition(unknownMeeting.summary(weekCount: editable.weekCount, classTimes: editable.classTimes).contains("待填写星期"))
+        precondition(editable.courses[1].teacher == "李老师" && editable.courses[1].meetings[0].endPeriod == 6)
+        precondition(editable.courses[2].meetings[0].startPeriod == 12 && editable.courses[2].meetings[0].endPeriod == 0)
+        // Both recognized and missing values can be changed before final validation.
+        editable.courses[0].name = "高等数学"
+        editable.courses[0].meetings[0].weekday = 3
+        editable.courses[0].meetings[0].startPeriod = 1
+        editable.courses[0].meetings[0].endPeriod = 2
+        editable.courses[0].meetings[0].customWeeks = [2, 4, 6]
+        precondition(editable.courses[0].problem(periodCount: editable.classTimes.count, weekCount: editable.weekCount) == nil)
+        let blank = try! JSONDecoder().decode(ImageImportResult.self, from: Data("{}".utf8))
+        precondition(try! blank.draft().courses.isEmpty)
+        var invalid = partial
+        invalid.periodCount = 4
+        expectRecognitionError(invalid, containing: "节次")
+        invalid = partial
+        invalid.periodTimes = [.init(period: 0, start: "08:00", end: "08:45")]
+        expectRecognitionError(invalid, containing: "节次编号")
+        invalid.periodTimes = [.init(period: 5, start: "14:00", end: "13:45")]
+        expectRecognitionError(invalid, containing: "第 5 节")
+        invalid.periodTimes = [.init(period: 5, start: "", end: "14:45")]
+        expectRecognitionError(invalid, containing: "第 5 节")
+        invalid.periodTimes = [.init(period: 5, start: "14:00", end: nil), .init(period: 5, start: nil, end: "14:45")]
+        expectRecognitionError(invalid, containing: "重复")
+        invalid = complete
+        invalid.classTimes[0].end = ""
+        expectRecognitionError(invalid, containing: "不完整")
         precondition(AppAttestService.guarded(method: "POST", path: "/v1/import/image"))
         precondition(!AppAttestService.guarded(method: "GET", path: "/v1/import/image/config"))
 

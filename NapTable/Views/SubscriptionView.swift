@@ -245,6 +245,8 @@ private struct EntitlementPurchaseActions: View {
     @ObservedObject private var purchases = PurchaseManager.shared
     let accent: Color
     let muted: Color
+    @State private var restoreOutcome: PurchaseManager.RestoreOutcome?
+    @State private var showsRestoreOutcome = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -261,6 +263,12 @@ private struct EntitlementPurchaseActions: View {
             } else {
                 paidActions
             }
+        }
+        // 挂在外层：恢复出买断后购买区会收起，提示不能跟着按钮一起消失。
+        .alert(restoreTitle, isPresented: $showsRestoreOutcome) {
+            Button("知道了", role: .cancel) { }
+        } message: {
+            Text(restoreMessage)
         }
     }
 
@@ -301,6 +309,44 @@ private struct EntitlementPurchaseActions: View {
                 .font(.caption2)
                 .foregroundStyle(muted)
                 .fixedSize(horizontal: false, vertical: true)
+            restoreButton
+        }
+    }
+
+    /// 换机、重装后找回买断（审核指南 3.1.1 要求非消耗型购买提供恢复入口）。
+    private var restoreButton: some View {
+        Button {
+            Task {
+                // 用户取消时没有结果，也就不弹提示。
+                restoreOutcome = await purchases.restore()
+                showsRestoreOutcome = restoreOutcome != nil
+            }
+        } label: {
+            HStack(spacing: 6) {
+                if purchases.restoring { ProgressView().controlSize(.small).tint(accent) }
+                Text(purchases.restoring ? "正在恢复…" : "恢复购买")
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
+        .frame(minHeight: 44)
+        .disabled(purchases.busy || purchases.restoring)
+    }
+
+    private var restoreTitle: String {
+        switch restoreOutcome {
+        case .restored: "已恢复"
+        case .nothingToRestore: "没有可恢复的购买"
+        case .failed, nil: "恢复失败"
+        }
+    }
+
+    private var restoreMessage: String {
+        switch restoreOutcome {
+        case .restored: purchases.state == .lifetime ? "专业版已永久解锁。" : "专业版试用已恢复。"
+        case .nothingToRestore: "当前 Apple 账号下没有找到专业版的买断记录。"
+        case .failed(let reason): reason
+        case nil: ""
         }
     }
 
@@ -339,7 +385,7 @@ private struct EntitlementPurchaseActions: View {
             .opacity(available ? 1 : 0.5)
         }
         .buttonStyle(.plain)
-        .disabled(purchases.busy || !available)
+        .disabled(purchases.busy || purchases.restoring || !available)
     }
 
     private func status(_ text: String, icon: String) -> some View {

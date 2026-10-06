@@ -97,6 +97,13 @@ nonisolated enum WeekCalculator {
     /// `<year>-<month>-<day>` in the school's time zone.
     static func todayText() -> String { format(Date()) }
 
+    /// 导入课表统一用「2026 秋」命名；7 月起为秋季，之前为春季。
+    static func semesterName(for date: Date) -> String {
+        let year = calendar.component(.year, from: date)
+        let season = calendar.component(.month, from: date) >= 7 ? "秋" : "春"
+        return "\(year) \(season)"
+    }
+
     static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)
         value.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current

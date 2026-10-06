@@ -90,19 +90,26 @@ struct ImportView: View {
             .modifier(ImportSearchToolbar(hideSearch: imported != nil))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(imported == nil ? "取消" : "完成") {
+                    Button {
                         if let imported, imported.termID == nil {
                             store.updateSemesterStart(WeekCalculator.format(WeekCalculator.monday(of: semesterStart)))
                         }
                         if imported != nil { onFinish?() }
                         dismiss()
+                    } label: {
+                        if imported == nil {
+                            Image(systemName: "xmark")
+                        } else {
+                            Text("完成")
+                        }
                     }
+                    .accessibilityLabel(imported == nil ? "取消" : "完成")
                 }
             }
             .alert("未能完成首次导入", isPresented: Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })) {
                 Button("知道了", role: .cancel) { importError = nil }
             } message: { Text(importError ?? "") }
-            .sheet(item: $webSchool) { school in
+            .appImportPresentation(item: $webSchool) { school in
                 WebImporterView(school: school, initialMode: .newTable, requiresCourses: requiresImport) { schedule, mode in
                     guard !requiresImport || !schedule.courses.isEmpty else {
                         importError = "没有读取到课程，请确认学期和导入入口后重试。"
@@ -188,8 +195,8 @@ extension SchoolConfig {
 }
 
 /// The parse summary plus the destination picker. It is embedded inside whatever
-/// sheet performed the import, so a successful login never has to stack a second
-/// sheet on top of one that is still dismissing.
+/// page performed the import, so a successful login never has to stack a second
+/// presentation on top of one that is still dismissing.
 struct ImportedScheduleForm: View {
     let schedule: ImportedSchedule
     @Binding var mode: AppStore.ImportMode

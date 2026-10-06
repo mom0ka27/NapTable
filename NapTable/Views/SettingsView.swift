@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 按使用场景组织设置：课表、显示与外观、桌面与锁屏、数据与隐私、帮助与关于。
+/// 按使用场景组织设置：课表、显示与外观、桌面与锁屏、同步与数据、帮助与关于。
 /// 当前课表提供直达入口；学期、周次和节次时间仍由各张课表分别保存。
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
@@ -229,7 +229,7 @@ struct SettingsView: View {
                 PrivacySettingsView()
             }
         } header: {
-            Text("数据与隐私")
+            Text("同步与数据")
         }
     }
 
