@@ -583,9 +583,12 @@ struct NativeScheduleMonthView: View {
             .foregroundStyle(isSelected ? style.canvasColor(dark: colorScheme == .dark) ?? .white : styleInk)
             .background(isSelected ? styleInk : Color.clear)
             .overlay(alignment: .topTrailing) {
-                styledAdjustmentBadge(day.adjustment)
-                    .padding(2)
-                    .background(style.canvasColor(dark: colorScheme == .dark))
+                // 没有调休时什么都不画：空角标外面的留白和底色会在选中的反白格上咬掉一角。
+                if day.adjustment != nil {
+                    styledAdjustmentBadge(day.adjustment)
+                        .padding(2)
+                        .background(style.canvasColor(dark: colorScheme == .dark))
+                }
             }
         case .minimal:
             EmptyView()
