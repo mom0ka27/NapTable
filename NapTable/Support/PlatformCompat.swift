@@ -127,6 +127,17 @@ extension ShapeStyle where Self == AppBackgroundStyle {
 }
 
 extension View {
+    /// 全 App 的强调色，挂在根视图上。sheet、全屏弹层从环境继承 `.tint`；iOS 上
+    /// 再同步给所在窗口的 `tintColor`，UIKit 弹出的系统提示框、分享面板和菜单跟的是窗口的颜色。
+    @ViewBuilder
+    func appThemeTint(_ color: Color) -> some View {
+        #if os(iOS)
+        self.tint(color).background { WindowTintBridge(color: color) }
+        #else
+        self.tint(color)
+        #endif
+    }
+
     /// 设置、导入等 Form / List 页面的底色跟随主题背景偏好。
     func appListBackground() -> some View {
         scrollContentBackground(.hidden)
@@ -201,6 +212,37 @@ extension View {
         #endif
     }
 }
+
+#if os(iOS)
+/// 把主题色写到所在窗口的 `tintColor`：进入窗口时写一次，之后主题变了再写。
+private struct WindowTintBridge: UIViewRepresentable {
+    let color: Color
+
+    func makeUIView(context: Context) -> TintView {
+        let view = TintView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: TintView, context: Context) { view.color = UIColor(color) }
+
+    final class TintView: UIView {
+        var color: UIColor? { didSet { applyToWindow() } }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            applyToWindow()
+        }
+
+        /// 根视图随 App 状态频繁重画，颜色没变就不写，免得整个窗口反复刷新 tint。
+        private func applyToWindow() {
+            guard let color, let window, window.tintColor != color else { return }
+            window.tintColor = color
+        }
+    }
+}
+#endif
 
 extension ToolbarItemPlacement {
     /// `.topBarLeading` is iOS-only; on the Mac the leading toolbar slot is the

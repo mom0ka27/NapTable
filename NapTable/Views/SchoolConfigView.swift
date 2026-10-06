@@ -162,9 +162,9 @@ struct MySchedulesView<OwnedSchedules: View>: View {
                     HStack(spacing: 12) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.title3)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(.tint)
                             .frame(width: 44, height: 44)
-                            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                            .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
                         VStack(alignment: .leading, spacing: 4) {
                             Text("分享自己的课表").font(.headline)
                             Text("生成分享码，把课表发给朋友")
@@ -231,9 +231,9 @@ private struct ShareOwnScheduleView: View {
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: "calendar")
                             .font(.title2)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(.tint)
                             .frame(width: 48, height: 48)
-                            .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+                            .background(.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
                         VStack(alignment: .leading, spacing: 5) {
                             Text("当前课表").font(.caption).foregroundStyle(.secondary)
                             Text(store.selectedTable?.name ?? "还没有课表")
@@ -258,7 +258,7 @@ private struct ShareOwnScheduleView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 24)
-                        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+                        .background(.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
 
                         ShareLink(item: credential.code) {
                             Label("发送给朋友", systemImage: "square.and.arrow.up")
@@ -269,7 +269,7 @@ private struct ShareOwnScheduleView: View {
                         .controlSize(.large)
                     } else {
                         VStack(spacing: 10) {
-                            Image(systemName: "link").font(.largeTitle).foregroundStyle(Color.accentColor)
+                            Image(systemName: "link").font(.largeTitle).foregroundStyle(.tint)
                             Text("生成一个分享码").font(.headline)
                             Text("只分享当前这张课表，朋友无法修改你的课程。")
                                 .font(.subheadline).foregroundStyle(.secondary)

@@ -41,6 +41,7 @@ NapTable 是一个原生 Apple 平台课表应用，面向 iOS、iPadOS、macOS 
 
 - [功能说明](docs/FEATURES.md)：课表视图、农历节日、调休、小组件、实时活动和分享行为。
 - [开发与构建](docs/DEVELOPMENT.md)：项目结构、平台目标、App Group、构建和测试命令。
+- [多主题功能与五套设计](docs/schedule-styles.md)：风格规格、示意图、共享基础、实现进度与验收要求。
 - [服务端部署与配置](server/README.md)：本地启动、网页管理、学校学期配置、分享 API 和 APNs 推送。
 - [Live Activity v2](docs/live-activity-v2.md)：实时活动的客户端行为、HTTP 契约、调度与验收边界。
 - [第三方声明](THIRD_PARTY_NOTICES.md)

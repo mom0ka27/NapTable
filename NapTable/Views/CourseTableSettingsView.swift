@@ -66,11 +66,11 @@ struct CourseTableSettingsView: View {
                     Text("名称").foregroundStyle(.primary)
                     Spacer(minLength: 12)
                     Text(table.name)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(.tint)
                         .lineLimit(1)
                     Image(systemName: "pencil")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(.tint)
                 }
                 .contentShape(Rectangle())
             }
@@ -94,7 +94,7 @@ struct CourseTableSettingsView: View {
                         Image(systemName: "checkmark.circle.fill")
                         Text("正在使用")
                     }
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.tint)
                 }
             } else {
                 Button("切换到这张课表") { store.selectTable(tableId) }

@@ -37,7 +37,7 @@ struct ImportView: View {
                     List {
                         Section {
                             Label("课表已添加", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(.tint)
                             LabeledContent("课表", value: imported.name)
                             // 包括完整保留的重叠课程。
                             LabeledContent("课程", value: "\(Set(imported.courses.filter { !$0.isHidden }.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }).count) 门")
@@ -236,7 +236,7 @@ struct ImportedScheduleForm: View {
         List {
             Section("解析结果") {
                 Label("解析成功", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.tint)
                 // 覆盖和追加都沿用当前课表的名字，只有新建课表才能起名。
                 if mode == .newTable {
                     LabeledContent("课表名称") {
@@ -281,7 +281,7 @@ struct ImportedScheduleForm: View {
                                 Text(item.title).foregroundStyle(.primary)
                                 Spacer()
                                 if mode == item {
-                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                                    Image(systemName: "checkmark").foregroundStyle(.tint)
                                 }
                             }
                             // With `.buttonStyle(.plain)` the label's `Spacer()` is
@@ -331,14 +331,14 @@ struct ImportedScheduleForm: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: picked ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(picked ? Color.accentColor : .secondary)
+                    .foregroundStyle(picked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(member.course.name)
                         .foregroundStyle(.primary)
                     if mode == .appendToCurrent && member.course.id > 0 {
                         Text("当前课表已有").font(.caption).foregroundStyle(.secondary)
                     }
-                    if picked { Text("优先显示").font(.caption).foregroundStyle(Color.accentColor) }
+                    if picked { Text("优先显示").font(.caption).foregroundStyle(.tint) }
                     let subtitle = member.subtitle
                     if !subtitle.isEmpty {
                         Text(subtitle).font(.caption).foregroundStyle(.secondary)

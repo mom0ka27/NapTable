@@ -87,7 +87,7 @@ struct ManualScheduleWizard: View {
             HStack(spacing: 6) {
                 ForEach(Step.allCases, id: \.rawValue) { item in
                     Capsule()
-                        .fill(item.rawValue <= step.rawValue ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .fill(item.rawValue <= step.rawValue ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.secondary.opacity(0.25)))
                         .frame(height: 3)
                 }
             }
@@ -609,14 +609,14 @@ private struct WeekChipGrid: View {
                         Text("\(week)")
                             .font(.caption.weight(.medium).monospacedDigit())
                             .frame(maxWidth: .infinity, minHeight: 32)
-                            .foregroundStyle(on ? Color.cpuBrand : .secondary)
+                            .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                             .background(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(on ? Color.cpuBrand.opacity(0.14) : Color.appSecondaryGroupedBackground)
+                                    .fill(on ? AnyShapeStyle(.tint.opacity(0.14)) : AnyShapeStyle(Color.appSecondaryGroupedBackground))
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .stroke(on ? Color.cpuBrand : Color.appSeparator.opacity(0.45), lineWidth: 1)
+                                    .stroke(on ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.appSeparator.opacity(0.45)), lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)

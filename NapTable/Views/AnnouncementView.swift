@@ -5,8 +5,11 @@ struct AnnouncementView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appThemeBrand) private var themeBrand
     @State private var linkFailed = false
-    private var accent: Color { item.kind == .update ? Color(red: 0.34, green: 0.40, blue: 0.85) : Color(red: 0.16, green: 0.55, blue: 0.49) }
+    private var palette: ThemePalette { ThemePalette.of(themeBrand) }
+    private var accent: Color { palette.text(dark: colorScheme == .dark) }
+    private var fill: Color { palette.fill(dark: colorScheme == .dark) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,8 +77,8 @@ struct AnnouncementView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, minHeight: 50)
-                .foregroundStyle(Color.white)
-                .background(accent, in: RoundedRectangle(cornerRadius: 16))
+                .foregroundStyle(palette.onFill(dark: colorScheme == .dark))
+                .background(fill, in: RoundedRectangle(cornerRadius: 16))
                 .contentShape(RoundedRectangle(cornerRadius: 16))
             }
             .buttonStyle(.plain)

@@ -8,12 +8,12 @@ struct ShareOwnerMonogram: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(Color.accentColor.opacity(0.16))
+            Circle().fill(.tint.opacity(0.16))
             if let initial = name.trimmedNonEmpty?.first {
                 Text(String(initial)).font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.tint)
             } else {
-                Image(systemName: "person.fill").font(.system(size: size * 0.44)).foregroundStyle(Color.accentColor)
+                Image(systemName: "person.fill").font(.system(size: size * 0.44)).foregroundStyle(.tint)
             }
         }
         .frame(width: size, height: size)

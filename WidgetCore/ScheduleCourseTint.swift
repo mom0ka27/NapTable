@@ -16,10 +16,10 @@ nonisolated enum ScheduleCourseTint {
         let textLightness: Double
         let borderLightness: Double
 
-        /// 文字与圆点用的高饱和色。
+        /// 文字与圆点用的高饱和色。深色用 0.80：原来的 0.72 下，蓝色相的课在深色今天列上只有 3.3:1。
         func accent(scheme: ColorScheme) -> Color {
             if scheme == .dark {
-                return color(saturation: min(0.82, saturation + 0.08), lightness: 0.72)
+                return color(saturation: min(0.82, saturation + 0.08), lightness: 0.80)
             }
             return color(saturation: min(0.76, saturation + 0.04), lightness: textLightness)
         }
@@ -43,7 +43,7 @@ nonisolated enum ScheduleCourseTint {
                 // 石板灰这类低饱和主题保持灰调，只压住过艳的自选色。
                 saturation: min(0.76, saturation),
                 backgroundLightness: 0.91,
-                textLightness: 0.28,
+                textLightness: Self.textLightness,
                 borderLightness: 0.52
             )
         }
@@ -52,10 +52,14 @@ nonisolated enum ScheduleCourseTint {
             hue: Double(hash % 360) / 360,
             saturation: 0.58 + Double((hash >> 8) % 18) / 100,
             backgroundLightness: 0.89 + Double((hash >> 16) % 5) / 100,
-            textLightness: 0.25 + Double((hash >> 24) % 8) / 100,
+            textLightness: Self.textLightness,
             borderLightness: 0.48 + Double((hash >> 20) % 10) / 100
         )
     }
+
+    /// 浅色文字的亮度，所有课程一样。原来按哈希在 0.25–0.32 之间取，黄绿色相的课名
+    /// 只有 3.1:1；固定到 0.24 后任何色相在卡片淡底上都在 4.5:1 以上。
+    private static let textLightness = 0.24
 
     static func accent(for name: String, scheme: ColorScheme, solid: ScheduleLiveActivityRGB? = nil) -> Color {
         swatch(for: name, solid: solid).accent(scheme: scheme)

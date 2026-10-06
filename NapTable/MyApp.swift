@@ -5,10 +5,13 @@ import ActivityKit
 
 @main
 struct MyApp: App {
-    @StateObject private var store = AppStore()
     @StateObject private var themeSettings = NativeThemeSettings.shared
 
     init() {
+        #if DEBUG
+        // 截图演示只使用内存里的示例课表，不启动购买、推送或实时活动服务。
+        if ProcessInfo.processInfo.environment["NAPTABLE_STYLE_DEMO"] == "1" { return }
+        #endif
         PurchaseManager.shared.start()
         #if os(iOS)
         // Background task identifiers must be registered before launch ends.
@@ -58,13 +61,37 @@ struct MyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppEntryView()
-                .environmentObject(store)
+            rootView
+                .environment(\.scheduleStyle, themeSettings.style)
                 .environment(\.appThemeBrand, themeSettings.brandRGB)
                 .environment(\.appThemeBackgroundEnabled, themeSettings.themeBackgroundEnabled)
+                // 主题色挂在根部：各页面挂在外层的 sheet、全屏弹层都从这里继承，不再显示系统蓝。
+                .appThemeTint(themeSettings.brandColor)
         }
         #if os(macOS)
         .defaultSize(width: 900, height: 720)
         #endif
+    }
+
+    @ViewBuilder
+    private var rootView: some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NAPTABLE_STYLE_DEMO"] == "1" {
+            ScheduleStyleDemoRoot()
+        } else {
+            NormalAppRoot()
+        }
+        #else
+        NormalAppRoot()
+        #endif
+    }
+}
+
+/// The in-memory Debug gallery never constructs the normal app's stores or starts sync.
+private struct NormalAppRoot: View {
+    @StateObject private var store = AppStore()
+
+    var body: some View {
+        AppEntryView().environmentObject(store)
     }
 }

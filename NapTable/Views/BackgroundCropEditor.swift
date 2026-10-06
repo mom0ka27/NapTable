@@ -397,6 +397,7 @@ struct BackgroundCropLayer: View {
 /// 和课表页同一个结构：一整块淡平涂面板、节次间的细分隔线、零星几张课程卡片，
 /// 空节次不画格子。底色和课表页共用（`ScheduleSurface`），预览才准。
 private struct TimetableSilhouette: View {
+    @Environment(\.scheduleStyle) private var style
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scheduleHasBackgroundImage) private var hasBackground
     private let columns = 5
@@ -421,8 +422,16 @@ private struct TimetableSilhouette: View {
                     ForEach(0..<rows, id: \.self) { row in
                         GridRow {
                             ForEach(0..<columns, id: \.self) { column in
-                                RoundedRectangle(cornerRadius: gap * 1.4, style: .continuous)
-                                    .fill(cardColor(row: row, column: column) ?? .clear)
+                                let courseColor = cardColor(row: row, column: column)
+                                let radius = style == .minimal ? gap * 1.4 : min(gap * 1.4, CGFloat(style.layout.cornerRadius))
+                                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                                    .fill(courseColor ?? (style.layout.grid == .cells ? Color.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark) : .clear))
+                                    .overlay {
+                                        if style.layout.grid == .cells || style.layout.grid == .table {
+                                            RoundedRectangle(cornerRadius: radius)
+                                                .strokeBorder(Color.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 0.6)
+                                        }
+                                    }
                             }
                         }
                     }
@@ -438,7 +447,7 @@ private struct TimetableSilhouette: View {
 
     /// 节次之间的细线，落在两行中间的空隙里。
     private func rowRules(rows: Int, gap: CGFloat) -> some View {
-        let color = Color.scheduleCellBorder(dark: colorScheme == .dark).opacity(0.7)
+        let color = Color.scheduleCellBorder(dark: colorScheme == .dark).opacity(style.layout.grid == .cells ? 0 : 0.7)
         return Canvas { context, size in
             let step = (size.height + gap) / CGFloat(rows)
             var path = Path()
