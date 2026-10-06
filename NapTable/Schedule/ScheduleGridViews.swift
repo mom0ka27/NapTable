@@ -195,7 +195,14 @@ struct NativeScheduleDayColumn: View {
         }
         .frame(width: columnWidth)
         .background {
-            if style == .table && day >= 6 { Color.primary.opacity(0.035) }
+            if style == .table {
+                // 假期列画斜线底纹，周末列铺浅灰；调休上班的周末照常是白底。
+                if adjustment?.kind == .off {
+                    ScheduleHolidayHatch().padding(.top, showsDateHeader ? Self.dateHeaderHeight : 0)
+                } else if day >= 6 && adjustment?.kind != .swap {
+                    Color.primary.opacity(0.035)
+                }
+            }
         }
     }
 

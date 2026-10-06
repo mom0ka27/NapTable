@@ -255,6 +255,27 @@ struct ScheduleStyledSlotLabel: View {
     }
 }
 
+/// Diagonal hatching for a day off in the table style. A grey column already means "weekend",
+/// so a holiday needs a mark of its own.
+struct ScheduleHolidayHatch: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            var x = -size.height
+            while x < size.width {
+                path.move(to: CGPoint(x: x, y: size.height))
+                path.addLine(to: CGPoint(x: x + size.height, y: 0))
+                x += 6
+            }
+            context.stroke(path, with: .color(.scheduleCellBorder(dark: scheme == .dark)), lineWidth: 0.6)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The one set of rules for the table style: every shared edge is stroked once, at one weight.
 /// Place it behind the day columns. A course tile stops just short of the rules around it, and a
 /// rule that would cross a course spanning several periods is left out.
