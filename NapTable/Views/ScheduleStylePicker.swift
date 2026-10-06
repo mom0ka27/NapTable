@@ -78,7 +78,8 @@ private struct StylePreview: View {
             }
         }
         .padding(Self.padding)
-        .background { ScheduleSurface(cornerRadius: 12, isPanel: true) }
+        // The table draws its own frame; a panel border around it would read as a second box.
+        .background { ScheduleSurface(cornerRadius: 12, isPanel: true, showsBorder: style != .table) }
         .environment(\.scheduleStyle, style)
         .environment(\.scheduleStaticRendering, true)
         .environment(\.dynamicTypeSize, .medium)

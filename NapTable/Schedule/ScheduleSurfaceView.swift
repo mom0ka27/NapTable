@@ -775,7 +775,7 @@ struct NativeScheduleView: View {
     /// 整周放在一块面板上，空节次不再各画一个格子，只靠细分隔线分行。
     private func weekGrid(_ result: NativeScheduleResult) -> some View {
         let rowHeight = weekGridRowHeight
-        let panelInsets = 2 * Self.panelPadding
+        let panelInsets = 2 * stylePanelPadding
         return VStack(alignment: .leading, spacing: 8) {
             GeometryReader { proxy in
                 let contentWidth = proxy.size.width - 2 * Self.contentInset
@@ -796,8 +796,8 @@ struct NativeScheduleView: View {
                         rowHeight: rowHeight,
                         showsDateHeader: preferences.showDateHeader
                     )
-                    .padding(Self.panelPadding)
-                    .background { ScheduleSurface(cornerRadius: 20, isPanel: true) }
+                    .padding(stylePanelPadding)
+                    .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
                     .frame(width: contentWidth, alignment: .leading)
                     .padding(.horizontal, Self.contentInset)
                 }
@@ -1646,7 +1646,8 @@ struct NativeScheduleView: View {
         let exportDays = isDayView ? [selectedDay] : visibleDays
         let layout = ScheduleShareImageLayout(
             isDayView: isDayView,
-            slotCount: slotCount(week: week, result: result)
+            slotCount: slotCount(week: week, result: result),
+            flushPanel: style == .table
         )
         let date = isDayView
             ? [dayLabel(selectedDay), dayDate(selectedDay, week: week, result: result)]
@@ -1686,7 +1687,7 @@ struct NativeScheduleView: View {
                     showsNowLine: false
                 )
                 .padding(layout.panelPadding)
-                .background { ScheduleSurface(cornerRadius: 20, isPanel: true) }
+                .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
             }
         }
         .environment(\.colorScheme, colorScheme)
@@ -2116,6 +2117,8 @@ struct NativeScheduleView: View {
     private var styleColumnGap: CGFloat { style == .minimal || style == .grid ? 5 : 0 }
     /// 周视图面板内边距：面板和第一行、最后一列之间留的那一点白。分享图也用它。
     static let panelPadding: CGFloat = 6
+    /// 表格的格线贴着面板边画，表格外框就是面板的边；留了内边距会和面板细边套成两层框。
+    private var stylePanelPadding: CGFloat { style == .table ? 0 : Self.panelPadding }
     /// 周次 / 月份那一行的高度，三种视图共用，切换时顶栏不跳。
     private static let navigatorHeight: CGFloat = 36
     /// 周次 / 月份标题比页边再往里缩一点：下面的面板是圆角，贴着页边的字会显得比面板靠外。

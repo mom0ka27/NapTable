@@ -4,6 +4,8 @@ import SwiftUI
 struct ScheduleShareImageLayout {
     let isDayView: Bool
     let slotCount: Int
+    /// 表格风格的周视图不留面板内边距，见 `NativeScheduleView.stylePanelPadding`。
+    var flushPanel = false
 
     var width: CGFloat { isDayView ? 360 : 560 }
     var inset: CGFloat { 24 }
@@ -11,7 +13,7 @@ struct ScheduleShareImageLayout {
     var footerHeight: CGFloat { 56 }
     var dateHeaderHeight: CGFloat { isDayView ? 0 : NativeScheduleDayColumn.dateHeaderHeight }
     /// 周视图和屏幕上一样套在一块面板里，这是面板的内边距；日视图屏幕上没有面板。
-    var panelPadding: CGFloat { isDayView ? 0 : NativeScheduleView.panelPadding }
+    var panelPadding: CGFloat { isDayView || flushPanel ? 0 : NativeScheduleView.panelPadding }
     /// 日视图卡片固定用标准字号下的高度，不随系统字号变。
     var timelineCardHeight: CGFloat { NativeScheduleDayTimeline.standardCardHeight }
 

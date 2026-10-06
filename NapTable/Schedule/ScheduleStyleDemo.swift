@@ -168,7 +168,9 @@ private struct ScheduleStyleDemoContent: View {
             // 和正式周视图一样，只有简约和格子在两天之间留缝。
             let gap: CGFloat = style == .minimal || style == .grid ? 3 : 0
             let rowHeight = NativeScheduleDayColumn.slotHeight
-            let columnWidth = max(12, (geometry.size.width - 12 - axisWidth - gap * 7) / 7)
+            // 表格的格线贴着面板边画，不留内边距，和正式周视图一致。
+            let panelPadding: CGFloat = style == .table ? 0 : 6
+            let columnWidth = max(12, (geometry.size.width - 2 * panelPadding - axisWidth - gap * 7) / 7)
             HStack(alignment: .top, spacing: gap) {
                 VStack(spacing: 0) {
                     Text("4月")
@@ -223,8 +225,8 @@ private struct ScheduleStyleDemoContent: View {
                     )
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 6)
+            .padding(.horizontal, panelPadding)
+            .padding(.bottom, panelPadding)
             // 正式组件负责每列风格；此处只补主视图私有的简约横线与公共面板。
             .background {
                 if style == .minimal {
@@ -241,7 +243,7 @@ private struct ScheduleStyleDemoContent: View {
                     }
                 }
             }
-            .background { ScheduleSurface(cornerRadius: 20, isPanel: true) }
+            .background { ScheduleSurface(cornerRadius: 20, isPanel: true, showsBorder: style != .table) }
         }
         .frame(height: NativeScheduleDayColumn.dateHeaderHeight
                + CGFloat(ScheduleStyleDemoData.clocks.count) * (NativeScheduleDayColumn.slotHeight + NativeScheduleDayColumn.slotGap) + 3)

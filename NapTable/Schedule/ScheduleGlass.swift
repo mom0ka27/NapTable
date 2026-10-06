@@ -204,6 +204,8 @@ struct ScheduleSurface: View {
     var isCard = false
     /// 周视图的整块面板。有背景图时只是一层淡平涂，不模糊，见 `schedulePanelSurface`。
     var isPanel = false
+    /// 内容自己画外框时（表格的格线）关掉这圈细边，免得套成两层框。
+    var showsBorder = true
 
     var body: some View {
         let radius = style == .minimal || style == .grid ? cornerRadius : CGFloat(style.layout.cornerRadius)
@@ -220,7 +222,9 @@ struct ScheduleSurface: View {
                 shape.fill(.scheduleCellSurface(hasBackground: hasBackground, dark: colorScheme == .dark))
             }
         }
-        .overlay { shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1) }
+        .overlay {
+            if showsBorder { shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1) }
+        }
         .overlay {
             if style == .paper {
                 shape.inset(by: 3).stroke(style.inkColor(dark: colorScheme == .dark).opacity(0.2), lineWidth: 0.5)
