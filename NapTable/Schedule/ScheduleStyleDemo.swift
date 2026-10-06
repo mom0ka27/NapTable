@@ -164,7 +164,8 @@ private struct ScheduleStyleDemoContent: View {
 
     private var weekGrid: some View {
         GeometryReader { geometry in
-            let axisWidth: CGFloat = 32
+            // 正式周视图的节次轴宽 42；简约的示例沿用原来的窄轴。
+            let axisWidth: CGFloat = style == .minimal ? 32 : 42
             // 和正式周视图一样，只有简约和格子在两天之间留缝。
             let gap: CGFloat = style == .minimal || style == .grid ? 3 : 0
             let rowHeight = NativeScheduleDayColumn.slotHeight
@@ -178,12 +179,22 @@ private struct ScheduleStyleDemoContent: View {
                         .frame(height: NativeScheduleDayColumn.dateHeaderHeight)
                     VStack(spacing: NativeScheduleDayColumn.slotGap) {
                         ForEach(ScheduleStyleDemoData.clocks) { clock in
-                            VStack(spacing: 2) {
-                                Text(String(clock.number)).font(.system(size: 13, weight: .bold, design: style.fontDesign))
-                                Text(clock.start).font(.system(size: 8, design: style.fontDesign))
+                            if style == .minimal {
+                                VStack(spacing: 2) {
+                                    Text(String(clock.number)).font(.system(size: 13, weight: .bold, design: style.fontDesign))
+                                    Text(clock.start).font(.system(size: 8, design: style.fontDesign))
+                                }
+                                .monospacedDigit()
+                                .frame(height: rowHeight)
+                            } else {
+                                // 其余风格用正式的节次标签：素笺写「一 二 三」，站牌标出上午 / 下午 / 晚上。
+                                ScheduleStyledSlotLabel(
+                                    slot: clock,
+                                    startsSession: ScheduleStyleDemoData.clocks.first { $0.number == clock.number - 1 }
+                                        .map { ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(clock.start) } ?? true
+                                )
+                                .frame(width: axisWidth, height: rowHeight)
                             }
-                            .monospacedDigit()
-                            .frame(height: rowHeight)
                         }
                     }
                 }
