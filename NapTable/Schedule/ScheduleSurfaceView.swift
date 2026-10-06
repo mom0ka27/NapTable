@@ -1668,7 +1668,7 @@ struct NativeScheduleView: View {
                         style: style, blocks: blocks(for: selectedDay, week: week, result: result),
                         clocks: periodSlots(on: rawDayDate(selectedDay, week: week, result: result)),
                         slotCount: slotCount(week: week, result: result), cardHeight: layout.timelineCardHeight,
-                        hasNote: adjustment(day: selectedDay, week: week, result: result) != nil
+                        hasNote: adjustment(day: selectedDay, week: week, result: result) != nil, isStatic: true
                     ))
             } else {
                 // 和屏幕上一样，整周套在一块面板里。

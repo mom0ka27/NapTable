@@ -54,8 +54,9 @@ struct ScheduleStyledDayView: View {
     }
 
     /// Height must match the rows used here: the outer horizontal pager has a fixed cross axis.
+    /// `isStatic` is the share image, which has no "now" and is framed to exactly this height.
     static func height(style: ScheduleStyle, blocks: [NativeScheduleCourseBlock], clocks: [ScheduleSlot],
-                       slotCount: Int, cardHeight: CGFloat, hasNote: Bool = false) -> CGFloat {
+                       slotCount: Int, cardHeight: CGFloat, hasNote: Bool = false, isStatic: Bool = false) -> CGFloat {
         let note: CGFloat = hasNote ? 42 : 0
         let rows = Array(clocks.prefix(slotCount))
         switch style {
@@ -65,10 +66,13 @@ struct ScheduleStyledDayView: View {
             return note + 32 + rows.reduce(CGFloat(0)) { value, slot in
                 value + CGFloat(max(1, blocks.filter { $0.startSlot <= slot.number && slot.number <= $0.endSlot }.count)) * tableRowHeight(cardHeight)
             }
-        case .paper, .board:
+        case .paper:
             if blocks.isEmpty { return max(220, cardHeight * 2) }
-            // At most three time-of-day / status sections, including their headings and separators.
+            // At most three time-of-day sections, including their headings and separators.
             return note + CGFloat(blocks.count) * cardHeight + 3 * 48 + 32
+        case .board:
+            if blocks.isEmpty { return max(220, cardHeight * 2) }
+            return note + ScheduleBoardDayView.height(blocks: blocks, cardHeight: cardHeight, isStatic: isStatic)
         case .minimal: return NativeScheduleDayTimeline.height(blocks: blocks, cardHeight: cardHeight)
         }
     }
@@ -129,16 +133,11 @@ struct ScheduleStyledDayView: View {
     }
 
     private var board: some View {
-        courseSections([
-            (title: "正在上", courses: orderedBlocks.filter { status.phase($0) == .current }),
-            (title: status.now == nil ? "课程安排" : "接下来", courses: orderedBlocks.filter { status.phase($0) == .upcoming }),
-            (title: "已结束", courses: orderedBlocks.filter { status.phase($0) == .completed })
-        ])
-        .padding(.vertical, 8)
-        .background { ScheduleSurface(cornerRadius: 0, isPanel: true, showsBorder: style.framesPanel) }
+        ScheduleBoardDayView(blocks: orderedBlocks, status: status, cardHeight: cardHeight, isEditable: isEditable,
+                             onCourseSelected: onCourseSelected, onCoursePreview: onCoursePreview)
     }
 
-    /// Empty sections are dropped. The last row of the last section closes the list, so it gets no
+    /// Paper's time-of-day sections; empty ones are dropped. The last row of the last section closes the list, so it gets no
     /// divider: one more rule there would sit right on top of the panel's edge.
     private func courseSections(_ sections: [(title: String, courses: [NativeScheduleCourseBlock])]) -> some View {
         let shown = sections.filter { !$0.courses.isEmpty }
@@ -308,14 +307,14 @@ private struct ScheduleDaySectionHeading: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(title).font(.system(size: 13, weight: .bold, design: style.fontDesign))
-            Rectangle().fill(style.inkColor(dark: scheme == .dark).opacity(style == .board ? 0.6 : 0.2))
-                .frame(height: style == .board ? 2 : 0.5)
+            Rectangle().fill(style.inkColor(dark: scheme == .dark).opacity(0.2)).frame(height: 0.5)
         }
         .foregroundStyle(style.inkColor(dark: scheme == .dark))
         .padding(.horizontal, 12)
     }
 }
 
+/// A course row of the paper day view.
 private struct ScheduleStyledDepartureRow: View {
     @Environment(\.scheduleStyle) private var style
     @Environment(\.colorScheme) private var scheme
@@ -325,22 +324,18 @@ private struct ScheduleStyledDepartureRow: View {
     var showsDivider = true
 
     private var dark: Bool { scheme == .dark }
-    private var inverse: Bool { style == .board && status.phase(block) == .current }
-    private var ink: Color { inverse ? (style.canvasColor(dark: dark) ?? .white) : style.inkColor(dark: dark) }
+    private var ink: Color { style.inkColor(dark: dark) }
     private var accent: Color { style.styleAccent(dark: dark, fallback: .primary) }
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(status.start(block)).font(.system(size: style == .board ? 24 : 20, weight: .bold, design: style.fontDesign))
+                Text(status.start(block)).font(.system(size: 20, weight: .bold, design: style.fontDesign))
                 Text(status.end(block)).font(.system(size: 12, design: style.fontDesign))
             }
-            .lineLimit(1).minimumScaleFactor(0.7).frame(width: style == .board ? 82 : 64, alignment: .leading)
-            // The inverted row swaps light and dark, so its bar takes the course color of the other scheme.
+            .lineLimit(1).minimumScaleFactor(0.7).frame(width: 64, alignment: .leading)
             Rectangle()
-                .fill(ScheduleCourseTint.accent(for: block.course.name,
-                                                scheme: inverse ? (dark ? .light : .dark) : scheme,
-                                                solid: theme.solidCourseColor))
+                .fill(ScheduleCourseTint.accent(for: block.course.name, scheme: scheme, solid: theme.solidCourseColor))
                 .frame(width: 2).padding(.vertical, 16)
             VStack(alignment: .leading, spacing: 5) {
                 Text(block.course.name).font(.headline.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.8)
@@ -350,7 +345,7 @@ private struct ScheduleStyledDepartureRow: View {
                 Text("第 \(block.startSlot)\(block.startSlot == block.endSlot ? "" : "–\(block.endSlot)") 节")
                     .font(.caption2)
                 if let label = status.label(block) {
-                    Text(label).font(.caption.weight(.semibold)).foregroundStyle(inverse ? ink : accent)
+                    Text(label).font(.caption.weight(.semibold)).foregroundStyle(accent)
                         .lineLimit(1).minimumScaleFactor(0.75)
                 }
             }
@@ -359,7 +354,6 @@ private struct ScheduleStyledDepartureRow: View {
         .fontDesign(style.fontDesign)
         .foregroundStyle(ink)
         .padding(.horizontal, 12)
-        .background(inverse ? style.inkColor(dark: dark) : .clear)
         .overlay(alignment: .bottom) {
             if showsDivider { Rectangle().fill(ink.opacity(0.15)).frame(height: 0.5) }
         }
