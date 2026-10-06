@@ -183,9 +183,11 @@ struct NativeScheduleDayColumn: View {
                 // 只有格子把「现在」线压在课程块下面、从空格子里露出来；其他风格由课表页画在
                 // 课程上方，这里再画一条就成了两条。
                 if style == .grid, let nowMinutes, !staticRendering, marksToday,
-                   let y = styledNowY(nowMinutes) {
-                    Rectangle().fill(.themeText).frame(width: columnWidth, height: 1.5)
-                        .offset(y: y).allowsHitTesting(false).accessibilityHidden(true)
+                   let now = styledNow(nowMinutes) {
+                    ForEach(Array(styledNowSegments(now.slots).enumerated()), id: \.offset) { _, segment in
+                        Rectangle().fill(.themeText).frame(width: segment.width, height: 1.5)
+                            .offset(x: segment.x, y: now.y).allowsHitTesting(false).accessibilityHidden(true)
+                    }
                 }
                 ForEach(blocks) { block in styledCourse(block) }
             }
@@ -249,14 +251,31 @@ struct NativeScheduleDayColumn: View {
                 y: CGFloat(block.startSlot - 1) * (rowHeight + Self.slotGap) + inset)
     }
 
-    private func styledNowY(_ current: Int) -> CGFloat? {
+    /// 「现在」线的纵向位置，以及它落在哪几节上：上课时是那一节，课间是前后两节。
+    private func styledNow(_ current: Int) -> (y: CGFloat, slots: ClosedRange<Int>)? {
         for (index, slot) in clocks.prefix(slotCount).enumerated() {
             guard let start = scheduleClockMinutes(slot.start), let end = scheduleClockMinutes(slot.end), end > start else { continue }
-            if current < start { return index == 0 ? nil : CGFloat(index) * (rowHeight + Self.slotGap) - Self.slotGap / 2 }
+            if current < start {
+                return index == 0 ? nil : (CGFloat(index) * (rowHeight + Self.slotGap) - Self.slotGap / 2, (slot.number - 1)...slot.number)
+            }
             // 下课那一分钟仍停在这一节底部，和节次轴上的时间胶囊（`nowOffset`）同一个位置。
-            if current <= end { return CGFloat(index) * (rowHeight + Self.slotGap) + rowHeight * CGFloat(current - start) / CGFloat(end - start) }
+            if current <= end {
+                return (CGFloat(index) * (rowHeight + Self.slotGap) + rowHeight * CGFloat(current - start) / CGFloat(end - start),
+                        slot.number...slot.number)
+            }
         }
         return nil
+    }
+
+    /// 「现在」线只画在没被课程盖住的地方：深色的课程底色是半透明的，线从课程块下面穿过去
+    /// 会透上来压住课名。并排的课没占满时，空着的那几列照常画。
+    private func styledNowSegments(_ slots: ClosedRange<Int>) -> [(x: CGFloat, width: CGFloat)] {
+        let covering = blocks.filter { $0.startSlot <= slots.lowerBound && slots.upperBound <= $0.endSlot }
+        guard let first = covering.first else { return [(0, columnWidth)] }
+        let lanes = clusterLaneCounts[first.id] ?? 1
+        let width = columnWidth / CGFloat(lanes)
+        return (0..<lanes).filter { lane in !covering.contains { $0.lane == lane } }
+            .map { (CGFloat($0) * width, width) }
     }
 
     private var dayLabel: String { ScheduleCourseTimeText.weekday(day) }
