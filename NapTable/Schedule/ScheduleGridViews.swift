@@ -244,10 +244,11 @@ struct NativeScheduleDayColumn: View {
             ScheduleStyledCourseTile(course: block.course, compact: compactCards || columnWidth / CGFloat(lanes) < 70,
                                      start: clocks.first { $0.number == block.startSlot }?.start,
                                      current: status.phase(block) == .current,
-                                     trailingInset: dayPresentation && lanes == 1 && status.label(block) != nil ? 80 : 0)
+                                     trailingInset: dayPresentation && lanes == 1 && status.label(block) != nil ? 80 : 0,
+                                     dayRow: dayPresentation)
             if dayPresentation, lanes == 1, let label = status.label(block) {
-                Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(.themeText)
-                    .multilineTextAlignment(.trailing).frame(width: 76).padding(.trailing, 4)
+                Text(label).font(.system(size: 11, weight: .semibold)).foregroundStyle(.themeText)
+                    .multilineTextAlignment(.trailing).frame(width: 76, alignment: .trailing).padding(.trailing, 10)
             }
         }
         .frame(width: max(12, columnWidth / CGFloat(lanes) - inset * 2), height: max(34, height))

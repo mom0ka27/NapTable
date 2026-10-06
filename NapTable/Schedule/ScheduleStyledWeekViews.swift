@@ -159,8 +159,12 @@ struct ScheduleStyledCourseTile: View {
     var start: String? = nil
     var current = false
     var trailingInset: CGFloat = 0
+    /// A full-width row of the day view: the text starts at the leading edge at reading size,
+    /// centered vertically, so rows with and without a status on the right line up.
+    var dayRow = false
 
     private var dark: Bool { scheme == .dark }
+    private var centered: Bool { style.layout.centered && !dayRow }
     private var swatch: ScheduleCourseTint.Swatch { ScheduleCourseTint.swatch(for: course.name, solid: theme.solidCourseColor) }
     private var accent: Color { swatch.accent(scheme: scheme) }
     private var inverse: Bool { style == .board && current && !staticRendering }
@@ -186,7 +190,7 @@ struct ScheduleStyledCourseTile: View {
         GeometryReader { geometry in
             let short = geometry.size.height < 64
             let small = compact || short
-            VStack(alignment: style.layout.centered ? .center : .leading, spacing: small ? 2 : 4) {
+            VStack(alignment: centered ? .center : .leading, spacing: small ? 2 : 4) {
                 if style.layout.course == .departure {
                     HStack(spacing: 3) {
                         RoundedRectangle(cornerRadius: 1).fill(mark)
@@ -198,25 +202,25 @@ struct ScheduleStyledCourseTile: View {
                     }
                 }
                 Text(course.name)
-                    .font(.system(size: small ? 11 : 13, weight: .semibold, design: style.fontDesign))
-                    .lineLimit(short ? 2 : (compact ? 4 : 3))
+                    .font(.system(size: dayRow ? 15 : (small ? 11 : 13), weight: .semibold, design: style.fontDesign))
+                    .lineLimit(dayRow ? (short ? 1 : 2) : (short ? 2 : (compact ? 4 : 3)))
                     .minimumScaleFactor(0.8)
                     .layoutPriority(1)
                 if let location = NativeScheduleCourseCard.displayLocation(course.location) {
                     Text("@\(location)")
-                        .font(.system(size: small ? 9 : 11, weight: .medium, design: style.fontDesign))
-                        .lineLimit(short ? 1 : 2)
+                        .font(.system(size: dayRow ? 12 : (small ? 9 : 11), weight: .medium, design: style.fontDesign))
+                        .lineLimit(short || dayRow ? 1 : 2)
                         .minimumScaleFactor(0.8)
                 }
             }
-            .multilineTextAlignment(style.layout.centered ? .center : .leading)
+            .multilineTextAlignment(centered ? .center : .leading)
             .foregroundStyle(ink)
             .padding(.trailing, trailingInset)
             .padding(.leading, stripeWidth)
-            .padding(.horizontal, small ? 4 : 7)
+            .padding(.horizontal, dayRow ? 12 : (small ? 4 : 7))
             .padding(.vertical, short ? 3 : 6)
             .frame(width: geometry.size.width, height: geometry.size.height,
-                   alignment: style.layout.centered ? .center : .topLeading)
+                   alignment: centered ? .center : (dayRow ? .leading : .topLeading))
         }
         .background {
             if inverse { Rectangle().fill(style.inkColor(dark: dark)) }
