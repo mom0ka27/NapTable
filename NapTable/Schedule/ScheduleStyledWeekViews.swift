@@ -101,6 +101,8 @@ struct ScheduleStyledWeekCell: View {
     var covered = false
     /// The course in this period runs on into the next one; its text must not be struck through.
     var joinsBelow = false
+    /// The course in this period began in an earlier one. The board rules the top of each cell.
+    var joinsAbove = false
 
     var body: some View {
         let dark = scheme == .dark
@@ -124,9 +126,13 @@ struct ScheduleStyledWeekCell: View {
             // would double every shared edge.
             Rectangle().fill(today ? AnyShapeStyle(.themeTint(0.08)) : AnyShapeStyle(Color.clear))
         case .sessions:
+            // The heavy rule between morning, afternoon and evening always runs through. The board
+            // has no tile fill to hide a hairline, so it is left out inside a multi-period course.
             Color.clear.overlay(alignment: .top) {
-                Rectangle().fill(style.inkColor(dark: dark).opacity(startsSession ? 0.65 : 0.12))
-                    .frame(height: startsSession ? 2 : 0.5)
+                if startsSession || !joinsAbove {
+                    Rectangle().fill(style.inkColor(dark: dark).opacity(startsSession ? 0.65 : 0.12))
+                        .frame(height: startsSession ? 2 : 0.5)
+                }
             }
         case .rows:
             Color.clear.overlay(alignment: .bottom) {

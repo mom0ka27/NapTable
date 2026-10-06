@@ -218,7 +218,8 @@ struct NativeScheduleDayColumn: View {
                 let previous = rows.first { $0.number == slot.number - 1 }
                 ScheduleStyledWeekCell(today: marksToday, holiday: adjustment?.kind == .off,
                     startsSession: previous.map { ScheduleStyleTime.session($0.start) != ScheduleStyleTime.session(slot.start) } ?? true,
-                    covered: covered, joinsBelow: covering.contains { $0.endSlot > slot.number })
+                    covered: covered, joinsBelow: covering.contains { $0.endSlot > slot.number },
+                    joinsAbove: covering.contains { $0.startSlot < slot.number })
                     .frame(width: columnWidth, height: rowHeight + (style == .table && slot.number != rows.last?.number ? Self.slotGap : 0))
                     .contentShape(Rectangle())
                     .modifier(ScheduleEmptySlotInteraction(slot: slot.number, isEditable: isEditable && !occupied, onAdd: onEmptySlot))
