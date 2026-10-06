@@ -223,11 +223,14 @@ struct ScheduleSurface: View {
             }
         }
         .overlay {
-            if showsBorder { shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1) }
-        }
-        .overlay {
-            if style == .paper {
-                shape.inset(by: 3).stroke(style.inkColor(dark: colorScheme == .dark).opacity(0.2), lineWidth: 0.5)
+            if style == .paper && isPanel {
+                // 素笺的整块面板用外粗内细的文武线，和月视图的纸页外框同一个写法。
+                // 周次按钮这类小块只留一圈细边，再套一层内线就太碎了。
+                let ink = style.inkColor(dark: colorScheme == .dark)
+                shape.strokeBorder(ink.opacity(0.6), lineWidth: 1.2)
+                    .overlay { shape.inset(by: 3).stroke(ink.opacity(0.24), lineWidth: 0.6) }
+            } else if showsBorder {
+                shape.strokeBorder(.scheduleCellBorder(dark: colorScheme == .dark), lineWidth: 1)
             }
         }
         .allowsHitTesting(false)
