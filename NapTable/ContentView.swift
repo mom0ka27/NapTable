@@ -94,7 +94,7 @@ struct ContentView: View {
             dismissalOccurrence = occurrence
             showLiveActivityDismissal = true
         }
-        .alert("实时通知似乎被关闭了", isPresented: $showLiveActivityDismissal) {
+        .alert("实时活动似乎被关闭了", isPresented: $showLiveActivityDismissal) {
             Button("继续提醒") {
                 NativeLiveActivityController.shared.continueDismissedReminder()
             }
@@ -107,10 +107,10 @@ struct ContentView: View {
                 NativeLiveActivityController.shared.suppressDismissal(for: dismissalOccurrence, permanently: true)
             }
         } message: {
-            Text("实时通知可以在灵动岛和锁定屏幕上显示课程进度。是否继续显示？选择“永不提醒”会关闭实时通知的功能，可在设置中重新开启。")
+            Text("实时活动可以在灵动岛和锁定屏幕上显示课程进度。是否继续显示？选择“永不提醒”会关闭实时活动的功能，可在设置中重新开启。")
         }
         .onReceive(NativeLiveActivityController.shared.$restorationFailure) { restorationFailure = $0 }
-        .alert("未能恢复实时通知", isPresented: Binding(
+        .alert("未能恢复实时活动", isPresented: Binding(
             get: { restorationFailure != nil },
             set: { if !$0 { restorationFailure = nil; NativeLiveActivityController.shared.clearRestorationFailure() } }
         )) {

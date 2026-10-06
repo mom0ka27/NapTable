@@ -341,9 +341,9 @@ final class NativeLiveActivityController: ObservableObject {
             restorationWindow = .init(scope: display.scope, dateKey: occurrence.dateKey, start: occurrence.start, end: occurrence.end)
         }
         clearDismissalNotice()
-        guard isEnabled else { restorationFailure = "实时通知已关闭，请先在设置中开启。"; return }
+        guard isEnabled else { restorationFailure = "实时活动已关闭，请先在设置中开启。"; return }
         guard currentScheduleMetadata != nil, !isPreviewActive else {
-            restorationFailure = "请先结束预览并打开课表，再恢复实时通知。"; return
+            restorationFailure = "请先结束预览并打开课表，再恢复实时活动。"; return
         }
         guard restorationWindow != nil else { restorationFailure = "本次课程已结束或不在提醒时间内。"; return }
         restoringDismissedReminder = true
@@ -461,7 +461,7 @@ final class NativeLiveActivityController: ObservableObject {
                         end: activity.attributes.reservationEnd?.timeIntervalSince1970 ?? 0) == true
                 }
                 if !restored {
-                    restorationFailure = status.detail ?? "本次课程已结束，或系统未能恢复实时通知。请重新打开课表后重试。"
+                    restorationFailure = status.detail ?? "本次课程已结束，或系统未能恢复实时活动。请重新打开课表后重试。"
                 }
                 restoringDismissedReminder = false
                 restorationWindow = nil
@@ -530,7 +530,7 @@ final class NativeLiveActivityController: ObservableObject {
                 } catch {
                     status = Self.isCapacityError(error)
                         ? .limited("系统暂无可用的实时活动名额，请稍后重试。")
-                        : .failed("实时通知没能启动：\(error.localizedDescription)")
+                        : .failed("实时活动没能启动：\(error.localizedDescription)")
                     return
                 }
             }
