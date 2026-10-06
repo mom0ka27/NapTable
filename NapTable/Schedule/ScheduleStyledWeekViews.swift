@@ -226,12 +226,17 @@ struct ScheduleStyledCourseTile: View {
             if inverse { Rectangle().fill(style.inkColor(dark: dark)) }
             else if style.layout.course == .card || style.layout.course == .stripe {
                 Rectangle().fill(NativeScheduleCourseCard.fill(for: swatch, dark: dark, hasBackground: hasBackground))
+            } else if style.layout.course == .ink {
+                // Paper keeps its ink text; the course color is only a faint wash behind it. The
+                // shared course fill is thinned so the paper still shows through.
+                Rectangle().fill(NativeScheduleCourseCard.fill(for: swatch, dark: dark, hasBackground: hasBackground)
+                    .opacity(0.7))
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: style.layout.cornerRadius))
         .overlay(alignment: .leading) {
             if stripeWidth > 0 {
-                Rectangle().fill(accent).frame(width: stripeWidth).padding(.vertical, style == .paper ? 5 : 0)
+                Rectangle().fill(accent).frame(width: stripeWidth)
             }
         }
         .overlay {

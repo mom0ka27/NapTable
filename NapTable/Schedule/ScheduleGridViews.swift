@@ -202,6 +202,10 @@ struct NativeScheduleDayColumn: View {
                 } else if day >= 6 && adjustment?.kind != .swap {
                     Color.primary.opacity(0.035)
                 }
+            } else if style == .paper && marksToday {
+                // 素笺的今天列铺一层很淡的朱砂底，从表头到最后一节。
+                style.styleAccent(dark: colorScheme == .dark, fallback: .clear)
+                    .opacity(colorScheme == .dark ? 0.10 : 0.07)
             }
         }
     }
