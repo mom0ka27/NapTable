@@ -217,7 +217,7 @@ struct NativeScheduleMonthView: View {
                 (style.canvasColor(dark: colorScheme == .dark) ?? Color.clear)
                     .opacity(hasBackground ? 0.96 : 1)
             } else {
-                ScheduleSurface(cornerRadius: style == .grid ? 12 : 0, isPanel: true)
+                ScheduleSurface(cornerRadius: style == .grid ? 12 : 0, isPanel: true, showsBorder: style != .table)
             }
         }
         .overlay {
@@ -225,6 +225,9 @@ struct NativeScheduleMonthView: View {
                 Rectangle().strokeBorder(styleInk.opacity(0.6), lineWidth: 1.2)
                     .overlay { Rectangle().inset(by: 3).stroke(styleRule, lineWidth: 0.6) }
                     .allowsHitTesting(false)
+            } else if style == .table {
+                // 月历和下面的摘要共用这一圈外框，粗细、颜色和月历的格线一致。
+                Rectangle().strokeBorder(styleRule, lineWidth: 0.6).allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
@@ -331,6 +334,9 @@ struct NativeScheduleMonthView: View {
                     Color.clear
                 }
             }
+            .overlay(alignment: .bottom) {
+                if style == .table { Rectangle().fill(styleRule).frame(height: 0.6) }
+            }
             if style == .paper {
                 Rectangle()
                     .fill(styleInk.opacity(0.24))
@@ -357,12 +363,6 @@ struct NativeScheduleMonthView: View {
         .padding(.horizontal, style == .table || style == .board ? 0 : 10)
         // 表格的表头底色和格线要贴住外框：留白会在框里多出一条没有底色的空带。
         .padding(.vertical, style == .paper ? 12 : (style == .table ? 0 : 8))
-        .overlay {
-            if style == .table {
-                Rectangle()
-                    .stroke(styleInk.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 0.7)
-            }
-        }
     }
 
     private func dayCell(_ day: Day, isSelected: Bool, height: CGFloat) -> some View {
@@ -532,7 +532,12 @@ struct NativeScheduleMonthView: View {
             .opacity(outsideOpacity)
             .background(isToday ? styleAccent.opacity(colorScheme == .dark ? 0.18 : 0.10) : Color.clear)
             .background(day.weekday >= 6 ? styleInk.opacity(0.04) : Color.clear)
-            .overlay { Rectangle().stroke(styleRule, lineWidth: 0.55) }
+            // 每格只画右边和下边：相邻两格各描一圈会把共用的边叠深一倍；外框由整页统一画，
+            // 见 `styledMonthPage`。最后一行的下边就是月历和摘要之间的那条线。
+            .overlay(alignment: .trailing) {
+                if day.weekday < 7 { Rectangle().fill(styleRule).frame(width: 0.6) }
+            }
+            .overlay(alignment: .bottom) { Rectangle().fill(styleRule).frame(height: 0.6) }
         case .paper:
             VStack(spacing: 1) {
                 ZStack(alignment: .topTrailing) {
