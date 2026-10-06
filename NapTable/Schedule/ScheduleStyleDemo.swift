@@ -66,11 +66,15 @@ private struct ScheduleStyleDemoConfiguration {
     let style: ScheduleStyle
     let view: Surface
     let dark: Bool
+    /// 日视图的「现在」。默认 11:05；`NAPTABLE_DEMO_TIME=HH:MM` 换一个时刻，`none` 当作不是今天。
+    let dayNowMinutes: Int?
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment) {
         style = environment["NAPTABLE_DEMO_STYLE"].flatMap(ScheduleStyle.init(rawValue:)) ?? .minimal
         view = environment["NAPTABLE_DEMO_VIEW"].flatMap(Surface.init(rawValue:)) ?? .week
         dark = environment["NAPTABLE_DEMO_DARK"] == "1"
+        let time = environment["NAPTABLE_DEMO_TIME"]
+        dayNowMinutes = time == "none" ? nil : (time.flatMap(scheduleClockMinutes) ?? ScheduleStyleDemoData.nowMinutes)
     }
 }
 
@@ -96,8 +100,8 @@ private struct ScheduleStyleDemoContent: View {
                         blocks: ScheduleStyleDemoData.blocks(day: 3, week: 7),
                         clocks: ScheduleStyleDemoData.clocks,
                         day: 3,
-                        nowMinutes: ScheduleStyleDemoData.nowMinutes,
-                        completedBeforeMinutes: ScheduleStyleDemoData.nowMinutes,
+                        nowMinutes: configuration.dayNowMinutes,
+                        completedBeforeMinutes: configuration.dayNowMinutes,
                         isEditable: false,
                         onCourseSelected: { _ in }
                     )

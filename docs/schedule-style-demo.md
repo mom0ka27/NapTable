@@ -13,7 +13,10 @@ NAPTABLE_STYLE_DEMO=1
 NAPTABLE_DEMO_STYLE=minimal|grid|table|paper|board
 NAPTABLE_DEMO_VIEW=week|day|month
 NAPTABLE_DEMO_DARK=0|1
+NAPTABLE_DEMO_TIME=HH:MM|none
 ```
+
+`NAPTABLE_DEMO_TIME` 只影响日视图，用来看课间、全天结束这些状态：写一个时刻就把它当作“现在”，写 `none` 则当作不是今天。不设时沿用 11:05；批量截图脚本不设这个变量。
 
 先只验证构建：
 
