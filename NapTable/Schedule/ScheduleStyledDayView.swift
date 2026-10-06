@@ -120,40 +120,45 @@ struct ScheduleStyledDayView: View {
     }
 
     private var paper: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(["上午", "下午", "晚上", "课程"], id: \.self) { session in
-                let courses = orderedBlocks.filter { block in
-                    ScheduleStyleTime.session(status.start(block)) == session
-                }
-                if !courses.isEmpty { courseSection(session, courses: courses) }
-            }
+        let sections = ["上午", "下午", "晚上", "课程"].map { session in
+            (title: session, courses: orderedBlocks.filter { ScheduleStyleTime.session(status.start($0)) == session })
         }
-        .padding(12)
-        .background { ScheduleSurface(cornerRadius: 2, isPanel: true) }
+        return courseSections(sections)
+            .padding(12)
+            .background { ScheduleSurface(cornerRadius: 2, isPanel: true) }
     }
 
     private var board: some View {
-        let current = orderedBlocks.filter { status.phase($0) == .current }
-        let future = orderedBlocks.filter { status.phase($0) == .upcoming }
-        let completed = orderedBlocks.filter { status.phase($0) == .completed }
-        return VStack(alignment: .leading, spacing: 0) {
-            if !current.isEmpty { courseSection("正在上", courses: current) }
-            if !future.isEmpty { courseSection(status.now == nil ? "课程安排" : "接下来", courses: future) }
-            if !completed.isEmpty { courseSection("已结束", courses: completed) }
-        }
+        courseSections([
+            (title: "正在上", courses: orderedBlocks.filter { status.phase($0) == .current }),
+            (title: status.now == nil ? "课程安排" : "接下来", courses: orderedBlocks.filter { status.phase($0) == .upcoming }),
+            (title: "已结束", courses: orderedBlocks.filter { status.phase($0) == .completed })
+        ])
         .padding(.vertical, 8)
         .background { ScheduleSurface(cornerRadius: 0, isPanel: true) }
+    }
+
+    /// Empty sections are dropped. The last row of the last section closes the list, so it gets no
+    /// divider: one more rule there would sit right on top of the panel's edge.
+    private func courseSections(_ sections: [(title: String, courses: [NativeScheduleCourseBlock])]) -> some View {
+        let shown = sections.filter { !$0.courses.isEmpty }
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(shown, id: \.title) { section in
+                courseSection(section.title, courses: section.courses, closesList: section.title == shown.last?.title)
+            }
+        }
     }
 
     private var orderedBlocks: [NativeScheduleCourseBlock] {
         blocks.sorted { ($0.startSlot, $0.endSlot, $0.id) < ($1.startSlot, $1.endSlot, $1.id) }
     }
 
-    private func courseSection(_ title: String, courses: [NativeScheduleCourseBlock]) -> some View {
+    private func courseSection(_ title: String, courses: [NativeScheduleCourseBlock], closesList: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ScheduleDaySectionHeading(title: title).frame(height: 40)
             ForEach(courses) { block in
-                ScheduleStyledDepartureRow(block: block, status: status)
+                ScheduleStyledDepartureRow(block: block, status: status,
+                                           showsDivider: !(closesList && block.id == courses.last?.id))
                     .frame(height: cardHeight)
                     .modifier(ScheduleCourseInteraction(
                         cornerRadius: 2, isEditable: isEditable,
@@ -317,6 +322,7 @@ private struct ScheduleStyledDepartureRow: View {
     @ObservedObject private var theme = NativeThemeSettings.shared
     let block: NativeScheduleCourseBlock
     let status: ScheduleStyledDayStatus
+    var showsDivider = true
 
     private var dark: Bool { scheme == .dark }
     private var inverse: Bool { style == .board && status.phase(block) == .current }
@@ -351,7 +357,9 @@ private struct ScheduleStyledDepartureRow: View {
         .foregroundStyle(ink)
         .padding(.horizontal, 12)
         .background(inverse ? style.inkColor(dark: dark) : .clear)
-        .overlay(alignment: .bottom) { Rectangle().fill(ink.opacity(0.15)).frame(height: 0.5) }
+        .overlay(alignment: .bottom) {
+            if showsDivider { Rectangle().fill(ink.opacity(0.15)).frame(height: 0.5) }
+        }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
