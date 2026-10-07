@@ -98,7 +98,7 @@ struct PrivacySettingsView: View {
                 NavigationLink(PrivacyPolicy.basicTitle) { PrivacyDocumentView(liveActivities: false) }
                 LabeledContent("基础统计许可", value: consent.basicAccepted ? "已同意" : "未同意")
             } footer: {
-                Text("使用 App 需同意基础统计。统计包含学校、系统版本、设备型号和 App 版本等信息，不包含课程内容。")
+                Text("使用 App 需同意基础统计。统计包含学校、系统版本、设备型号、App 版本及风格、背景图、小组件和实时活动的启用状态，不包含课程内容或背景图片。")
             }
             Section {
                 NavigationLink(PrivacyPolicy.liveTitle) { PrivacyDocumentView(liveActivities: true) }

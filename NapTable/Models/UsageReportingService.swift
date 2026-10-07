@@ -13,7 +13,7 @@ import Darwin
     private let identityStorage: UsageIdentity.Storage
     private let transport: (URLRequest) async throws -> (Data, URLResponse)
     private var sending = false
-    private var pending: (URL, String?)?
+    private var pending: (URL, String?, [String: String]?)?
     private var lastPayload: Data?
     private var lastURL: URL?
     private var lastSent = Date.distantPast
@@ -25,24 +25,28 @@ import Darwin
         self.identityStorage = identityStorage ?? UsageIdentity.keychain
         self.transport = transport
     }
-    func report(schoolID: String?, baseURL: URL?) async {
-        guard PrivacyPolicy.basicAllowed(defaults), let baseURL else { return }
-        pending = (baseURL, schoolID)
+    func report(schoolID: String?, baseURL: URL?, featureStates: [String: Bool]? = nil) async {
+        guard PrivacyPolicy.basicAllowed(defaults) else { return }
+        // Persist transitions even offline; an off/on cycle must start a new interval.
+        let features = featureStates.map { UsageFeatureSessions.observe($0, defaults: defaults) }
+        guard let baseURL else { return }
+        pending = (baseURL, schoolID, features)
         guard !sending else { return }
         sending = true
         defer { sending = false }
-        while let (base, school) = pending {
+        while let (base, school, features) = pending {
             pending = nil
             guard PrivacyPolicy.basicAllowed(defaults), base.scheme == "https" else { return }
             // A temporarily inaccessible keychain is not a new device. Retry later.
             guard let identity = try? UsageIdentity.resolve(defaults: defaults, storage: identityStorage) else { continue }
             let url = base.appendingPathComponent("v1/usage/devices").appendingPathComponent(identity.installationID)
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "consentVersion": PrivacyPolicy.version, "schoolID": school ?? "",
                 "systemName": Self.systemName, "systemVersion": Self.systemVersion,
                 "deviceModel": Self.deviceModel,
                 "appVersion": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
             ]
+            if let features { payload["usageFeatures"] = features }
             guard let body = try? JSONSerialization.data(withJSONObject: payload, options: .sortedKeys) else { return }
             // A new UTC+8 day always reports, so the first open after midnight counts toward that day.
             if body == lastPayload, url == lastURL, Date().timeIntervalSince(lastSent) < 3600,

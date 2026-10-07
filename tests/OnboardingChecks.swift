@@ -8,6 +8,8 @@ struct OnboardingChecks {
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }
         let consent = PrivacyConsent(defaults: preferences)
+        preferences.set(1, forKey: PrivacyPolicy.basicKey)
+        precondition(!PrivacyPolicy.basicAllowed(preferences), "The expanded scope requires renewed consent")
         precondition(!consent.basicAccepted && !consent.liveAccepted && !consent.onboardingCompleted)
         consent.setLiveConsent(true)
         precondition(!consent.liveAccepted, "Optional consent cannot bypass basic consent")
@@ -23,9 +25,11 @@ struct OnboardingChecks {
             return (Data(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         }
         let base = URL(string: "https://example.invalid")!
-        await reporter.report(schoolID: "nju", baseURL: base)
+        await reporter.report(schoolID: "nju", baseURL: base, featureStates: ["background": true])
         precondition(reports.isEmpty && identity == nil && preferences.string(forKey: "naptable.usage.installation") == nil,
                      "No usage report or installation ID before mandatory consent")
+        precondition(preferences.object(forKey: UsageFeatureSessions.storageKey) == nil,
+                     "Feature observation also requires the expanded consent")
         consent.acceptBasic(liveActivities: false)
         precondition(consent.basicAccepted && !consent.liveAccepted)
         consent.completeOnboarding(hasImportedCourses: false)
@@ -57,6 +61,25 @@ struct OnboardingChecks {
         precondition(restored.basicAccepted && restored.liveAccepted && restored.onboardingCompleted)
         restored.setLiveConsent(false)
         precondition(!PrivacyPolicy.liveAllowed(preferences) && PrivacyPolicy.basicAllowed(preferences))
+        let first = UsageFeatureSessions.observe(["background": true, "widget.upcoming.small": true], defaults: preferences)
+        precondition(first["background"]?.count == 32)
+        precondition(UsageFeatureSessions.observe(["background": true], defaults: preferences)["background"] == first["background"])
+        let disabled = UsageFeatureSessions.observe(["background": false], defaults: preferences)
+        precondition(disabled["background"] == "")
+        let restarted = UsageFeatureSessions.observe(["background": true, "widget.upcoming.small": true], defaults: preferences)
+        precondition(restarted["background"] != first["background"], "Offline off/on must restart qualification")
+        precondition(restarted["widget.upcoming.small"] == first["widget.upcoming.small"], "Unknown widget state preserves its interval")
+        await reporter.report(schoolID: "nju", baseURL: base, featureStates: ["background": true])
+        let featurePayload = try JSONSerialization.jsonObject(with: reports.last!.httpBody!) as! [String: Any]
+        precondition(featurePayload["consentVersion"] as? Int == 2)
+        precondition((featurePayload["usageFeatures"] as? [String: String])?["background"] == restarted["background"])
+        let beforeOfflineChange = reports.count
+        await reporter.report(schoolID: "nju", baseURL: nil, featureStates: ["background": false])
+        await reporter.report(schoolID: "nju", baseURL: base, featureStates: ["background": true])
+        let afterOfflineChange = try JSONSerialization.jsonObject(with: reports.last!.httpBody!) as! [String: Any]
+        precondition(reports.count == beforeOfflineChange + 1)
+        precondition((afterOfflineChange["usageFeatures"] as? [String: String])?["background"] != restarted["background"],
+                     "A missing server URL must not lose offline off/on transitions")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
         let store = AppStore(fileURL: url)

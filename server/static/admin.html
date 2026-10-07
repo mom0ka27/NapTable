@@ -295,7 +295,14 @@
           <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>设备型号</h3><p>系统提供的硬件型号标识</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 5h4M11 19h2"/></svg></span></div><div id="deviceModelStats" class="distribution-list"></div></section>
           <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>App 版本</h3><p>设备当前安装的 App 版本</p></div><span class="panel-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></span></div><div id="appVersionStats" class="distribution-list"></div></section>
         </div>
-        <p class="stats-explanation">仅统计已同意基础隐私协议并上报的设备，与实时活动开关无关。<span id="unassignedStats"></span></p>
+        <div class="section-toolbar distribution-toolbar"><div><h2>风格与功能使用</h2><p>沿用上方学校筛选 · 各项独立计时、按匿名设备去重</p></div></div>
+        <div class="distribution-grid">
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>课表风格</h3><p>当前使用的风格</p></div></div><div id="styleUsageStats" class="distribution-list"></div></section>
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>功能使用</h3><p>背景图、独立背景图、小组件背景图及实时活动</p></div></div><div id="featureUsageStats" class="distribution-list"></div></section>
+          <section class="settings-panel distribution-panel"><div class="card-heading"><div><h3>已添加的小组件</h3><p>按种类与尺寸分别去重</p></div></div><div id="widgetUsageStats" class="distribution-list"></div></section>
+        </div>
+        <p class="stats-explanation">每项首次上报启用后，超过 24 小时再次确认仍启用才计为使用人数；括号内为当前启用设备数（含未满 24 小时）。关闭、切换或移除后重新计时，连续 30 天未确认也重新计时。仅展示近 30 天确认的状态；不是累计前台使用时长，各项人数不可相加。小组件按系统已添加状态，实时活动按开关、系统授权与权益判断。</p>
+        <p class="stats-explanation">仅统计已同意基础隐私协议并上报的设备，原有日活及设备分布不应用 24 小时门槛。<span id="unassignedStats"></span></p>
       </section>
 
       <section id="sharesView" class="content-view" hidden>

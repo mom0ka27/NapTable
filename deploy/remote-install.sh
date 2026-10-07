@@ -121,6 +121,7 @@ required_files=(
     server/live_activity_schedule.py
     server/live_activity_timeline.py
     server/school_times.py
+    server/usage_features.py
     server/image_import.py
     pyproject.toml
     uv.lock

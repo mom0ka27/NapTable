@@ -19,11 +19,11 @@ from fastapi import Depends, FastAPI, Request, Response
 from starlette.convertors import Convertor, register_url_convertor
 
 try:  # `python3 server/naptable_server.py` and `import server.naptable_server`
-    from . import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times
+    from . import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times, usage_features
     from .live_activity_timeline import ProtocolError, identifier
     from .device_models import device_model_name
 except ImportError:  # pragma: no cover - depends on how the server was started
-    import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times
+    import announcements, app_attest, entitlements, holidays, image_import, live_activity, school_times, usage_features
     from live_activity_timeline import ProtocolError, identifier
     from device_models import device_model_name
 
@@ -346,6 +346,7 @@ class Store:
         self.lock = threading.RLock()
         with self.lock:
             self.db.executescript(SCHEMA)
+            self.db.executescript(usage_features.SCHEMA)
             terms = {row[1] for row in self.db.execute("PRAGMA table_info(school_terms)")}
             school_columns = {row[1] for row in self.db.execute("PRAGMA table_info(school_configs)")}
             if "unified_holidays_enabled" not in school_columns:
@@ -785,10 +786,14 @@ class Store:
             raise ValueError("invalid installation ID")
         if not re.fullmatch(r"[a-zA-Z0-9_-]{32,128}", secret):
             raise ValueError("invalid device secret")
-        if not isinstance(value, dict) or type(value.get("consentVersion")) is not int or value["consentVersion"] != 1:
-            raise ValueError("basic privacy consent version 1 required")
-        allowed = {"consentVersion", "schoolID", "systemName", "systemVersion", "deviceModel", "appVersion"}
+        if not isinstance(value, dict) or type(value.get("consentVersion")) is not int or value["consentVersion"] not in (1, 2):
+            raise ValueError("basic privacy consent version 1 or 2 required")
+        allowed = {"consentVersion", "schoolID", "systemName", "systemVersion", "deviceModel", "appVersion", "usageFeatures"}
         if set(value) - allowed: raise ValueError("unexpected usage fields")
+        features = None
+        if "usageFeatures" in value:
+            if value["consentVersion"] < 2: raise ValueError("feature statistics require privacy consent version 2")
+            features = usage_features.validate(value["usageFeatures"])
         fields = []
         for key in ("systemName", "systemVersion", "deviceModel", "appVersion"):
             field = value.get(key)
@@ -806,6 +811,7 @@ class Store:
                 raise ValueError("unknown schoolID")
             cutoff = (stamp - timedelta(days=90)).isoformat()
             self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", (cutoff,))
+            usage_features.clean(self.db, stamp)
             self.db.execute("DELETE FROM usage_daily WHERE day<?", (_usage_day(stamp - timedelta(days=90)),))
             # Only counts leave this block: the daily table never names a device.
             fresh = existing is None or existing["last_seen"] < cutoff
@@ -818,7 +824,8 @@ class Store:
                 "ON CONFLICT(installation_id) DO UPDATE SET school_id=excluded.school_id,system_name=excluded.system_name,"
                 "system_version=excluded.system_version,device_model=excluded.device_model,app_version=excluded.app_version,"
                 "consent_version=excluded.consent_version,last_seen=excluded.last_seen",
-                (installation_id, self._digest(secret), school, *fields, 1, stamp.isoformat(), stamp.isoformat()))
+                (installation_id, self._digest(secret), school, *fields, value["consentVersion"], stamp.isoformat(), stamp.isoformat()))
+            usage_features.report(self.db, installation_id, features, stamp)
         return True
 
     def usage_stats(self):
@@ -826,6 +833,11 @@ class Store:
         today = stamp.astimezone(USAGE_ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.lock, self.db:
             self.db.execute("DELETE FROM usage_devices WHERE last_seen<?", ((stamp - timedelta(days=90)).isoformat(),))
+            usage_features.clean(self.db, stamp)
+            feature_rows = self.db.execute(
+                "SELECT f.*,d.school_id FROM usage_features f JOIN usage_devices d USING(installation_id) "
+                "WHERE f.last_seen>=? AND d.last_seen>=?",
+                ((stamp - timedelta(days=30)).isoformat(),) * 2).fetchall()
             devices = self.db.execute("SELECT school_id,system_name,system_version,device_model,app_version,first_seen,last_seen "
                                       "FROM usage_devices WHERE last_seen>=?", ((stamp - timedelta(days=30)).isoformat(),)).fetchall()
             history = {row["day"]: row for row in self.db.execute("SELECT * FROM usage_daily WHERE day>=?",
@@ -850,7 +862,8 @@ class Store:
                             "todayUsers": seen_since(matching, today),
                             "systemVersions": distribution(matching, "systemVersions"),
                             "deviceModels": distribution(matching, "deviceModels"),
-                            "appVersions": distribution(matching, "appVersions")})
+                            "appVersions": distribution(matching, "appVersions"),
+                            "featureUsage": usage_features.summarize([item for item in feature_rows if item["school_id"] == row["id"]])})
         # Today comes from the live rows so it is right even before the daily
         # table has seen a report; earlier days only survive as counts.
         daily = []
@@ -865,6 +878,7 @@ class Store:
                 "todayUsers": daily[-1]["users"], "newUsersToday": daily[-1]["newUsers"],
                 "yesterdayUsers": daily[-2]["users"], "weeklyUsers": seen_since(devices, today - timedelta(days=6)),
                 "daily": daily, "windowDays": 30, "timeZone": "UTC+8", "schools": schools,
+                "featureUsage": usage_features.summarize(feature_rows),
                 "systemVersions": distribution(devices, "systemVersions"),
                 "deviceModels": distribution(devices, "deviceModels"),
                 "appVersions": distribution(devices, "appVersions"), "updatedAt": stamp.isoformat()}

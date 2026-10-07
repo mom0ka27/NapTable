@@ -483,6 +483,20 @@
   const renderDeviceStats = () => {
     const selected = $("statsSchoolFilter").value;
     const stats = (state.stats.schools || []).find(school => school.id === selected) || state.stats;
+    for (const [id, key] of [["styleUsageStats", "styles"], ["featureUsageStats", "features"], ["widgetUsageStats", "widgets"]]) {
+      const list = $(id);
+      list.replaceChildren();
+      const items = stats.featureUsage?.[key] || [];
+      for (const item of items) {
+        const row = document.createElement("div");
+        row.className = "distribution-row";
+        const title = document.createElement("strong"); title.textContent = item.name;
+        const count = document.createElement("span");
+        count.textContent = `${Number(item.users || 0).toLocaleString("zh-CN")} 人（启用 ${Number(item.observedUsers || 0).toLocaleString("zh-CN")} 台）`;
+        row.append(title, count); list.append(row);
+      }
+      if (!items.length) list.textContent = "等待新版客户端上报";
+    }
     for (const [id, key] of [["systemVersionStats", "systemVersions"], ["deviceModelStats", "deviceModels"], ["appVersionStats", "appVersions"]]) {
       const list = $(id);
       list.replaceChildren();

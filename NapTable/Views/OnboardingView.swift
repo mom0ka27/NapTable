@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// The main app is not mounted until consent and a first schedule are ready.
 struct AppEntryView: View {
@@ -7,6 +8,17 @@ struct AppEntryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var consent = PrivacyConsent.shared
     @ObservedObject private var cloudSync = ICloudSyncService.shared
+    @State private var widgetUsageStates: [String: Bool] = [:]
+
+    private var usageChanges: AnyPublisher<Void, Never> {
+        Publishers.MergeMany([
+            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).map { _ in () }.eraseToAnyPublisher(),
+            NativeSchedulePreferences.shared.objectWillChange.eraseToAnyPublisher(),
+            NativeThemeSettings.shared.objectWillChange.eraseToAnyPublisher(),
+            PurchaseManager.shared.objectWillChange.eraseToAnyPublisher(),
+            consent.objectWillChange.eraseToAnyPublisher()
+        ]).receive(on: RunLoop.main).eraseToAnyPublisher()
+    }
 
     private var needsOnboarding: Bool {
         !consent.basicAccepted || !consent.onboardingCompleted
@@ -16,7 +28,7 @@ struct AppEntryView: View {
     }
 
     private var reportKey: String {
-        "\(consent.basicAccepted)-\(store.selectedTable?.schoolID ?? "")-\(ScheduleSharingService.shared.validatedBaseURL?.absoluteString ?? "")"
+        "\(consent.basicAccepted)-\(consent.onboardingCompleted)-\(store.selectedTable?.schoolID ?? "")-\(ScheduleSharingService.shared.validatedBaseURL?.absoluteString ?? "")"
     }
     var body: some View {
         ZStack {
@@ -43,6 +55,18 @@ struct AppEntryView: View {
         .task(id: reportKey) {
             guard consent.basicAccepted else { return }
             await reportUsage()
+        }
+        .onReceive(usageChanges) {
+            guard !needsOnboarding, scenePhase == .active else { return }
+            // Capture every setting transition locally, including changes while offline.
+            _ = UsageFeatureSessions.observe(UsageFeatureSnapshot.settings(widgets: widgetUsageStates), defaults: .standard)
+            Task { await reportUsage(refreshWidgets: false) }
+        }
+        .task(id: scenePhase) {
+            while scenePhase == .active && !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                await reportUsage()
+            }
         }
         .task(id: consent.basicAccepted) {
             guard consent.basicAccepted else { return }
@@ -73,9 +97,14 @@ struct AppEntryView: View {
             NavigationStack { ICloudSyncReviewView() }.environmentObject(store)
         }
     }
-    private func reportUsage() async {
+    private func reportUsage(refreshWidgets: Bool = true) async {
+        guard consent.basicAccepted else { return }
+        if refreshWidgets, !needsOnboarding { widgetUsageStates = await UsageFeatureSnapshot.widgets() }
+        guard !Task.isCancelled, consent.basicAccepted else { return }
+        let states = UsageFeatureSnapshot.settings(widgets: widgetUsageStates).merging(widgetUsageStates) { _, current in current }
         await UsageReportingService.shared.report(schoolID: store.selectedTable?.schoolID,
-                                                  baseURL: ScheduleSharingService.shared.validatedBaseURL)
+                                                  baseURL: ScheduleSharingService.shared.validatedBaseURL,
+                                                  featureStates: needsOnboarding ? [:] : states)
     }
 }
 
@@ -365,7 +394,7 @@ struct OnboardingView: View {
         VStack(spacing: 12) {
             OnboardingPermissionCard(
                 title: "基础隐私协议",
-                summary: "上传学校标识、系统版本、设备型号、App 版本与随机安装标识，用于使用统计与兼容性改进。",
+                summary: "上传学校标识、系统版本、设备型号、App 版本、随机安装标识及风格、背景图、小组件和实时活动的启用状态，用于使用统计与兼容性改进，不上传背景图片。",
                 symbol: "chart.bar.xaxis", optional: false
             )
             Label("基础统计不包含课程内容或学校账号密码", systemImage: "lock.shield")

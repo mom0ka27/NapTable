@@ -154,3 +154,99 @@ class UsageTests(JSONClientMixin, unittest.TestCase):
         with self.store.lock:
             days = [row[0] for row in self.store.db.execute('SELECT day FROM usage_daily ORDER BY day')]
         self.assertNotIn('2000-01-01', days)
+
+    def feature_counts(self, key, stats=None):
+        stats = stats or self.stats()
+        return next(item for group in ('styles', 'features', 'widgets')
+                    for item in stats['featureUsage'][group] if item['id'] == key)
+
+    def feature_report(self, features, at, **kwargs):
+        with patch('server.naptable_server.datetime') as clock:
+            clock.now.return_value = at
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            self.report(dict(self.value, consentVersion=2, usageFeatures=features), **kwargs)
+
+    def test_features_require_observed_duration_strictly_over_24_hours(self):
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=2)
+        features = {'style.paper': 'a' * 32, 'background': 'b' * 32}
+        self.feature_report(features, start)
+        self.assertEqual(self.feature_counts('style.paper')['users'], 0, 'Querying later cannot qualify an abandoned trial')
+        self.feature_report(features, start + timedelta(days=1))
+        self.assertEqual(self.feature_counts('style.paper')['users'], 0, 'Exactly 24 hours is not over one day')
+        self.feature_report(features, start + timedelta(days=1, seconds=1))
+        self.feature_report(features, now)
+        stats = self.stats()
+        self.assertEqual(self.feature_counts('style.paper', stats)['users'], 1)
+        self.assertEqual(self.feature_counts('background', stats)['observedUsers'], 1)
+        self.assertEqual(self.feature_counts('style.paper', stats['schools'][0])['users'], 1)
+
+    def test_each_feature_has_its_own_clock_and_resets_on_reenable(self):
+        now = datetime.now(timezone.utc)
+        self.feature_report({'background': 'a' * 32}, now - timedelta(days=3))
+        self.feature_report({'background': 'a' * 32, 'separateBackgrounds': 'b' * 32}, now)
+        self.assertEqual(self.feature_counts('background')['users'], 1)
+        self.assertEqual(self.feature_counts('separateBackgrounds')['users'], 0)
+        self.feature_report({'background': ''}, now)
+        self.assertEqual(self.feature_counts('background')['observedUsers'], 0)
+        self.feature_report({'background': 'c' * 32}, now)
+        self.assertEqual(self.feature_counts('background')['users'], 0)
+
+    def test_offline_session_change_and_style_switch_restart_duration(self):
+        now = datetime.now(timezone.utc)
+        self.feature_report({'style.minimal': 'a' * 32, 'liveActivity': 'b' * 32}, now - timedelta(days=2))
+        self.feature_report({'style.minimal': '', 'style.board': 'c' * 32, 'liveActivity': 'd' * 32}, now)
+        self.assertEqual(self.feature_counts('style.minimal')['observedUsers'], 0)
+        self.assertEqual(self.feature_counts('style.board')['users'], 0)
+        self.assertEqual(self.feature_counts('liveActivity')['users'], 0, 'An offline off/on cycle changes the interval ID')
+
+    def test_unknown_widget_state_does_not_clear_or_extend_duration(self):
+        now = datetime.now(timezone.utc)
+        self.feature_report({'widget.upcoming.small': 'a' * 32}, now - timedelta(days=2))
+        self.feature_report({}, now)
+        self.assertEqual(self.feature_counts('widget.upcoming.small')['users'], 0)
+        self.assertEqual(self.feature_counts('widget.upcoming.small')['observedUsers'], 1)
+        self.feature_report({'widget.upcoming.small': 'a' * 32}, now)
+        self.assertEqual(self.feature_counts('widget.upcoming.small')['users'], 1)
+
+    def test_features_validation_consent_and_auth(self):
+        for features in (None, [], {'imagePath': '/private/photo.jpg'}, {'background': True},
+                         {'background': 'x' * 32}, {'background': 'a' * 33},
+                         {'style.minimal': 'a' * 32, 'style.board': 'b' * 32}):
+            self.report(dict(self.value, consentVersion=2, usageFeatures=features), expect=400)
+        self.report(dict(self.value, usageFeatures={'background': 'a' * 32}), expect=400)
+        now = datetime.now(timezone.utc)
+        self.feature_report({'background': 'a' * 32}, now - timedelta(days=2))
+        self.feature_report({'background': 'a' * 32}, now, secret='b' * 64, expect=403)
+        self.assertEqual(self.feature_counts('background')['users'], 0)
+        self.report()  # Legacy client after a downgrade: feature states are no longer known.
+        self.assertEqual(self.feature_counts('background')['observedUsers'], 0)
+
+    def test_feature_window_retention_and_long_absence(self):
+        now = datetime.now(timezone.utc)
+        self.feature_report({'background': 'a' * 32}, now - timedelta(days=33))
+        self.feature_report({'background': 'a' * 32}, now - timedelta(days=31))
+        self.assertEqual(self.feature_counts('background')['users'], 0)
+        self.feature_report({'background': 'a' * 32}, now)
+        self.assertEqual(self.feature_counts('background')['users'], 0, 'A 30-day absence restarts qualification')
+        with self.store.lock, self.store.db:
+            self.store.db.execute('UPDATE usage_devices SET last_seen=?', ((now - timedelta(days=91)).isoformat(),))
+        self.stats()
+        self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM usage_features').fetchone()[0], 0)
+
+    def test_feature_dedup_multiple_widgets_school_change_and_reopen(self):
+        now = datetime.now(timezone.utc)
+        features = {'widget.upcoming.small': 'a' * 32, 'widget.twoday.large': 'b' * 32}
+        for stamp in (now - timedelta(days=2), now, now):
+            self.feature_report(features, stamp)
+        self.feature_report(features, now, device=str(uuid.uuid4()))
+        self.assertEqual(self.feature_counts('widget.upcoming.small')['users'], 1)
+        self.assertEqual(self.feature_counts('widget.upcoming.small')['observedUsers'], 2)
+        self.value['schoolID'] = ''
+        self.feature_report(features, now)
+        self.assertEqual(self.feature_counts('widget.twoday.large', self.stats()['schools'][0])['users'], 0)
+        reopened = Store(self.directory.name + '/usage.sqlite3')
+        try:
+            self.assertEqual(self.feature_counts('widget.twoday.large', reopened.usage_stats())['users'], 1)
+        finally:
+            reopened.close()
