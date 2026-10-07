@@ -27,6 +27,8 @@ struct ScheduleStylePicker: View {
                                     .foregroundStyle(.themeText)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(settings.style == style ? [.isSelected] : [])
