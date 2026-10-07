@@ -461,11 +461,13 @@ struct NativeScheduleView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(weekTitle(result))
                         .font(.headline)
+                        .fontDesign(navigatorTitleDesign)
                         .foregroundStyle(.themeText)
                     if let range = weekRange(result), !range.isEmpty {
                         Text(range)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .fontDesign(style == .minimal ? nil : style.fontDesign)
+                            .foregroundStyle(navigatorSecondary)
                     }
                 }
                 .monospacedDigit()
@@ -504,6 +506,7 @@ struct NativeScheduleView: View {
         HStack(alignment: .center, spacing: 0) {
             Text(monthTitle)
                 .font(.headline)
+                .fontDesign(navigatorTitleDesign)
                 .monospacedDigit()
                 .foregroundStyle(.themeText)
                 .lineLimit(1)
@@ -709,64 +712,30 @@ struct NativeScheduleView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(enabled ? .primary : .tertiary)
+        .foregroundStyle(enabled ? AnyShapeStyle(style.inkColor(dark: colorScheme == .dark)) : AnyShapeStyle(.tertiary))
         .disabled(!enabled)
         .accessibilityLabel(label)
     }
 
-    /// 日视图的星期条：和周视图表头一样「几号在上、星期在下」，今天写「今天」。
-    /// 选中的那天铺一块淡主题色圆角底，日期右上角显示调休角标。
+    /// 日视图的星期条，画法跟着课表风格走，见 `ScheduleDayStrip`。
     private func dayPicker(_ result: NativeScheduleResult) -> some View {
         let week = weekNumber(store.selectedWeek)
-        return HStack(spacing: 4) {
-            ForEach(visibleDays, id: \.self) { day in
-                let isSelected = selectedDay == day
-                let isToday = dayIsToday(day, week: week, result: result)
-                let courseCount = blocks(for: day, week: week, result: result).count
-                let dayAdjustment = adjustment(day: day, week: week, result: result)
-                let highlighted = isSelected || isToday
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        selectedDay = day
-                        if let date = rawDayDate(day, week: week, result: result) {
-                            selectedMonthDate = date
-                            monthAnchor = date
-                        }
-                    }
-                } label: {
-                    VStack(spacing: 3) {
-                        Text(dayNumber(day, week: week, result: result) ?? "–")
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(highlighted ? AnyShapeStyle(.themeText) : AnyShapeStyle(.primary))
-                            .overlay(alignment: .topTrailing) {
-                                if let dayAdjustment {
-                                    ScheduleAdjustmentBadge(adjustment: dayAdjustment)
-                                        .frame(width: 0, alignment: .leading)
-                                        .offset(x: 2, y: -1)
-                                }
-                            }
-                        Text(isToday ? "今天" : dayLabel(day))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(highlighted ? AnyShapeStyle(.themeText) : AnyShapeStyle(.secondary))
-                    }
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 50)
-                    .background {
-                        if isSelected {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(.themeTint(colorScheme == .dark ? 0.2 : 0.1))
-                        }
-                    }
-                    .contentShape(Rectangle())
+        return ScheduleDayStrip(
+            days: visibleDays.map { day in
+                .init(day: day, number: dayNumber(day, week: week, result: result),
+                      date: dayDate(day, week: week, result: result),
+                      isToday: dayIsToday(day, week: week, result: result),
+                      adjustment: adjustment(day: day, week: week, result: result),
+                      courseCount: blocks(for: day, week: week, result: result).count)
+            },
+            selectedDay: selectedDay
+        ) { day in
+            withAnimation(.snappy(duration: 0.2)) {
+                selectedDay = day
+                if let date = rawDayDate(day, week: week, result: result) {
+                    selectedMonthDate = date
+                    monthAnchor = date
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(dayLabel(day)) \(dayDate(day, week: week, result: result) ?? "")")
-                .accessibilityValue(
-                    [dayAdjustment?.detail, courseCount > 0 ? "\(courseCount) 门课" : "没有课"]
-                        .compactMap { $0 }.joined(separator: "，")
-                )
-                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
             }
         }
     }
@@ -2123,6 +2092,13 @@ struct NativeScheduleView: View {
     private static let navigatorHeight: CGFloat = 36
     /// 周次 / 月份标题比页边再往里缩一点：下面的面板是圆角，贴着页边的字会显得比面板靠外。
     private static let navigatorTitleInset: CGFloat = 8
+    /// 周次 / 月份标题的字体跟课表风格走；简约保持系统默认字体。
+    private var navigatorTitleDesign: Font.Design? { style == .minimal ? nil : style.textDesign }
+    /// 素笺和站牌有自己的底色，日期范围用墨色减淡，不用系统的灰。
+    private var navigatorSecondary: AnyShapeStyle {
+        style == .paper || style == .board
+            ? AnyShapeStyle(style.inkColor(dark: colorScheme == .dark).opacity(0.62)) : AnyShapeStyle(.secondary)
+    }
 
     /// The drawn teaching slots plus the date header, sized to keep a complete
     /// day visible above the native tab bar on an iPhone-sized surface.

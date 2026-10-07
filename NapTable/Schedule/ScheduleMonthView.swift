@@ -515,7 +515,7 @@ struct NativeScheduleMonthView: View {
                                                            solid: themeSettings.solidCourseColor))
                             .frame(width: 2)
                         Text(shortCourseName(block))
-                            .font(.system(size: 9, weight: .semibold, design: style.fontDesign))
+                            .font(.system(size: 9, weight: .semibold, design: style.textDesign))
                             .lineLimit(1)
                             .foregroundStyle(styleInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -576,7 +576,7 @@ struct NativeScheduleMonthView: View {
                     .monospacedDigit()
                     .underline(isToday)
                 Text(day.courses.isEmpty ? "—" : "\(day.courses.count) 门")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .font(.system(size: 9, weight: .medium))
                     .lineLimit(1)
                 Text(day.subtitle.isEmpty ? " " : day.subtitle)
                     .font(.system(size: 9, design: .monospaced))
@@ -801,7 +801,7 @@ struct NativeScheduleMonthView: View {
                 Text(styledSummaryTitle(day))
                     .font(.system(size: style == .paper ? 17 : 16,
                                   weight: style == .board ? .bold : .semibold,
-                                  design: style.fontDesign))
+                                  design: style.textDesign))
                     .foregroundStyle(styleInk)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -825,7 +825,7 @@ struct NativeScheduleMonthView: View {
                 if !day.courses.isEmpty {
                     Button { onOpenDetails(day) } label: {
                         Text("共 \(day.courses.count) 门")
-                            .font(.system(size: 11, weight: .semibold, design: style.fontDesign))
+                            .font(.system(size: 11, weight: .semibold, design: style.textDesign))
                             .foregroundStyle(style == .paper ? styleAccent : styleInk.opacity(0.72))
                             .frame(minHeight: 36)
                     }
@@ -836,7 +836,7 @@ struct NativeScheduleMonthView: View {
             // 和右侧按钮一样高：选到没课的日期时这一行不变矮，摘要和面板底边不跟着跳。
             .frame(minHeight: 36)
             Text(summarySubtitle(day))
-                .font(.system(size: 11, weight: .regular, design: style.fontDesign))
+                .font(.system(size: 11, weight: .regular, design: style.textDesign))
                 .foregroundStyle(styleInk.opacity(0.64))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -1133,7 +1133,7 @@ struct NativeScheduleMonthDayDetails: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(selectedTitle)
                         .font(.title2.weight(.bold))
-                        .fontDesign(style == .minimal ? .default : style.fontDesign)
+                        .fontDesign(style == .minimal ? .default : style.textDesign)
                         .accessibilityAddTraits(.isHeader)
                     Text(selectedSubtitle)
                         .font(.subheadline)

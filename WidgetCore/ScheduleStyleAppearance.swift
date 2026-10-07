@@ -14,6 +14,10 @@ extension ScheduleStyle {
         }
     }
 
+    /// 课名、教室、「第 3–4 节」这类成句文字的字体。站牌的等宽体只留给时刻和日期：整句用等宽体时，
+    /// 汉字和数字之间的空格有一个数字那么宽，一行字就散了。
+    var textDesign: Font.Design { layout.font == .monospaced ? .default : fontDesign }
+
     /// 只有需要独立纸墨/站牌底色的风格覆盖画布，其余沿用主题背景设置。
     func canvasColor(dark: Bool) -> Color? {
         switch self {

@@ -95,6 +95,7 @@ private struct ScheduleStyleDemoContent: View {
                     weekGrid.padding(.horizontal, 16)
                 }
             case .day:
+                dayStrip.padding(.horizontal, 16)
                 ScrollView {
                     NativeScheduleDayTimeline(
                         blocks: ScheduleStyleDemoData.blocks(day: 3, week: 7),
@@ -158,12 +159,27 @@ private struct ScheduleStyleDemoContent: View {
                 Spacer()
                 Text("周三 11:05")
             }
-            .font(.system(size: 14, weight: .medium, design: style.fontDesign))
+            .font(.system(size: 14, weight: .medium, design: style.textDesign))
             .foregroundStyle(.themeText)
             Text("2027 年 4 月 · 固定示例，休／班非官方安排")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// 正式日视图的星期条，选中周三。`NAPTABLE_DEMO_TIME=none` 时周三不是今天，
+    /// 把今天放到周二，选中和今天两种标记才能同时看到。
+    private var dayStrip: some View {
+        let today = configuration.dayNowMinutes == nil ? 2 : 3
+        return ScheduleDayStrip(
+            days: (1...7).map { day in
+                .init(day: day, number: String(day + 4), date: "4.\(day + 4)", isToday: day == today,
+                      adjustment: ScheduleStyleDemoData.adjustments["2027-04-" + String(format: "%02d", day + 4)],
+                      courseCount: ScheduleStyleDemoData.blocks(day: day, week: 7).count)
+            },
+            selectedDay: 3,
+            onSelect: { _ in }
+        )
     }
 
     private var weekGrid: some View {

@@ -1,6 +1,6 @@
 # ScheduleStyle Debug 截图演示
 
-`NapTable/Schedule/ScheduleStyleDemo.swift` 是 Debug 专用的 `ScheduleStyleDemoRoot: View`。它直接调用现有的 `NativeScheduleDayColumn`、`NativeScheduleDayTimeline` 与 `NativeScheduleMonthView`。此视图只使用内存里的固定示例课表，不创建 `AppStore` 或 `NativeScheduleStore`，也不调用课表或偏好的持久化方法。
+`NapTable/Schedule/ScheduleStyleDemo.swift` 是 Debug 专用的 `ScheduleStyleDemoRoot: View`。它直接调用现有的 `NativeScheduleDayColumn`、`NativeScheduleDayTimeline` 与 `NativeScheduleMonthView`，日视图上方是正式的星期条 `ScheduleDayStrip`。此视图只使用内存里的固定示例课表，不创建 `AppStore` 或 `NativeScheduleStore`，也不调用课表或偏好的持久化方法。
 
 `MyApp` 已将 `AppStore()` 放入只在正常启动使用的 `NormalAppRoot`，所以 `NAPTABLE_STYLE_DEMO=1` 的 Demo 分支不会构造 `AppStore`。`NativeThemeSettings.shared` 仍由根部读取主题设置，Demo 只读取其风格环境所需的主题单例状态；Demo 不调用主题、课表或用户偏好的写入方法。购买、推送和实时活动启动也已在 Demo 模式跳过。脚本通过新建专用模拟器运行，避免接触已有模拟器的用户课表。
 
@@ -16,7 +16,7 @@ NAPTABLE_DEMO_DARK=0|1
 NAPTABLE_DEMO_TIME=HH:MM|none
 ```
 
-`NAPTABLE_DEMO_TIME` 只影响日视图，用来看课间、全天结束这些状态：写一个时刻就把它当作“现在”，写 `none` 则当作不是今天。不设时沿用 11:05；批量截图脚本不设这个变量。
+`NAPTABLE_DEMO_TIME` 只影响日视图，用来看课间、全天结束这些状态：写一个时刻就把它当作“现在”，写 `none` 则当作不是今天。星期条始终选中周三；写 `none` 时今天挪到周二，选中和今天两种标记可以同时看到。不设时沿用 11:05；批量截图脚本不设这个变量。
 
 先只验证构建：
 

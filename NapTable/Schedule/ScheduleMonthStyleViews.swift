@@ -92,10 +92,10 @@ struct ScheduleMonthStyledCourseRow: View {
     private var course: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(block.course.name)
-                .font(.system(compact ? .subheadline : .body, design: style.fontDesign).weight(.semibold))
+                .font(.system(compact ? .subheadline : .body, design: style.textDesign).weight(.semibold))
                 .lineLimit(compact ? 1 : nil)
             Text(style == .grid && block.course.location?.trimmedNonEmpty != nil ? "@" + metadata : metadata)
-                .font(.system(compact ? .caption2 : .footnote, design: style.fontDesign))
+                .font(.system(compact ? .caption2 : .footnote, design: style.textDesign))
                 .foregroundStyle(ink.opacity(contrast == .increased ? 0.9 : 0.74))
                 .lineLimit(compact ? 1 : nil)
         }
