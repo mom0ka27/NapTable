@@ -18,6 +18,7 @@ struct ManualScheduleWizard: View {
     @State private var generator = ClassTimeGenerator()
     @State private var editingCourse: ManualCourseDraft?
     @State private var automaticImageName: String?
+    @State private var conflictChoice: [Int: Int] = [:]
 
     enum Step: Int, CaseIterable {
         case semester, periods, courses, review
@@ -77,6 +78,8 @@ struct ManualScheduleWizard: View {
             }
             if draft.name.isEmpty { draft.name = store.uniqueTableName(school.map { "\($0)课表" } ?? "我的课表") }
         }
+        .onChange(of: draft.courses) { _, _ in conflictChoice = [:] }
+        .onChange(of: draft.weekCount) { _, _ in conflictChoice = [:] }
         .onChange(of: draft.classTimes.count) { _, count in clampMeetings(periodCount: count) }
     }
 
@@ -123,6 +126,12 @@ struct ManualScheduleWizard: View {
         }
     }
 
+    private var conflictCourses: [Course] { draft.courseRows(tableId: 0).flatMap { $0 } }
+
+    private var conflicts: [ImportConflictGroup] {
+        ImportConflictFinder.expandedGroups(in: conflictCourses, keeping: conflictChoice)
+    }
+
     /// 当前这一步还不能往下走的原因。
     private var blocker: String? {
         switch step {
@@ -133,6 +142,10 @@ struct ManualScheduleWizard: View {
             return draft.classTimesProblem
         case .courses, .review:
             if let problem = draft.courses.compactMap({ $0.problem(periodCount: draft.classTimes.count, weekCount: draft.weekCount) }).first { return problem }
+            if initialDraft != nil,
+               ImportConflictFinder.hasUnresolvedConflicts(in: conflictCourses, keeping: conflictChoice) {
+                return "请先处理重复或时间重叠的课程，为每组选择优先显示"
+            }
             return requiresCourses && draft.courses.isEmpty ? "首次使用至少要添加一门课" : nil
         }
     }
@@ -142,7 +155,12 @@ struct ManualScheduleWizard: View {
         if let next = Step(rawValue: step.rawValue + 1) {
             withAnimation { step = next }
         } else {
-            store.installManualSchedule(draft)
+            if initialDraft != nil {
+                guard let resolved = draft.resolvingImportConflicts(keeping: conflictChoice) else { return }
+                store.installManualSchedule(resolved)
+            } else {
+                store.installManualSchedule(draft)
+            }
             onCreated()
         }
     }
@@ -153,7 +171,7 @@ struct ManualScheduleWizard: View {
     private var semesterStep: some View {
         if initialDraft != nil {
             Section("图片识别结果") {
-                Text("识别内容都可以修改。未读到的课程字段已标为待填写，学期和作息中的暂填值也请核对；补全后再创建课表。")
+                Text("识别内容都可以修改。未读到的课程字段已标为待填写，学期和作息中的暂填值也请核对；补全并处理重复或时间重叠的课程后再创建课表。")
             }
         }
         Section {
@@ -357,7 +375,9 @@ struct ManualScheduleWizard: View {
         }
 
         let warnings = draft.overlapWarnings
-        if !warnings.isEmpty {
+        if initialDraft != nil {
+            ImportConflictSections(groups: conflicts, choice: $conflictChoice)
+        } else if !warnings.isEmpty {
             Section {
                 ForEach(warnings, id: \.self) { warning in
                     Label(warning, systemImage: "exclamationmark.triangle.fill")

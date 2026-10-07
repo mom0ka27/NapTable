@@ -87,6 +87,46 @@ struct ManualScheduleChecks {
         precondition(imageDraft.courses[0].problem(periodCount: imageDraft.classTimes.count, weekCount: imageDraft.weekCount) != nil)
         precondition(recognition.reviewWarnings.count == 4)
 
+        // 图片识别会把同名课程合到一门课里，其重复安排仍须处理后才能完成。
+        var duplicateImage = recognition
+        duplicateImage.courses = Array(repeating: recognition.courses[0], count: 3)
+        let duplicateDraft = try! duplicateImage.draft()
+        precondition(duplicateDraft.courses.count == 1 && duplicateDraft.courses[0].meetings.count == 3)
+        precondition(duplicateDraft.resolvingImportConflicts(keeping: [:]) == nil)
+        precondition(duplicateDraft.resolvingImportConflicts(keeping: [0: 99]) == nil)
+        let resolvedImage = duplicateDraft.resolvingImportConflicts(keeping: [0: 2])!
+        let imageStore = AppStore(fileURL: nil)
+        let imageTable = imageStore.installManualSchedule(resolvedImage)
+        let imageRows = imageStore.courses.filter { $0.tableId == imageTable.id }
+        precondition(imageRows.count == 3 && imageRows.allSatisfy { !$0.isHidden })
+        precondition(imageRows.map(\.displayPriority) == [nil, nil, 1])
+        precondition(imageRows.allSatisfy { $0.weeks == [1, 3, 5] && $0.startTime == 1 && $0.endTime == 2 })
+        precondition(imageTable.termWeekCount == duplicateDraft.weekCount)
+        precondition(imageTable.classTimeList == duplicateDraft.classTimes)
+
+        // 选中的课只上前几周时，其余周次的重叠仍须继续选择。
+        var partialImage = duplicateImage
+        partialImage.courses[0].weeks = [1]
+        partialImage.courses[1].name = "物理"
+        partialImage.courses[2].name = "化学"
+        let partialImageDraft = try! partialImage.draft()
+        precondition(partialImageDraft.resolvingImportConflicts(keeping: [0: 0]) == nil)
+        let imageGroups = ImportConflictFinder.expandedGroups(
+            in: partialImageDraft.courseRows(tableId: 0).flatMap { $0 }, keeping: [0: 0])
+        precondition(imageGroups.count == 2)
+        precondition(partialImageDraft.resolvingImportConflicts(keeping: [0: 0, imageGroups[1].id: 1]) != nil)
+
+        // 修改时间或删除重复安排后，不再重叠就可以完成；单双周不误报。
+        var editedImage = duplicateDraft
+        editedImage.courses[0].meetings = Array(editedImage.courses[0].meetings.prefix(2))
+        editedImage.courses[0].meetings[1].customWeeks = [2, 4, 6]
+        precondition(editedImage.resolvingImportConflicts(keeping: [:]) != nil)
+        editedImage.courses[0].meetings[1].customWeeks = [1, 3, 5]
+        editedImage.courses[0].meetings[1].weekday = 2
+        precondition(editedImage.resolvingImportConflicts(keeping: [:]) != nil)
+        editedImage.courses[0].meetings.removeLast()
+        precondition(editedImage.resolvingImportConflicts(keeping: [:]) != nil)
+
         // Partial times retain their period numbers; the count includes empty rows.
         let partialJSON = """
         {"name":"图片课表","semesterStartMonday":"2026-09-07","weekCount":16,"periodCount":8,

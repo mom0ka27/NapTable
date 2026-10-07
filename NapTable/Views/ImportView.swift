@@ -257,18 +257,8 @@ struct ImportedScheduleForm: View {
                         .foregroundStyle(.orange)
                 }
             }
-            // 所有组必须选好优先级，但每条课程的实际安排都完整保留。
-            ForEach(conflicts) { group in
-                Section {
-                    ForEach(group.members) { member in
-                        conflictRow(group: group, member: member)
-                    }
-                } header: {
-                    Text("优先显示 · \(group.title)")
-                } footer: {
-                    Text(conflictFooter(group))
-                }
-            }
+            ImportConflictSections(groups: conflicts, choice: $conflictChoice,
+                                   showsExistingCourses: mode == .appendToCurrent)
             Section("导入到") {
                 if availableModes == [.newTable] {
                     LabeledContent("导入方式", value: AppStore.ImportMode.newTable.title)
@@ -319,39 +309,6 @@ struct ImportedScheduleForm: View {
         }
     }
 
-    private func conflictFooter(_ group: ImportConflictGroup) -> String {
-        "所有课程都会完整导入并计入课表。每组都必须选择优先显示的课程，选完才能导入。剩余课程如果仍有重叠，需要继续选择，确保每个周次、节次都有明确的显示顺序。之后长按可切换编辑同一时段的全部课程。"
-    }
-
-    @ViewBuilder
-    private func conflictRow(group: ImportConflictGroup, member: ImportConflictGroup.Member) -> some View {
-        let picked = conflictChoice[group.id] == member.id
-        Button {
-            conflictChoice[group.id] = member.id
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: picked ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(picked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(member.course.name)
-                        .foregroundStyle(.primary)
-                    if mode == .appendToCurrent && member.course.id > 0 {
-                        Text("当前课表已有").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if picked { Text("优先显示").font(.caption).foregroundStyle(.tint) }
-                    let subtitle = member.subtitle
-                    if !subtitle.isEmpty {
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text(member.weeksText).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     private var canAppend: Bool {
         guard !store.currentCourses.isEmpty, let table = store.selectedTable else { return true }
         return table.schoolID == schedule.schoolID && table.termID == schedule.termID
@@ -372,4 +329,60 @@ struct ImportedScheduleForm: View {
             return "课程会追加到当前课表「\(store.selectedTable?.name ?? "课表")」。"
         }
     }
+}
+
+/// 图片和教务导入共用的重叠课程处理入口。
+struct ImportConflictSections: View {
+    let groups: [ImportConflictGroup]
+    @Binding var choice: [Int: Int]
+    var showsExistingCourses = false
+
+    var body: some View {
+        // 所有组必须选好优先级，但每条课程的实际安排都完整保留。
+        ForEach(groups) { group in
+            Section {
+                ForEach(group.members) { member in
+                    conflictRow(group: group, member: member)
+                }
+            } header: {
+                Text("优先显示 · \(group.title)")
+            } footer: {
+                Text(conflictFooter(group))
+            }
+        }
+    }
+
+    private func conflictFooter(_ group: ImportConflictGroup) -> String {
+        "所有课程都会完整导入并计入课表。每组都必须选择优先显示的课程，选完才能导入。剩余课程如果仍有重叠，需要继续选择，确保每个周次、节次都有明确的显示顺序。之后长按可切换编辑同一时段的全部课程。"
+    }
+
+    @ViewBuilder
+    private func conflictRow(group: ImportConflictGroup, member: ImportConflictGroup.Member) -> some View {
+        let picked = choice[group.id] == member.id
+        Button {
+            choice[group.id] = member.id
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: picked ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(picked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(member.course.name)
+                        .foregroundStyle(.primary)
+                    if showsExistingCourses && member.course.id > 0 {
+                        Text("当前课表已有").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if picked { Text("优先显示").font(.caption).foregroundStyle(.tint) }
+                    let subtitle = member.subtitle
+                    if !subtitle.isEmpty {
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(member.weeksText).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
 }

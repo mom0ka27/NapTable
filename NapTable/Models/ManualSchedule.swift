@@ -61,6 +61,23 @@ nonisolated struct ManualScheduleDraft: Equatable {
         return warnings
     }
 
+    /// 图片导入必须先处理所有重叠；优先级按上课安排保存，同名课程也分别检查。
+    func resolvingImportConflicts(keeping choice: [Int: Int]) -> ManualScheduleDraft? {
+        let rows = courseRows(tableId: 0).flatMap { $0 }
+        guard !ImportConflictFinder.hasUnresolvedConflicts(in: rows, keeping: choice) else { return nil }
+        let groups = ImportConflictFinder.expandedGroups(in: rows, keeping: choice)
+        let resolved = ImportConflictFinder.apply(keeping: choice, to: rows, groups: groups)
+        var result = self
+        var index = 0
+        for c in result.courses.indices {
+            for m in result.courses[c].meetings.indices {
+                result.courses[c].meetings[m].displayPriority = resolved[index].displayPriority
+                index += 1
+            }
+        }
+        return result
+    }
+
     /// 课程写进库时的行：一门课的每个上课时间一行，同一门课共用 `courseKey`。
     func courseRows(tableId: Int) -> [[Course]] {
         courses.map { $0.rows(tableId: tableId, weekCount: weekCount) }
@@ -100,7 +117,8 @@ nonisolated struct ManualCourseDraft: Identifiable, Equatable {
                 timeCount: max(0, meeting.endPeriod - meeting.startPeriod),
                 importType: ImportKind.manual,
                 classroom: meeting.classroom.trimmedNilIfEmpty,
-                teacher: teacher.trimmedNilIfEmpty
+                teacher: teacher.trimmedNilIfEmpty,
+                displayPriority: meeting.displayPriority
             )
         }
     }
@@ -120,6 +138,8 @@ nonisolated struct ManualMeetingDraft: Identifiable, Equatable {
     var kind: WeekSeries.Kind = .full
     /// `kind == .custom` 时逐周勾选的结果。
     var customWeeks: Set<Int> = []
+    /// 图片导入确认时选定的显示优先级。
+    var displayPriority: Int?
 
     func resolvedLastWeek(weekCount: Int) -> Int {
         min(lastWeek ?? weekCount, weekCount)
